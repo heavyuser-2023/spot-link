@@ -91,14 +91,22 @@ class MeTab extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Center(
-          child: OutlinedButton.icon(
+          child: FilledButton.tonalIcon(
             onPressed: () => SharePlus.instance.share(ShareParams(
                 text: c.myQrPayload, subject: 'SpotLink에서 저를 추가하세요')),
             icon: const Icon(Icons.share),
             label: const Text('초대 코드 공유'),
           ),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 28),
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 6),
+          child: Text('설정',
+              style: Theme.of(context)
+                  .textTheme
+                  .labelLarge
+                  ?.copyWith(color: hint)),
+        ),
         Card(
           child: SwitchListTile(
             secondary: const Icon(Icons.battery_saver),
