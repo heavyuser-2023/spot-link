@@ -384,33 +384,6 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     return contact;
   }
 
-  /// Delete a contact: keys, conversation history and any received/sent file
-  /// copies. Not a block — a nearby peer re-appears on their next ANNOUNCE
-  /// (as a fresh, unverified contact).
-  Future<void> deleteContact(String peerHex) async {
-    // Best-effort cleanup of files referenced by this conversation.
-    for (final m in await db.messagesFor(peerHex)) {
-      final path = m.filePath;
-      if (path != null) {
-        try {
-          await File(path).delete();
-        } catch (_) {}
-      }
-      transferProgress.remove(m.msgId);
-    }
-    await db.deleteMessagesFor(peerHex);
-    await db.deleteContact(peerHex);
-    _contacts.removeWhere((c) => c.peerHex == peerHex);
-    _conversations.remove(peerHex);
-    _lastMessage.remove(peerHex);
-    _unread.remove(peerHex);
-    _lastSeen.remove(peerHex);
-    _lastHops.remove(peerHex);
-    if (_openPeer == peerHex) _openPeer = null;
-    node.removeContact(PeerId.fromHex(peerHex));
-    notifyListeners();
-  }
-
   Future<void> renameContact(String peerHex, String name) async {
     final existing = contactByHex(peerHex);
     if (existing == null) return;

@@ -49,19 +49,12 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final c = context.watch<MeshController>();
     final titles = ['채팅', '사람', '내 정보'];
-    final tabs = [
-      ChatsTab(onFindPeople: () => setState(() => _index = 1)),
-      const PeopleTab(),
-      const MeTab(),
-    ];
+    final tabs = const [ChatsTab(), PeopleTab(), MeTab()];
 
     return Scaffold(
       appBar: AppBar(
         title: Text(titles[_index]),
-        actions: [
-          _MeshStatusChip(controller: c),
-          const SizedBox(width: 12),
-        ],
+        actions: [_ConnectionIndicator(count: c.linkCount, active: c.started)],
       ),
       body: Column(
         children: [
@@ -100,170 +93,39 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// The mesh at a glance: colored pill in the app bar ("메시 2" / "검색 중" /
-/// "꺼짐"). Tapping opens a status sheet with details and quick settings —
-/// one obvious place to answer "지금 연결돼 있나?".
-class _MeshStatusChip extends StatelessWidget {
-  final MeshController controller;
-  const _MeshStatusChip({required this.controller});
+class _ConnectionIndicator extends StatelessWidget {
+  final int count;
+  final bool active;
+  const _ConnectionIndicator({required this.count, required this.active});
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final active = controller.started;
-    final count = controller.linkCount;
     final connected = active && count > 0;
-
-    final (bg, fg, dot, label) = !active
-        ? (
-            scheme.errorContainer,
-            scheme.onErrorContainer,
-            scheme.error,
-            '꺼짐'
-          )
-        : connected
-            ? (
-                const Color(0xFFDCF5DF),
-                const Color(0xFF1B5E20),
-                const Color(0xFF2E7D32),
-                '메시 $count'
-              )
-            : (
-                scheme.surfaceContainerHighest,
-                scheme.onSurfaceVariant,
-                scheme.outline,
-                '검색 중'
-              );
-
-    return Semantics(
-      label: connected ? '$count개 기기 연결됨' : (active ? '주변 검색 중' : '연결 없음'),
-      button: true,
-      child: Material(
-        color: bg,
-        borderRadius: BorderRadius.circular(20),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
-          onTap: () => _showStatusSheet(context),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
-                ),
-                const SizedBox(width: 6),
-                Text(label,
-                    style: TextStyle(
-                        color: fg,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600)),
-              ],
-            ),
+    return Padding(
+      padding: const EdgeInsets.only(right: 12),
+      child: Tooltip(
+        message: !active
+            ? '블루투스 꺼짐 / 권한 없음'
+            : connected
+                ? '$count개 기기와 연결됨'
+                : '주변 검색 중',
+        child: Semantics(
+          label: connected ? '$count개 기기 연결됨' : '연결 없음',
+          child: Row(
+            children: [
+              Icon(
+                active ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                size: 18,
+                color: connected
+                    ? Colors.greenAccent.shade400
+                    : Theme.of(context).disabledColor,
+              ),
+              const SizedBox(width: 4),
+              Text('$count', style: Theme.of(context).textTheme.labelLarge),
+            ],
           ),
         ),
       ),
-    );
-  }
-
-  void _showStatusSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      builder: (_) => ChangeNotifierProvider.value(
-        value: controller,
-        child: const _StatusSheet(),
-      ),
-    );
-  }
-}
-
-/// Detail sheet behind the status chip: link count, nearby people, relay
-/// mailbox and the battery-saver toggle — the "how is my mesh doing" hub.
-class _StatusSheet extends StatelessWidget {
-  const _StatusSheet();
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.watch<MeshController>();
-    final scheme = Theme.of(context).colorScheme;
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('메시 상태', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: _StatusStat(
-                    icon: Icons.bluetooth_connected,
-                    value: '${c.linkCount}',
-                    label: '연결된 기기',
-                    color: c.linkCount > 0 ? scheme.primary : scheme.outline,
-                  ),
-                ),
-                Expanded(
-                  child: _StatusStat(
-                    icon: Icons.people_alt_outlined,
-                    value: '${c.nearbyCount}',
-                    label: '주변 사람',
-                    color: c.nearbyCount > 0 ? scheme.primary : scheme.outline,
-                  ),
-                ),
-                Expanded(
-                  child: _StatusStat(
-                    icon: Icons.move_to_inbox_outlined,
-                    value: '${c.relayStoreCount}',
-                    label: '중계 대기',
-                    color: scheme.outline,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              secondary: const Icon(Icons.battery_saver),
-              title: const Text('배터리 절약'),
-              value: c.powerSaver,
-              onChanged: (v) => c.setPowerSaver(v),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _StatusStat extends StatelessWidget {
-  final IconData icon;
-  final String value;
-  final String label;
-  final Color color;
-  const _StatusStat(
-      {required this.icon,
-      required this.value,
-      required this.label,
-      required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Icon(icon, color: color),
-        const SizedBox(height: 4),
-        Text(value,
-            style: Theme.of(context)
-                .textTheme
-                .titleLarge
-                ?.copyWith(fontWeight: FontWeight.w700)),
-        Text(label, style: Theme.of(context).textTheme.labelSmall),
-      ],
     );
   }
 }

@@ -236,13 +236,6 @@ class MeshNode {
     _knownSigning[contact.peerId.hex] = contact.signingPublic;
   }
 
-  /// Forget a peer's keys (user deleted the contact). If they are still
-  /// nearby their next ANNOUNCE re-teaches us — deletion is not a block.
-  void removeContact(PeerId peerId) {
-    _knownKex.remove(peerId.hex);
-    _knownSigning.remove(peerId.hex);
-  }
-
   Future<bool> start() async {
     final ready = await transport.ensureReady();
     if (!ready) {

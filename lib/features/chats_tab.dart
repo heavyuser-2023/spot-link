@@ -4,14 +4,10 @@ import 'package:provider/provider.dart';
 import '../app/mesh_controller.dart';
 import '../data/models.dart';
 import 'chat_screen.dart';
-import 'scan_screen.dart';
 import 'ui_utils.dart';
 
 class ChatsTab extends StatelessWidget {
-  /// Jumps to the People tab — the natural next step when there is nothing
-  /// to chat about yet.
-  final VoidCallback? onFindPeople;
-  const ChatsTab({super.key, this.onFindPeople});
+  const ChatsTab({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -19,12 +15,12 @@ class ChatsTab extends StatelessWidget {
     final convos = c.conversations();
 
     if (convos.isEmpty) {
-      return _EmptyChats(onFindPeople: onFindPeople);
+      return const _EmptyChats();
     }
     return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 4),
       itemCount: convos.length,
-      separatorBuilder: (_, _) => const Divider(height: 1, indent: 76),
+      separatorBuilder: (_, _) =>
+          const Divider(height: 1, indent: 72),
       itemBuilder: (context, i) => _ConversationTile(summary: convos[i]),
     );
   }
@@ -140,48 +136,24 @@ class _ConversationTile extends StatelessWidget {
 }
 
 class _EmptyChats extends StatelessWidget {
-  final VoidCallback? onFindPeople;
-  const _EmptyChats({this.onFindPeople});
+  const _EmptyChats();
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircleAvatar(
-              radius: 40,
-              backgroundColor: scheme.primaryContainer,
-              child: Icon(Icons.forum_outlined,
-                  size: 40, color: scheme.onPrimaryContainer),
-            ),
-            const SizedBox(height: 20),
+            const Icon(Icons.forum_outlined, size: 64),
+            const SizedBox(height: 16),
             Text('아직 대화가 없어요',
-                style: Theme.of(context).textTheme.titleLarge),
+                style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
-            Text(
-              '인터넷 없이, 주변 사람과 바로 대화할 수 있어요.',
+            const Text(
+              '‘사람’ 탭에서 주변 사용자를 찾거나\nQR 코드로 친구를 추가해 대화를 시작하세요.',
               textAlign: TextAlign.center,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(color: scheme.onSurfaceVariant),
-            ),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: onFindPeople,
-              icon: const Icon(Icons.people_alt_outlined),
-              label: const Text('주변 사람 보기'),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: () =>
-                  pushWithController(context, const ScanScreen()),
-              icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('QR로 친구 추가'),
             ),
           ],
         ),

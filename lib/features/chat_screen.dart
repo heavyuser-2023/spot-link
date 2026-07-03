@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:mime/mime.dart';
 import 'package:provider/provider.dart';
 
@@ -126,61 +125,34 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final items = _buildItems(messages);
 
-    final presence = nearby
-        ? (hops <= 1 ? '주변에 있음' : '주변 · $hops홉 경유')
-        : '오프라인 · 전달 대기';
-
     return Scaffold(
       appBar: AppBar(
-        titleSpacing: 0,
-        title: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: () => _showPeerSheet(context, c, name, presence, nearby),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 17,
-                  backgroundColor: avatarColor(widget.peerHex),
-                  foregroundColor: Colors.white,
-                  child: Text(initialsOf(name),
-                      style: const TextStyle(fontSize: 14)),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(name,
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                          ),
-                          if (contact?.verified ?? false)
-                            const Padding(
-                              padding: EdgeInsets.only(left: 4),
-                              child: Icon(Icons.verified,
-                                  size: 15, color: Colors.blue),
-                            ),
-                        ],
-                      ),
-                      Text(
-                        presence,
-                        style:
-                            Theme.of(context).textTheme.bodySmall?.copyWith(
-                                  color: nearby
-                                      ? const Color(0xFF2E7D32)
-                                      : Theme.of(context).hintColor,
-                                ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+        title: Row(
+          children: [
+            CircleAvatar(
+              radius: 16,
+              backgroundColor: avatarColor(widget.peerHex),
+              foregroundColor: Colors.white,
+              child: Text(initialsOf(name),
+                  style: const TextStyle(fontSize: 14)),
             ),
-          ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(name,
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                  Text(
+                    nearby
+                        ? (hops <= 1 ? '주변에 있음' : '주변 · $hops홉 경유')
+                        : '오프라인 · 전달 대기',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
       body: Column(
@@ -205,15 +177,15 @@ class _ChatScreenState extends State<ChatScreen> {
                     },
                   ),
           ),
+          const Divider(height: 1),
           SafeArea(
             child: Padding(
               padding:
-                  const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   IconButton(
-                    icon: const Icon(Icons.add_circle_outline),
+                    icon: const Icon(Icons.attach_file),
                     tooltip: '파일 첨부',
                     onPressed: _attach,
                   ),
@@ -224,25 +196,16 @@ class _ChatScreenState extends State<ChatScreen> {
                       maxLines: 4,
                       textInputAction: TextInputAction.send,
                       onSubmitted: (_) => _send(),
-                      decoration: InputDecoration(
+                      decoration: const InputDecoration(
                         hintText: '메시지',
+                        border: OutlineInputBorder(),
                         isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 10),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide.none,
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide.none,
-                        ),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 6),
+                  const SizedBox(width: 4),
                   IconButton.filled(
-                    icon: const Icon(Icons.arrow_upward),
+                    icon: const Icon(Icons.send),
                     tooltip: '보내기',
                     onPressed: _send,
                   ),
@@ -251,79 +214,6 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  /// Peer detail sheet from the app bar: identity at a glance (인증 여부,
-  /// 메시 거리, ID 복사) without leaving the conversation.
-  void _showPeerSheet(BuildContext context, MeshController c, String name,
-      String presence, bool nearby) {
-    final contact = c.contactByHex(widget.peerHex);
-    showModalBottomSheet(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 32,
-                backgroundColor: avatarColor(widget.peerHex),
-                foregroundColor: Colors.white,
-                child: Text(initialsOf(name),
-                    style: const TextStyle(fontSize: 26)),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Flexible(
-                    child: Text(name,
-                        style: Theme.of(context).textTheme.titleLarge,
-                        overflow: TextOverflow.ellipsis),
-                  ),
-                  if (contact?.verified ?? false)
-                    const Padding(
-                      padding: EdgeInsets.only(left: 6),
-                      child:
-                          Icon(Icons.verified, size: 20, color: Colors.blue),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 2),
-              Text(presence,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: nearby
-                            ? const Color(0xFF2E7D32)
-                            : Theme.of(context).hintColor,
-                      )),
-              const SizedBox(height: 12),
-              if (!(contact?.verified ?? false))
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Text(
-                    '아직 QR로 인증하지 않은 상대입니다.\n만나면 서로의 QR을 스캔해 신원을 확인하세요.',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              OutlinedButton.icon(
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(
-                      text: PeerId.fromHex(widget.peerHex).hex));
-                  Navigator.pop(sheetContext);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('ID를 복사했습니다')),
-                  );
-                },
-                icon: const Icon(Icons.copy, size: 16),
-                label: Text('ID ${PeerId.fromHex(widget.peerHex).short} 복사'),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -388,27 +278,18 @@ class _Bubble extends StatelessWidget {
     final fg = _isMe ? scheme.onPrimary : scheme.onSurface;
     final failed = message.status == MsgStatus.failed;
 
-    // Messenger-style asymmetric corners: the corner pointing at the sender
-    // is tight, the rest round.
-    final radius = BorderRadius.only(
-      topLeft: const Radius.circular(18),
-      topRight: const Radius.circular(18),
-      bottomLeft: Radius.circular(_isMe ? 18 : 5),
-      bottomRight: Radius.circular(_isMe ? 5 : 18),
-    );
-
     return Align(
       alignment: _isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
         onTap: () => _onTap(context),
         child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 3),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           constraints: BoxConstraints(
               maxWidth: MediaQuery.of(context).size.width * 0.75),
           decoration: BoxDecoration(
             color: failed ? scheme.errorContainer : bg,
-            borderRadius: radius,
+            borderRadius: BorderRadius.circular(16),
           ),
           child: Column(
             crossAxisAlignment:
