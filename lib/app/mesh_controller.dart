@@ -204,6 +204,11 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
         unawaited(db.upsertRelayFrame(msgIdHex, frame.encode()));
       }
     };
+    // Re-apply persisted signed receipts: tombstones for already-delivered
+    // texts survive the restart (contacts above provide the signing keys).
+    await node.rebuildReceipts();
+    // And retry parked messages whose sender key we have since learned.
+    await node.redeliverParked();
     // Seed the inbox with the last message of each known conversation.
     for (final hex in await db.conversationPeers()) {
       final last = await db.lastMessageFor(hex);

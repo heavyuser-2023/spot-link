@@ -106,6 +106,18 @@ class MeshNode {
   /// Known kex public keys by peer id hex (learned via ANNOUNCE or contacts).
   final Map<String, Uint8List> _knownKex = {};
 
+  /// Known Ed25519 signing keys by peer id hex. Safe to learn from ANNOUNCE:
+  /// the peer id is SHA-256(bundle), so keys and id are cryptographically
+  /// bound. Used to verify delivery receipts.
+  final Map<String, Uint8List> _knownSigning = {};
+
+  /// Tombstones: msgIds proven delivered by a signed receipt. Never stored,
+  /// relayed, or re-pulled again (prevents "zombie" revival by a phone that
+  /// was offline during the cleanup). Rebuilt from persisted receipts on
+  /// restart via [rebuildReceipts].
+  final _receipted = <String>{};
+  static const int _receiptedCap = 4096;
+
   /// Active transfers.
   final Map<String, FileSender> _senders = {};
   final Map<String, FileReceiver> _receivers = {};
@@ -161,12 +173,14 @@ class MeshNode {
   /// small, while messages can still travel the full 7 hops.
   static const int announceTtl = 3;
 
-  /// TTL for text messages and their end-to-end ACKs. Effectively unbounded
-  /// for human-scale meshes: with duplicate suppression a frame is sent once
-  /// per link regardless of TTL, so a large value costs nothing extra — it
-  /// only lets a store-and-forwarded message keep travelling ("언젠가 전달")
-  /// across many encounters. Files keep the default 7 (bulky payloads).
-  static const int durableTtl = 32;
+  /// TTL for text messages, their end-to-end ACKs and delivery receipts.
+  /// Effectively unbounded for human-scale meshes (six-degrees diameters):
+  /// with duplicate suppression a frame is sent once per link regardless of
+  /// TTL, so a large value costs nothing extra — it only lets a
+  /// store-and-forwarded frame keep travelling ("언젠가 전달") across many
+  /// encounters. Kept below the u8 max as the anti-zombie backstop. Files
+  /// keep the default 7 (bulky payloads).
+  static const int durableTtl = 64;
   Timer? _announceTimer;
 
   /// Text messages awaiting an end-to-end ACK, retransmitted until confirmed.
@@ -219,6 +233,7 @@ class MeshNode {
   /// an ANNOUNCE (e.g. added by QR scan).
   void addContact(ContactIdentity contact) {
     _knownKex[contact.peerId.hex] = contact.kexPublic;
+    _knownSigning[contact.peerId.hex] = contact.signingPublic;
   }
 
   Future<bool> start() async {
@@ -511,6 +526,20 @@ class MeshNode {
         return;
       }
 
+      // Proven delivered (signed receipt): don't deliver, relay or re-store —
+      // this is what keeps a long-offline phone from resurrecting it. But if
+      // the sender is still retransmitting at us, its ACK was lost: re-ACK so
+      // it can stop (mirrors the duplicate branch below).
+      if (_receipted.contains(frame.msgIdHex)) {
+        if (frame.type == FrameType.text &&
+            frame.ackRequested &&
+            frame.dst == myId &&
+            _deliveredIncoming.contains(frame.msgIdHex)) {
+          await _sendMessageAck(frame.src, frame.msgId);
+        }
+        return;
+      }
+
       final decision = router.handleIncoming(frame);
       if (decision.duplicate) {
         // A retransmit of a text we already delivered: the sender's first ACK
@@ -547,7 +576,8 @@ class MeshNode {
       case FrameType.have:
         final remoteHave = MsgIdList.decode(frame.payload);
         final wanted = store.selectWanted(remoteHave,
-            alreadySeen: (hex) => seen.contains(hex));
+            alreadySeen: (hex) =>
+                seen.contains(hex) || _receipted.contains(hex));
         if (wanted.isNotEmpty) {
           final want = Frame.create(
             type: FrameType.want,
@@ -575,7 +605,13 @@ class MeshNode {
     if (frame.isEncrypted) {
       final kex = _knownKex[frame.src.hex];
       if (kex == null) {
-        _events.add(NodeError('No key to decrypt from ${frame.src.short}'));
+        // Sender's key not learned yet (e.g. the message travelled further
+        // than their ANNOUNCE). Don't burn the frame — park it and retry
+        // when their ANNOUNCE arrives ([redeliverParked]).
+        if (frame.dst == myId && !store.contains(frame.msgIdHex)) {
+          store.add(frame);
+          _events.add(NodeError('No key to decrypt from ${frame.src.short}'));
+        }
         return;
       }
       try {
@@ -594,11 +630,14 @@ class MeshNode {
           final contact = ContactIdentity.fromBundle(ann.publicBundle,
               displayName: ann.displayName);
           _knownKex[contact.peerId.hex] = contact.kexPublic;
+          _knownSigning[contact.peerId.hex] = contact.signingPublic;
           // TTL is decremented once per relay: direct = announceTtl, one
           // relay = announceTtl-1, … Clamp against frames from peers with a
           // different origin TTL (older versions announce with ttl 1).
           final hops = (announceTtl - frame.ttl + 1).clamp(1, announceTtl);
           _events.add(PeerAnnounced(contact, hops: hops));
+          // Their key may unlock messages we parked before we knew them.
+          unawaited(redeliverParked(from: contact.peerId));
         } catch (_) {}
         break;
       case FrameType.text:
@@ -612,6 +651,10 @@ class MeshNode {
         _rememberDelivered(frame.msgIdHex);
         final text = utf8.decode(payload, allowMalformed: true);
         _events.add(TextReceived(frame.src, text, frame.msgIdHex));
+        // Tell the whole mesh this text arrived so relays can drop their
+        // copies, and never accept it back ourselves.
+        _tombstone(frame.msgIdHex);
+        unawaited(_broadcastReceipt(frame.msgId));
         break;
       case FrameType.ack:
         await _handleAck(frame.src, payload);
@@ -634,12 +677,77 @@ class MeshNode {
         await _handleFileChunk(frame.src, payload);
         break;
       case FrameType.receipt:
-        store.remove(MsgId.hex(payload.length >= 16
-            ? Uint8List.fromList(payload.sublist(0, 16))
-            : payload));
+        await _handleReceipt(frame, payload);
         break;
       default:
         break;
+    }
+  }
+
+  /// Domain-separated bytes the recipient signs to prove delivery of [msgId].
+  static Uint8List receiptSignedBytes(Uint8List msgId) =>
+      Uint8List.fromList([...utf8.encode('SL-RECEIPT-v1'), ...msgId]);
+
+  /// Flood a signed delivery receipt so every relay still carrying a copy of
+  /// the delivered text can drop it ("전파 삭제"). Durable-stored like texts,
+  /// so the cleanup itself also reaches long-offline phones eventually.
+  Future<void> _broadcastReceipt(Uint8List msgId) async {
+    final sig = await identity.sign(receiptSignedBytes(msgId));
+    final payload = Uint8List(16 + 64)
+      ..setRange(0, 16, msgId)
+      ..setRange(16, 80, sig);
+    await _dispatch(router.originate(
+      type: FrameType.receipt,
+      dst: PeerId.broadcast,
+      ttl: durableTtl,
+      payload: payload,
+    ));
+  }
+
+  /// Verify and apply a delivery receipt: only the message's addressee can
+  /// produce a valid signature, so third parties cannot censor-by-receipt.
+  Future<void> _handleReceipt(Frame frame, Uint8List payload) async {
+    if (payload.length < 80) return; // malformed
+    final msgId = Uint8List.fromList(payload.sublist(0, 16));
+    final sig = Uint8List.fromList(payload.sublist(16, 80));
+    final hex = MsgId.hex(msgId);
+    if (_receipted.contains(hex)) return;
+    final signer = _knownSigning[frame.src.hex];
+    if (signer == null) return; // can't verify → keep relaying, don't delete
+    if (!await Identity.verify(receiptSignedBytes(msgId), sig, signer)) {
+      return; // forged/corrupt
+    }
+    // If we still hold the message, the receipt must come from its addressee.
+    final held = store.frameFor(hex);
+    if (held != null && held.dst != frame.src) return;
+    _tombstone(hex);
+  }
+
+  /// Bury a delivered msgId: drop our stored copy and refuse to store, relay
+  /// or re-pull it ever again.
+  void _tombstone(String hex) {
+    store.remove(hex);
+    _receipted.add(hex);
+    while (_receipted.length > _receiptedCap) {
+      _receipted.remove(_receipted.first);
+    }
+  }
+
+  /// Re-apply persisted receipts after the store is seeded (app restart), so
+  /// tombstones survive restarts without a table of their own.
+  Future<void> rebuildReceipts() async {
+    for (final f in store.allFrames()) {
+      if (f.type == FrameType.receipt) await _handleReceipt(f, f.payload);
+    }
+  }
+
+  /// Retry frames addressed to us that were parked because the sender's key
+  /// was unknown at the time (delivery removes them via the tombstone).
+  Future<void> redeliverParked({PeerId? from}) async {
+    for (final f in store.allFrames()) {
+      if (f.dst != myId) continue;
+      if (from != null && f.src != from) continue;
+      await _deliverLocal(f);
     }
   }
 

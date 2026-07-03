@@ -174,6 +174,17 @@ class StoreForward {
     _store.removeWhere((_, e) => e.expiry != null && e.expiry! <= now);
   }
 
+  /// The stored frame for [msgIdHex], if any (durable or unexpired).
+  Frame? frameFor(String msgIdHex) {
+    final e = _store[msgIdHex];
+    if (e == null) return null;
+    if (e.expiry != null && e.expiry! <= nowMs()) return null;
+    return e.frame;
+  }
+
+  /// Every stored frame (used to re-apply persisted receipts on restart).
+  List<Frame> allFrames() => _store.values.map((e) => e.frame).toList();
+
   int get length => _store.length;
   void clear() => _store.clear();
 }

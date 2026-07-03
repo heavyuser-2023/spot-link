@@ -5,6 +5,8 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:spot_link/core/crypto/identity.dart';
 import 'package:spot_link/core/mesh_node.dart';
+import 'package:spot_link/core/model/frame.dart';
+import 'package:spot_link/core/model/peer_id.dart';
 
 import 'fake_transport.dart';
 
@@ -239,6 +241,95 @@ void main() {
     expect(got.meta.name, 'secret.bin');
     expect(got.bytes, fileBytes);
     expect(got.from, idB.peerId == got.from ? got.from : idA.peerId);
+  });
+
+  test('signed receipt purges relay copies; forged receipt is rejected',
+      () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final idC = await Identity.generate();
+    final a = await makeNode(radio, idA, 'Alice');
+    final b = await makeNode(radio, idB, 'Bridge');
+    final c = await makeNode(radio, idC, 'Carol');
+
+    // A-B connected; C is away. A/C know each other (e.g. QR) — C needs A's
+    // key to decrypt on arrival (A's announce only floods 3 hops / 15s).
+    a.node.addContact(ContactIdentity.fromBundle(idC.publicBundle));
+    c.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await settle();
+
+    final msgId = (await a.node.sendText(idC.peerId, '전파 삭제 테스트'))!;
+    await settle();
+    // B relays + parks a copy for C. Keep its bytes for the zombie test.
+    expect(b.node.store.contains(msgId), isTrue);
+    final parkedBytes = b.node.store.frameFor(msgId)!.encode();
+
+    // A forged receipt from B (knows the msgId but is not the addressee)
+    // must NOT bury the message.
+    final forged = Frame.create(
+      type: FrameType.receipt,
+      ttl: 8,
+      src: idB.peerId,
+      dst: PeerId.broadcast,
+      payload: Uint8List(80), // garbage signature
+    );
+    radio.nodes[idB.peerId.hex]!.injectRaw(forged.encode());
+    await settle();
+    expect(b.node.store.contains(msgId), isTrue);
+
+    // C shows up next to B: parked text is handed over, C floods a SIGNED
+    // receipt, and every carrier drops its copy.
+    radio.connect(idB.peerId, idC.peerId);
+    final rx = await waitFor<TextReceived>(c, (e) => e.msgId == msgId);
+    expect(rx.text, '전파 삭제 테스트');
+    final deadline = DateTime.now().add(const Duration(seconds: 2));
+    while ((b.node.store.contains(msgId) || a.node.store.contains(msgId)) &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(b.node.store.contains(msgId), isFalse,
+        reason: '중계 노드의 사본이 서명 RECEIPT로 정리되어야 한다');
+    expect(a.node.store.contains(msgId), isFalse,
+        reason: '발신자 사본도 정리되어야 한다');
+
+    // Zombie block: an offline phone resurfacing with the ORIGINAL frame
+    // must not get it re-stored/re-relayed at B (tombstoned).
+    radio.nodes[idB.peerId.hex]!.injectRaw(parkedBytes);
+    await settle();
+    expect(b.node.store.contains(msgId), isFalse);
+  });
+
+  test('message from an unknown sender is parked and delivered once their '
+      'ANNOUNCE arrives', () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'Alice');
+    final b = await makeNode(radio, idB, 'Bob');
+
+    // A knows B, but B has never heard of A. Craft the encrypted text and
+    // inject it into B directly (as if it arrived from far away, beyond A's
+    // announce range).
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    final msgId = (await a.node.sendText(idB.peerId, '먼 곳에서 온 메시지'))!;
+    final textBytes = a.node.store.frameFor(msgId)!.encode();
+    radio.nodes[idB.peerId.hex]!.injectRaw(textBytes);
+    await settle();
+
+    // Not delivered (no key), but parked — not burned.
+    expect(b.ofType<TextReceived>(), isEmpty);
+    expect(b.node.store.contains(msgId), isTrue);
+
+    // Now A comes into range: its ANNOUNCE teaches B the key, and the parked
+    // message is delivered.
+    radio.connect(idA.peerId, idB.peerId);
+    final rx = await waitFor<TextReceived>(b, (e) => e.msgId == msgId);
+    expect(rx.text, '먼 곳에서 온 메시지');
+    // Delivered + receipted: the parked copy is gone.
+    await settle();
+    expect(b.node.store.contains(msgId), isFalse);
   });
 
   test('duplicate flooding does not double-deliver', () async {
