@@ -78,6 +78,34 @@ void main() {
     final failed =
         await waitFor<TextDeliveryFailed>(a, (e) => e.msgId == msgId);
     expect(failed.msgId, msgId);
+    // Giving up on LIVE retries must not evict the frame from the durable
+    // store — it keeps riding along for eventual (DTN) delivery.
+    expect(a.node.store.contains(msgId!), isTrue);
+  });
+
+  test('queued text delivers on a later encounter and confirms late', () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'A',
+        retransmit: const Duration(milliseconds: 30), maxAttempts: 2);
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+
+    // No route: live retries exhaust and the text is parked (queued).
+    final msgId = await a.node.sendText(idB.peerId, '언젠가 도착');
+    await waitFor<TextDeliveryFailed>(a, (e) => e.msgId == msgId);
+
+    // B appears later: HAVE/WANT sync hands over the parked text, and the
+    // late ACK flips the sender to delivered.
+    final b = await makeNode(radio, idB, 'B');
+    radio.connect(idA.peerId, idB.peerId);
+    final rx = await waitFor<TextReceived>(b, (e) => e.msgId == msgId);
+    expect(rx.text, '언젠가 도착');
+    final confirmed =
+        await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == msgId);
+    expect(confirmed.msgId, msgId);
+    // Delivered: the parked copy is finally released from the store.
+    expect(a.node.store.contains(msgId!), isFalse);
   });
 
   test('retransmit stops once delivered (no failure after ack)', () async {

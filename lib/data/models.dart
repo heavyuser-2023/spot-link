@@ -4,7 +4,19 @@ enum MsgDirection { incoming, outgoing }
 
 enum MsgKind { text, file }
 
-enum MsgStatus { sending, sent, delivered, failed, receiving, received }
+// Values are persisted by index — append only, never reorder.
+enum MsgStatus {
+  sending,
+  sent,
+  delivered,
+  failed,
+  receiving,
+  received,
+
+  /// No live route right now; parked in the durable store-and-forward
+  /// mailbox and delivered automatically at the next encounter.
+  queued,
+}
 
 /// A persisted chat message (text or file) in a conversation with one peer.
 class ChatMessage {

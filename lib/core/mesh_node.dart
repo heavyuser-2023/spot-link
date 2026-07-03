@@ -248,8 +248,10 @@ class MeshNode {
       pending.attempts++;
       if (pending.attempts > maxTextAttempts) {
         done.add(entry.key);
-        store.remove(entry.key);
-        // Don't report failure if a late ACK already confirmed delivery.
+        // Live retransmits are over, but the frame STAYS in the durable
+        // store: it keeps riding along to every device we meet until the
+        // recipient's ACK comes back ("언젠가 전달"). The UI shows this as
+        // queued, and flips to delivered when the late ACK arrives.
         if (!_confirmedText.contains(entry.key)) {
           _events.add(TextDeliveryFailed(entry.key));
         }

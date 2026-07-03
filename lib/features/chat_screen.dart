@@ -323,6 +323,13 @@ class _Bubble extends StatelessWidget {
                       style: TextStyle(
                           color: scheme.onErrorContainer, fontSize: 11)),
                 ),
+              if (message.status == MsgStatus.queued)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text('상대를 만나면 자동 전달',
+                      style: TextStyle(
+                          color: fg.withValues(alpha: 0.7), fontSize: 11)),
+                ),
             ],
           ),
         ),
@@ -371,6 +378,7 @@ class _Bubble extends StatelessWidget {
       MsgStatus.sent => (Icons.check, '전송됨', fg),
       MsgStatus.delivered => (Icons.done_all, '전달됨', fg),
       MsgStatus.failed => (Icons.error_outline, '실패', scheme.error),
+      MsgStatus.queued => (Icons.schedule_send, '전달 대기', fg),
       _ => (Icons.check, '전송됨', fg),
     };
     return Semantics(

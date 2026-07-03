@@ -292,7 +292,10 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
       case DeliveryConfirmed(:final msgId):
         await _applyStatus(msgId, MsgStatus.delivered);
       case TextDeliveryFailed(:final msgId):
-        await _applyStatus(msgId, MsgStatus.failed);
+        // Live retries are exhausted but the text stays parked in the durable
+        // relay store — show "전달 대기", not a scary failure. A late ACK
+        // arrives as DeliveryConfirmed and flips it to delivered.
+        await _applyStatus(msgId, MsgStatus.queued);
       case FileOffered(:final from, :final meta):
         await _onFileOffered(from, meta);
       case FileProgress(:final transferId, :final progress):
