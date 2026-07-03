@@ -32,16 +32,22 @@ void main() {
     expect(MsgId.hex(inv.first), f.msgIdHex);
   });
 
-  test('does not store link-local frames', () {
+  test('does not store link-local or presence frames', () {
     final s = makeStore();
-    final f = Frame.create(
-      type: FrameType.announce,
-      ttl: 1,
-      src: pid(1),
-      dst: pid(2),
-      payload: Uint8List(0),
-    );
-    s.add(f);
+    for (final type in [
+      FrameType.announce, // routed but ephemeral: never store presence
+      FrameType.have,
+      FrameType.want,
+    ]) {
+      final f = Frame.create(
+        type: type,
+        ttl: 1,
+        src: pid(1),
+        dst: pid(2),
+        payload: Uint8List(0),
+      );
+      s.add(f);
+    }
     expect(s.length, 0);
   });
 

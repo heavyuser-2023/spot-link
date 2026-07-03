@@ -5,7 +5,7 @@ import 'peer_id.dart';
 
 /// Message types carried in a [Frame]. See docs/ARCHITECTURE.md §6.
 enum FrameType {
-  announce(0x01), // link-local: identity + version exchange
+  announce(0x01), // mesh-flooded presence + identity (TTL-bounded, see node)
   text(0x02), // e2e: text message
   fileMeta(0x03), // e2e: start of a file transfer
   fileChunk(0x04), // e2e: a file chunk
@@ -26,10 +26,7 @@ enum FrameType {
 
   /// Link-local frames hop between direct neighbours and are not relayed
   /// nor end-to-end encrypted.
-  bool get isLinkLocal =>
-      this == FrameType.announce ||
-      this == FrameType.have ||
-      this == FrameType.want;
+  bool get isLinkLocal => this == FrameType.have || this == FrameType.want;
 }
 
 /// Bit flags in the frame header.

@@ -58,6 +58,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   final List<Contact> _contacts = [];
   final Map<String, int> _lastSeen = {}; // peerHex -> epoch ms of last announce
+  final Map<String, int> _lastHops = {}; // peerHex -> mesh distance (1=direct)
   final Map<String, int> _unread = {}; // peerHex -> unread count
   final Map<String, List<ChatMessage>> _conversations = {};
   final Map<String, ChatMessage> _lastMessage = {}; // peerHex -> latest msg
@@ -116,6 +117,9 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   int get nearbyCount =>
       _contacts.where((c) => isNearby(c.peerHex)).length;
+
+  /// Mesh distance to a nearby peer: 1 = direct, 2 = one relay between us, …
+  int hopsTo(String peerHex) => _lastHops[peerHex] ?? 1;
 
   List<ChatMessage> conversation(String peerHex) =>
       List.unmodifiable(_conversations[peerHex] ?? const []);
@@ -247,9 +251,10 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
         linkCount = count;
         BackgroundService.updateStatus(count);
         notifyListeners();
-      case PeerAnnounced(:final contact):
+      case PeerAnnounced(:final contact, :final hops):
         _lastSeen[contact.peerId.hex] =
             DateTime.now().millisecondsSinceEpoch;
+        _lastHops[contact.peerId.hex] = hops;
         await _rememberAnnounced(contact);
         notifyListeners();
       case TextReceived(:final from, :final text, :final msgId):

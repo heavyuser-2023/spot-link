@@ -24,7 +24,10 @@ sealed class NodeEvent {}
 
 class PeerAnnounced extends NodeEvent {
   final ContactIdentity contact;
-  PeerAnnounced(this.contact);
+
+  /// Mesh distance: 1 = direct neighbour, 2 = one relay between us, …
+  final int hops;
+  PeerAnnounced(this.contact, {this.hops = 1});
 }
 
 class LinksChanged extends NodeEvent {
@@ -151,6 +154,12 @@ class MeshNode {
   /// How often we re-announce presence to neighbours so a peer that walks away
   /// can be aged out of "nearby". Also refreshes contact metadata.
   static const Duration announceInterval = Duration(seconds: 15);
+
+  /// Presence floods this many hops so peers reachable via relays show up as
+  /// "주변 · n홉". Deliberately smaller than [Router.defaultTtl]: presence is
+  /// chatty (every node, every 15s) and its privacy blast-radius should stay
+  /// small, while messages can still travel the full 7 hops.
+  static const int announceTtl = 3;
   Timer? _announceTimer;
 
   /// Text messages awaiting an end-to-end ACK, retransmitted until confirmed.
@@ -248,16 +257,7 @@ class MeshNode {
 
   Future<void> _broadcastAnnounce() async {
     if (transport.linkCount == 0) return;
-    final ann = Announce(
-        publicBundle: identity.publicBundle, displayName: displayName);
-    final frame = Frame.create(
-      type: FrameType.announce,
-      ttl: 1,
-      src: myId,
-      dst: PeerId.broadcast,
-      payload: ann.encode(),
-    );
-    await transport.broadcast(frame.encode());
+    await transport.broadcast(_announceFrame().encode());
   }
 
   Future<void> stop() async {
@@ -292,15 +292,7 @@ class MeshNode {
   /// list updates without waiting for a reconnect.
   Future<void> updateDisplayName(String name) async {
     displayName = name;
-    final ann = Announce(publicBundle: identity.publicBundle, displayName: name);
-    final frame = Frame.create(
-      type: FrameType.announce,
-      ttl: 1,
-      src: myId,
-      dst: PeerId.broadcast,
-      payload: ann.encode(),
-    );
-    await transport.broadcast(frame.encode());
+    await transport.broadcast(_announceFrame().encode());
   }
 
   // ---------------------------------------------------------------------------
@@ -462,17 +454,22 @@ class MeshNode {
     }
   }
 
-  Future<void> _sendAnnounce(String linkId) async {
+  /// Build a presence frame through the router so our own msgId is marked
+  /// seen — a flooded announce that loops back to us must be dropped, not
+  /// delivered or re-relayed.
+  Frame _announceFrame() {
     final ann = Announce(
         publicBundle: identity.publicBundle, displayName: displayName);
-    final frame = Frame.create(
+    return router.originate(
       type: FrameType.announce,
-      ttl: 1,
-      src: myId,
       dst: PeerId.broadcast,
       payload: ann.encode(),
+      ttl: announceTtl,
     );
-    await transport.sendToLink(linkId, frame.encode());
+  }
+
+  Future<void> _sendAnnounce(String linkId) async {
+    await transport.sendToLink(linkId, _announceFrame().encode());
   }
 
   Future<void> _sendHave(String linkId) async {
@@ -519,7 +516,11 @@ class MeshNode {
       }
 
       if (decision.relay != null) {
-        store.add(decision.relay!);
+        // Presence is ephemeral: relay it live but never store-and-forward it
+        // (a stale "nearby" delivered hours later would be a lie).
+        if (frame.type != FrameType.announce) {
+          store.add(decision.relay!);
+        }
         await transport.broadcast(decision.relay!.encode(),
             exceptLinkId: pkt.link.id);
       }
@@ -533,15 +534,6 @@ class MeshNode {
 
   Future<void> _handleLinkLocal(Frame frame, String linkId) async {
     switch (frame.type) {
-      case FrameType.announce:
-        try {
-          final ann = Announce.decode(frame.payload);
-          final contact = ContactIdentity.fromBundle(ann.publicBundle,
-              displayName: ann.displayName);
-          _knownKex[contact.peerId.hex] = contact.kexPublic;
-          _events.add(PeerAnnounced(contact));
-        } catch (_) {}
-        break;
       case FrameType.have:
         final remoteHave = MsgIdList.decode(frame.payload);
         final wanted = store.selectWanted(remoteHave,
@@ -585,6 +577,20 @@ class MeshNode {
     }
 
     switch (frame.type) {
+      case FrameType.announce:
+        if (frame.src == myId) break; // our own flood echoed back
+        try {
+          final ann = Announce.decode(payload);
+          final contact = ContactIdentity.fromBundle(ann.publicBundle,
+              displayName: ann.displayName);
+          _knownKex[contact.peerId.hex] = contact.kexPublic;
+          // TTL is decremented once per relay: direct = announceTtl, one
+          // relay = announceTtl-1, … Clamp against frames from peers with a
+          // different origin TTL (older versions announce with ttl 1).
+          final hops = (announceTtl - frame.ttl + 1).clamp(1, announceTtl);
+          _events.add(PeerAnnounced(contact, hops: hops));
+        } catch (_) {}
+        break;
       case FrameType.text:
         // Always re-ACK so a retransmitting sender can stop, but only surface a
         // given message to the app once (a re-pulled store-and-forward frame

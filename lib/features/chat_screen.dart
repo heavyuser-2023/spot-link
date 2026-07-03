@@ -114,6 +114,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final name = contact?.displayName ?? PeerId.fromHex(widget.peerHex).short;
     final messages = c.conversation(widget.peerHex);
     final nearby = c.isNearby(widget.peerHex);
+    final hops = c.hopsTo(widget.peerHex);
 
     // Auto-scroll when a new message arrives and we're already near the bottom.
     if (messages.length != _lastCount) {
@@ -143,7 +144,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   Text(name,
                       maxLines: 1, overflow: TextOverflow.ellipsis),
                   Text(
-                    nearby ? '주변에 있음' : '오프라인 · 전달 대기',
+                    nearby
+                        ? (hops <= 1 ? '주변에 있음' : '주변 · $hops홉 경유')
+                        : '오프라인 · 전달 대기',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],

@@ -63,6 +63,7 @@ class _PersonTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.watch<MeshController>();
     final nearby = c.isNearby(contact.peerHex);
+    final hops = c.hopsTo(contact.peerHex);
     return ListTile(
       leading: Stack(
         clipBehavior: Clip.none,
@@ -80,7 +81,8 @@ class _PersonTile extends StatelessWidget {
                 width: 14,
                 height: 14,
                 decoration: BoxDecoration(
-                  color: Colors.green,
+                  // Green = direct radio range, amber = reachable via relays.
+                  color: hops <= 1 ? Colors.green : Colors.amber,
                   shape: BoxShape.circle,
                   border: Border.all(
                       color: Theme.of(context).colorScheme.surface, width: 2),
@@ -103,7 +105,8 @@ class _PersonTile extends StatelessWidget {
         ],
       ),
       subtitle: Text(
-        '${contact.peerId.short} · ${nearby ? "주변에 있음" : "오프라인"}',
+        '${contact.peerId.short} · '
+        '${nearby ? (hops <= 1 ? "주변에 있음" : "주변 · $hops홉 경유") : "오프라인"}',
         style: Theme.of(context).textTheme.bodySmall,
       ),
       trailing: IconButton(

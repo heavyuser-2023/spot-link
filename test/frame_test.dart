@@ -104,7 +104,9 @@ void main() {
     });
 
     test('link-local classification', () {
-      expect(FrameType.announce.isLinkLocal, isTrue);
+      // ANNOUNCE is routed (mesh-flooded presence) since the multihop
+      // presence feature — only HAVE/WANT stay link-local.
+      expect(FrameType.announce.isLinkLocal, isFalse);
       expect(FrameType.have.isLinkLocal, isTrue);
       expect(FrameType.want.isLinkLocal, isTrue);
       expect(FrameType.text.isLinkLocal, isFalse);

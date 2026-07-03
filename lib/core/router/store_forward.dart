@@ -24,9 +24,10 @@ class StoreForward {
   });
 
   /// Store a frame for later forwarding. End-to-end (routable) frames only;
-  /// link-local frames are never stored.
+  /// link-local frames are never stored, and neither is presence — a stale
+  /// ANNOUNCE delivered hours later would show a false "nearby".
   void add(Frame frame) {
-    if (frame.type.isLinkLocal) return;
+    if (frame.type.isLinkLocal || frame.type == FrameType.announce) return;
     prune();
     final key = frame.msgIdHex;
     if (_store.containsKey(key)) {

@@ -100,6 +100,41 @@ void main() {
     expect(rx.text, 'hi via announce');
   });
 
+  test('presence floods over relays: A sees C at 2 hops (A-B-C line)',
+      () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final idC = await Identity.generate();
+    final a = await makeNode(radio, idA, 'Alice');
+    final b = await makeNode(radio, idB, 'Bridge');
+    final c = await makeNode(radio, idC, 'Carol');
+
+    // Line topology: A <-> B <-> C (A and C are out of radio range).
+    radio.connect(idA.peerId, idB.peerId);
+    radio.connect(idB.peerId, idC.peerId);
+
+    // A hears B directly (1 hop) and C via B's relay (2 hops).
+    final annB = await waitFor<PeerAnnounced>(
+        a, (e) => e.contact.peerId == idB.peerId);
+    expect(annB.hops, 1);
+    final annC = await waitFor<PeerAnnounced>(
+        a, (e) => e.contact.peerId == idC.peerId);
+    expect(annC.hops, 2);
+    expect(annC.contact.displayName, 'Carol');
+
+    // The relayed announce carried C's keys: A can message C with no QR
+    // and no manual key exchange, relayed end-to-end encrypted through B.
+    await settle();
+    final msgId = await a.node.sendText(idC.peerId, '2홉 안녕!');
+    expect(msgId, isNotNull);
+    final rx = await waitFor<TextReceived>(c, (e) => true);
+    expect(rx.text, '2홉 안녕!');
+    expect(rx.from, idA.peerId);
+    // B relayed but never saw the plaintext (no TextReceived on B).
+    expect(b.ofType<TextReceived>(), isEmpty);
+  });
+
   test('multi-hop: A -> R -> B (A and B not directly linked)', () async {
     final radio = FakeRadio();
     final idA = await Identity.generate();
