@@ -9,7 +9,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-import '../core/ble/mesh_transport.dart' show RadioStatus;
+import '../core/ble/mesh_transport.dart' show RadioStatus, RssiSample;
 import '../core/crypto/identity.dart';
 import '../core/mesh_node.dart';
 import '../core/model/frame.dart';
@@ -60,6 +60,12 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   final List<Contact> _contacts = [];
   final Map<String, int> _lastSeen = {}; // peerHex -> epoch ms of last announce
   final Map<String, int> _lastHops = {}; // peerHex -> mesh distance (1=direct)
+
+  /// Smoothed signal strength per peer. Raw BLE RSSI jitters wildly, so an
+  /// exponential moving average keeps the proximity UI from twitching.
+  final Map<String, double> _rssi = {};
+  final Map<String, int> _rssiAt = {}; // peerHex -> epoch ms of last sample
+  static const Duration _rssiTtl = Duration(seconds: 40);
   final Map<String, int> _unread = {}; // peerHex -> unread count
   final Map<String, List<ChatMessage>> _conversations = {};
   final Map<String, ChatMessage> _lastMessage = {}; // peerHex -> latest msg
@@ -72,6 +78,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   Timer? _presenceTimer;
   StreamSubscription? _sub;
+  StreamSubscription? _rssiSub;
   StreamSubscription? _availabilitySub;
   bool _restarting = false;
 
@@ -121,6 +128,27 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Mesh distance to a nearby peer: 1 = direct, 2 = one relay between us, …
   int hopsTo(String peerHex) => _lastHops[peerHex] ?? 1;
+
+  void _onRssi(RssiSample s) {
+    final peer = s.peer;
+    if (peer == null) return; // unattributable reading
+    final hex = peer.hex;
+    final old = _rssi[hex];
+    _rssi[hex] = old == null ? s.rssi.toDouble() : old * 0.6 + s.rssi * 0.4;
+    _rssiAt[hex] = DateTime.now().millisecondsSinceEpoch;
+    notifyListeners();
+  }
+
+  /// Smoothed RSSI (dBm) for a direct neighbour, or null when we have no
+  /// fresh reading (multihop peers, or the radio went quiet).
+  int? rssiOf(String peerHex) {
+    final at = _rssiAt[peerHex];
+    if (at == null) return null;
+    if (DateTime.now().millisecondsSinceEpoch - at > _rssiTtl.inMilliseconds) {
+      return null;
+    }
+    return _rssi[peerHex]?.round();
+  }
 
   /// Relay mailbox stats for the settings UI.
   int get relayStoreCount => node.store.durableCount;
@@ -216,6 +244,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     _sub = node.events.listen(_onEvent);
+    _rssiSub = node.rssiSamples.listen(_onRssi);
     started = await node.start();
     if (!started) {
       lastError = 'Bluetooth unavailable';
@@ -406,6 +435,8 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     _unread.remove(peerHex);
     _lastSeen.remove(peerHex);
     _lastHops.remove(peerHex);
+    _rssi.remove(peerHex);
+    _rssiAt.remove(peerHex);
     if (_openPeer == peerHex) _openPeer = null;
     node.removeContact(PeerId.fromHex(peerHex));
     notifyListeners();
@@ -761,6 +792,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _presenceTimer?.cancel();
     _sub?.cancel();
+    _rssiSub?.cancel();
     _availabilitySub?.cancel();
     _errors.close();
     node.dispose();

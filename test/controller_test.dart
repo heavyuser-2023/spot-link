@@ -216,6 +216,36 @@ void main() {
     c.dispose();
   });
 
+  test('rssiOf smooths readings with an EMA', () async {
+    final id = await Identity.generate();
+    final radio = FakeRadio();
+    final t = radio.create(id.peerId);
+    final c = MeshController(
+      identity: id,
+      displayName: 'Me',
+      db: AppDatabase(overridePath: p.join(tmp.path, 'c${counter++}.db')),
+      identityStore: IdentityStore(),
+      node: MeshNode(identity: id, displayName: 'Me', transport: t),
+    );
+    await c.init();
+    final bob = await Identity.generate();
+    final bobHex = bob.peerId.hex;
+
+    expect(c.rssiOf(bobHex), isNull); // no reading yet
+
+    t.emitRssi(bob.peerId, -60);
+    await pumpEventQueue();
+    expect(c.rssiOf(bobHex), -60);
+
+    // 0.6 * -60 + 0.4 * -80 = -68: jumpy raw readings get damped.
+    t.emitRssi(bob.peerId, -80);
+    await pumpEventQueue();
+    expect(c.rssiOf(bobHex), -68);
+
+    await c.node.dispose();
+    c.dispose();
+  });
+
   test('deleteContact removes contact, conversation and db rows', () async {
     final (c, _) = await build();
     final bob = await Identity.generate();

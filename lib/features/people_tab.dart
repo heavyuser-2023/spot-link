@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -34,6 +36,10 @@ class PeopleTab extends StatelessWidget {
               padding: const EdgeInsets.only(top: 4, bottom: 88),
               children: [
                 if (nearby.isNotEmpty) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: _ProximityRadar(peers: nearby),
+                  ),
                   _SectionHeader(
                       label: '주변', count: nearby.length, live: true),
                   ...nearby.map((x) => _PersonTile(contact: x)),
@@ -51,6 +57,180 @@ class PeopleTab extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 소나(레이더) 뷰: 나를 중심으로 한 동심원 위에 주변 사람을 배치한다.
+/// 신호가 강할수록(가까울수록) 안쪽 링, 멀티홉 상대는 최외곽 점선 링.
+/// 아바타를 탭하면 바로 대화가 열린다 — "누가 얼마나 가까이 있나"를
+/// 목록을 읽지 않고 한눈에 보는 화면.
+class _ProximityRadar extends StatelessWidget {
+  final List<Contact> peers;
+  const _ProximityRadar({required this.peers});
+
+  static const double _height = 264;
+  static const _ringFractions = [0.30, 0.53, 0.76, 0.98];
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.watch<MeshController>();
+    final scheme = Theme.of(context).colorScheme;
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        height: _height,
+        child: LayoutBuilder(builder: (context, box) {
+          final center = Offset(box.maxWidth / 2, _height / 2);
+          final maxR = math.min(box.maxWidth, _height) / 2 - 30;
+
+          return Stack(
+            children: [
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: _RadarPainter(
+                    center: center,
+                    radii: [for (final f in _ringFractions) maxR * f],
+                    ringColor: scheme.outlineVariant,
+                    fillColor: scheme.primary,
+                  ),
+                ),
+              ),
+              // 나 (중심)
+              Positioned(
+                left: center.dx - 18,
+                top: center.dy - 18,
+                child: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: scheme.primary,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: scheme.surface, width: 2.5),
+                  ),
+                  child: Icon(Icons.person, size: 20, color: scheme.onPrimary),
+                ),
+              ),
+              for (var i = 0; i < peers.length; i++)
+                _radarAvatar(context, c, peers[i], i, center, maxR),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 6,
+                child: Text(
+                  '가까울수록 중앙에 표시됩니다',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelSmall
+                      ?.copyWith(color: scheme.outline),
+                ),
+              ),
+            ],
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _radarAvatar(BuildContext context, MeshController c, Contact peer,
+      int index, Offset center, double maxR) {
+    final bucket =
+        proximityBucket(c.rssiOf(peer.peerHex), c.hopsTo(peer.peerHex));
+    final radius = maxR * _ringFractions[bucket.ring];
+    // 고정 해시 + 골든앵글 분산: 위치가 안정적이면서 서로 겹치지 않게.
+    var hash = 0;
+    for (final u in peer.peerHex.codeUnits) {
+      hash = (hash * 31 + u) & 0x7fffffff;
+    }
+    final angle = (hash % 360) * math.pi / 180 + index * 2.399;
+    final pos = center +
+        Offset(math.cos(angle) * radius, math.sin(angle) * radius * 0.82);
+
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 700),
+      curve: Curves.easeOutCubic,
+      left: pos.dx - 30,
+      top: pos.dy - 22,
+      width: 60,
+      child: GestureDetector(
+        onTap: () =>
+            pushWithController(context, ChatScreen(peerHex: peer.peerHex)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: Theme.of(context).colorScheme.surface, width: 2),
+              ),
+              child: CircleAvatar(
+                radius: 17,
+                backgroundColor: avatarColor(peer.peerHex),
+                foregroundColor: Colors.white,
+                child: Text(initialsOf(peer.displayName),
+                    style: const TextStyle(fontSize: 13)),
+              ),
+            ),
+            Text(
+              peer.displayName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RadarPainter extends CustomPainter {
+  final Offset center;
+  final List<double> radii;
+  final Color ringColor;
+  final Color fillColor;
+  _RadarPainter(
+      {required this.center,
+      required this.radii,
+      required this.ringColor,
+      required this.fillColor});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // 은은한 중심 발광: "내 주변" 공간감.
+    canvas.drawCircle(
+      center,
+      radii.last,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          fillColor.withValues(alpha: 0.10),
+          fillColor.withValues(alpha: 0.0),
+        ]).createShader(Rect.fromCircle(center: center, radius: radii.last)),
+    );
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    for (var i = 0; i < radii.length; i++) {
+      stroke.color = ringColor.withValues(alpha: i == radii.length - 1 ? 0.9 : 0.6);
+      final rect = Rect.fromCenter(
+          center: center, width: radii[i] * 2, height: radii[i] * 2 * 0.82);
+      if (i == radii.length - 1) {
+        // 최외곽(멀리/멀티홉)은 점선: 전파 너머의 영역임을 암시.
+        const dashes = 36;
+        for (var d = 0; d < dashes; d++) {
+          final a0 = d * 2 * math.pi / dashes;
+          canvas.drawArc(rect, a0, math.pi / dashes, false, stroke);
+        }
+      } else {
+        canvas.drawOval(rect, stroke);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_RadarPainter old) =>
+      old.center != center || old.radii.length != radii.length;
 }
 
 class _SectionHeader extends StatelessWidget {
@@ -140,7 +320,7 @@ class _PersonTile extends StatelessWidget {
       ),
       subtitle: Text(
         '${contact.peerId.short} · '
-        '${nearby ? (hops <= 1 ? "주변에 있음" : "주변 · $hops홉 경유") : "오프라인"}',
+        '${nearby ? proximityBucket(c.rssiOf(contact.peerHex), hops).label : "오프라인"}',
         style: Theme.of(context).textTheme.bodySmall,
       ),
       trailing: IconButton(

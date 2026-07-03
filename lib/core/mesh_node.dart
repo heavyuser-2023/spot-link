@@ -229,6 +229,9 @@ class MeshNode {
   PeerId get myId => identity.peerId;
   int get linkCount => transport.linkCount;
 
+  /// Signal-strength readings for direct neighbours (proximity UI).
+  Stream<RssiSample> get rssiSamples => transport.rssiSamples;
+
   /// Register a contact so we can encrypt to / decrypt from them even before
   /// an ANNOUNCE (e.g. added by QR scan).
   void addContact(ContactIdentity contact) {
@@ -526,6 +529,15 @@ class MeshNode {
         frame = Frame.decode(pkt.frameBytes);
       } catch (_) {
         return; // malformed header/length
+      }
+
+      // A full-TTL announce came straight from this link's peer: remember who
+      // sits on the other end so RSSI polls can attribute their readings
+      // (iOS advertisements carry no id, so this is how the mapping happens).
+      if (frame.type == FrameType.announce &&
+          frame.ttl == announceTtl &&
+          pkt.link.remoteShortId == null) {
+        pkt.link.remoteShortId = frame.src;
       }
 
       if (frame.type.isLinkLocal) {

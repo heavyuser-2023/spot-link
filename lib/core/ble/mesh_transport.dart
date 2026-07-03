@@ -77,6 +77,15 @@ class LinkEvent {
   LinkEvent(this.link, this.up);
 }
 
+/// A signal-strength reading for a direct neighbour, from an advertisement
+/// or a connected-link RSSI poll. [peer] is null when the radio couldn't
+/// tell who it was (e.g. an iOS advertisement carries no id).
+class RssiSample {
+  final PeerId? peer;
+  final int rssi; // dBm, typically -30 (바로 옆) … -100 (수신 한계)
+  RssiSample(this.peer, this.rssi);
+}
+
 /// The packet-oriented transport contract the [MeshNode] depends on. The real
 /// implementation is [MeshTransport]; tests inject an in-memory fake.
 /// Coarse adapter status, for user-facing diagnostics ("Bluetooth is off"
@@ -95,6 +104,9 @@ abstract class MeshTransportInterface {
   /// powered on) and false when it stops being usable. Must be listenable
   /// before [start], so a failed first start can be retried.
   Stream<bool> get availabilityChanged;
+
+  /// Signal-strength readings for direct neighbours (드러난 거리감의 원천).
+  Stream<RssiSample> get rssiSamples;
 
   Future<bool> ensureReady();
   Future<void> start();
@@ -140,6 +152,9 @@ class MeshTransport implements MeshTransportInterface {
 
   final _inbound = StreamController<InboundPacket>.broadcast();
   final _linkEvents = StreamController<LinkEvent>.broadcast();
+  final _rssiSamples = StreamController<RssiSample>.broadcast();
+  Timer? _rssiTimer;
+  static const Duration _rssiPollInterval = Duration(seconds: 5);
 
   final Map<String, MeshLink> _links = {};
   final Set<String> _connecting = {};
@@ -160,6 +175,8 @@ class MeshTransport implements MeshTransportInterface {
   Stream<InboundPacket> get inbound => _inbound.stream;
   @override
   Stream<LinkEvent> get linkEvents => _linkEvents.stream;
+  @override
+  Stream<RssiSample> get rssiSamples => _rssiSamples.stream;
   Iterable<MeshLink> get links => _links.values;
   @override
   int get linkCount => _links.length;
@@ -215,6 +232,26 @@ class MeshTransport implements MeshTransportInterface {
       await _startAdvertising();
     }
     await _startScanning();
+    // Poll connected links for signal strength so the UI can show how close
+    // each neighbour is even after advertisements stop (connected peers
+    // usually stop advertising).
+    _rssiTimer = Timer.periodic(_rssiPollInterval, (_) => _pollRssi());
+  }
+
+  Future<void> _pollRssi() async {
+    if (!_started) return;
+    for (final link in _links.values.toList()) {
+      if (link.role != LinkRole.central || link.peripheral == null) continue;
+      if (link.remoteShortId == null) continue; // can't attribute the reading
+      try {
+        final rssi = await _central.readRSSI(link.peripheral!);
+        if (_disposed) return;
+        _rssiSamples.add(RssiSample(link.remoteShortId, rssi));
+      } catch (_) {
+        // Link died mid-read or the platform refused; the link teardown
+        // paths handle the rest.
+      }
+    }
   }
 
   /// Recover automatically when the user toggles Bluetooth off and back on:
@@ -257,6 +294,8 @@ class MeshTransport implements MeshTransportInterface {
   @override
   Future<void> stop() async {
     _started = false;
+    _rssiTimer?.cancel();
+    _rssiTimer = null;
     _dutyTimer?.cancel();
     _dutyTimer = null;
     _scanning = false;
@@ -555,6 +594,10 @@ class MeshTransport implements MeshTransportInterface {
     // Never connect to our own advertisement (can happen with some stacks).
     if (remoteId != null && remoteId == myShortId) return;
 
+    // Advertisements carry a live signal-strength reading — surface it for
+    // the proximity UI (peer is null when the adv has no manufacturer id).
+    if (!_disposed) _rssiSamples.add(RssiSample(remoteId, e.rssi));
+
     // We deliberately do NOT tie-break here. Cross-platform discovery is
     // asymmetric: iOS strips manufacturer data and puts 128-bit service UUIDs
     // in an overflow area that Android frequently cannot parse, so an iOS
@@ -680,5 +723,6 @@ class MeshTransport implements MeshTransportInterface {
     _disposed = true;
     await _inbound.close();
     await _linkEvents.close();
+    await _rssiSamples.close();
   }
 }

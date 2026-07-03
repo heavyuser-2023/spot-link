@@ -83,6 +83,19 @@ bool sameDay(int aMs, int bMs) {
   return a.year == b.year && a.month == b.month && a.day == b.day;
 }
 
+/// RSSI(+hop count) → coarse proximity: a user-facing label and a radar ring
+/// index (0 = innermost/closest … 3 = outermost). Absolute BLE distance is
+/// unreliable, so we only claim honest buckets; multihop peers always sit on
+/// the outer ring regardless of signal.
+({String label, int ring}) proximityBucket(int? rssi, int hops) {
+  if (hops > 1) return (label: '$hops홉 건너', ring: 3);
+  if (rssi == null) return (label: '주변', ring: 2);
+  if (rssi >= -55) return (label: '바로 옆', ring: 0);
+  if (rssi >= -70) return (label: '가까이', ring: 1);
+  if (rssi >= -82) return (label: '근처', ring: 2);
+  return (label: '멀리', ring: 3);
+}
+
 String humanSize(int bytes) {
   if (bytes < 1024) return '$bytes B';
   if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';

@@ -43,4 +43,18 @@ void main() {
   test('relativeTime returns 지금 for now', () {
     expect(relativeTime(DateTime.now().millisecondsSinceEpoch), '지금');
   });
+
+  test('proximityBucket maps RSSI and hops to honest buckets', () {
+    expect(proximityBucket(-40, 1), (label: '바로 옆', ring: 0));
+    expect(proximityBucket(-55, 1), (label: '바로 옆', ring: 0));
+    expect(proximityBucket(-60, 1), (label: '가까이', ring: 1));
+    expect(proximityBucket(-75, 1), (label: '근처', ring: 2));
+    expect(proximityBucket(-95, 1), (label: '멀리', ring: 3));
+    // No reading yet: honest middle bucket.
+    expect(proximityBucket(null, 1), (label: '주변', ring: 2));
+    // Multihop always sits on the outer ring, even with a strong reading
+    // from some stale direct encounter.
+    expect(proximityBucket(-40, 2), (label: '2홉 건너', ring: 3));
+    expect(proximityBucket(null, 3), (label: '3홉 건너', ring: 3));
+  });
 }

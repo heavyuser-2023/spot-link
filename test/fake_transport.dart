@@ -51,6 +51,7 @@ class FakeTransport implements MeshTransportInterface {
   final _inbound = StreamController<InboundPacket>.broadcast();
   final _linkEvents = StreamController<LinkEvent>.broadcast();
   final _availability = StreamController<bool>.broadcast();
+  final _rssi = StreamController<RssiSample>.broadcast();
 
   // linkId (== neighbour hex) -> neighbour id
   final Map<String, PeerId> _neighbours = {};
@@ -86,6 +87,12 @@ class FakeTransport implements MeshTransportInterface {
 
   /// Test hook: simulate the radio becoming (un)usable.
   void setAvailability(bool ok) => _availability.add(ok);
+
+  @override
+  Stream<RssiSample> get rssiSamples => _rssi.stream;
+
+  /// Test hook: simulate a signal-strength reading for [peer].
+  void emitRssi(PeerId peer, int rssi) => _rssi.add(RssiSample(peer, rssi));
 
   /// Test hook: what [ensureReady] reports (e.g. false while the OS
   /// permission prompt is still open).
