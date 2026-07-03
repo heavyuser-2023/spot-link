@@ -108,8 +108,51 @@ class MeTab extends StatelessWidget {
             onChanged: (v) => context.read<MeshController>().setPowerSaver(v),
           ),
         ),
+        const SizedBox(height: 8),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.move_to_inbox_outlined),
+            title: const Text('중계 보관함'),
+            subtitle: Text(
+              c.relayStoreCount == 0
+                  ? '보관 중인 중계 메시지가 없습니다.'
+                  : '전달 대기 메시지 ${c.relayStoreCount}개 · '
+                      '${humanSize(c.relayStoreBytes)}\n'
+                      '수신자를 만나면 자동 전달되고 지워집니다.',
+            ),
+            isThreeLine: c.relayStoreCount > 0,
+            trailing: c.relayStoreCount == 0
+                ? null
+                : TextButton(
+                    onPressed: () => _confirmClearRelay(context, c),
+                    child: const Text('비우기'),
+                  ),
+          ),
+        ),
       ],
     );
+  }
+
+  Future<void> _confirmClearRelay(BuildContext context, MeshController c) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('중계 보관함 비우기'),
+        content: const Text(
+            '다른 사람에게 전달되기를 기다리는 메시지를 모두 삭제합니다.\n'
+            '삭제하면 이 기기를 통해서는 전달되지 않습니다 (다른 중계 기기가 '
+            '갖고 있다면 그쪽으로는 전달될 수 있음).'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('취소')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('비우기')),
+        ],
+      ),
+    );
+    if (ok == true) await c.clearRelayStore();
   }
 
   Future<void> _editName(BuildContext context, MeshController c) async {

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
@@ -24,7 +26,7 @@ class AppDatabase {
     }
     _db = await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE contacts (
@@ -55,9 +57,25 @@ class AppDatabase {
             'CREATE INDEX idx_messages_peer ON messages(peer_hex, timestamp)');
         await db
             .execute('CREATE INDEX idx_messages_msgid ON messages(msg_id)');
+        await _createRelayStore(db);
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) await _createRelayStore(db);
       },
     );
     return _db!;
+  }
+
+  /// Durable store-and-forward mailbox: encrypted frames we relay for others
+  /// (and our own undelivered texts), kept until delivered or purged.
+  static Future<void> _createRelayStore(Database db) async {
+    await db.execute('''
+      CREATE TABLE relay_store (
+        msg_id TEXT PRIMARY KEY,
+        frame BLOB NOT NULL,
+        stored_at INTEGER NOT NULL
+      )
+    ''');
   }
 
   // ----- Contacts -----
@@ -135,6 +153,37 @@ class AppDatabase {
     await db.update('messages', {'status': MsgStatus.failed.index},
         where: 'status IN (?, ?)',
         whereArgs: [MsgStatus.sending.index, MsgStatus.receiving.index]);
+  }
+
+  // ----- Durable relay store (store-and-forward mailbox) -----
+
+  Future<List<Uint8List>> loadRelayFrames() async {
+    final db = await _database;
+    final rows = await db.query('relay_store', orderBy: 'stored_at ASC');
+    return rows.map((r) => r['frame'] as Uint8List).toList();
+  }
+
+  Future<void> upsertRelayFrame(String msgIdHex, Uint8List frame) async {
+    final db = await _database;
+    await db.insert(
+        'relay_store',
+        {
+          'msg_id': msgIdHex,
+          'frame': frame,
+          'stored_at': DateTime.now().millisecondsSinceEpoch,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> deleteRelayFrame(String msgIdHex) async {
+    final db = await _database;
+    await db
+        .delete('relay_store', where: 'msg_id = ?', whereArgs: [msgIdHex]);
+  }
+
+  Future<void> clearRelayStore() async {
+    final db = await _database;
+    await db.delete('relay_store');
   }
 
   /// Distinct peers with at least one message, most-recent first.

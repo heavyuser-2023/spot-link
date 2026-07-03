@@ -15,10 +15,23 @@ Frame textFrame(int destByte) => Frame.create(
       payload: Uint8List.fromList([1, 2, 3]),
     );
 
+Frame chunkFrame(int destByte) => Frame.create(
+      type: FrameType.fileChunk,
+      ttl: 7,
+      src: pid(1),
+      dst: pid(destByte),
+      payload: Uint8List.fromList([1, 2, 3, 4]),
+    );
+
 void main() {
   late int clock;
-  StoreForward makeStore({int max = 512, int ttl = 1000000}) =>
-      StoreForward(nowMs: () => clock, maxEntries: max, ttlMs: ttl);
+  StoreForward makeStore(
+          {int max = 512, int ttl = 1000000, int durableMax = 4096}) =>
+      StoreForward(
+          nowMs: () => clock,
+          maxEntries: max,
+          ttlMs: ttl,
+          durableMaxEntries: durableMax);
 
   setUp(() => clock = 1000);
 
@@ -93,18 +106,38 @@ void main() {
     expect(frames.first.msgIdHex, f2.msgIdHex);
   });
 
-  test('expired entries are pruned', () {
+  test('file frames expire; text frames are durable and never expire', () {
     final s = makeStore(ttl: 1000);
-    final f = textFrame(9);
-    s.add(f);
-    expect(s.contains(f.msgIdHex), isTrue);
+    final text = textFrame(9);
+    final chunk = chunkFrame(9);
+    s.add(text);
+    s.add(chunk);
     clock += 1001;
-    expect(s.contains(f.msgIdHex), isFalse);
-    expect(s.inventory(), isEmpty);
+    expect(s.contains(chunk.msgIdHex), isFalse); // expiring tier pruned
+    expect(s.contains(text.msgIdHex), isTrue); // durable: rides forever
+    expect(s.inventory().length, 1);
   });
 
-  test('enforces max entries by evicting soonest-to-expire', () {
+  test('expiring tier enforces max entries by evicting soonest-to-expire', () {
     final s = makeStore(max: 2, ttl: 100000);
+    final f1 = chunkFrame(1);
+    s.add(f1);
+    clock += 10;
+    final f2 = chunkFrame(2);
+    s.add(f2);
+    clock += 10;
+    final f3 = chunkFrame(3);
+    s.add(f3); // should evict f1 (soonest expiry)
+    expect(s.length, 2);
+    expect(s.contains(f1.msgIdHex), isFalse);
+    expect(s.contains(f3.msgIdHex), isTrue);
+  });
+
+  test('durable tier: persistence callbacks, FIFO cap, clear', () {
+    final s = makeStore(durableMax: 2);
+    final changes = <(String, bool)>[]; // (msgId, stored?)
+    s.onDurableChanged = (id, frame) => changes.add((id, frame != null));
+
     final f1 = textFrame(1);
     s.add(f1);
     clock += 10;
@@ -112,10 +145,41 @@ void main() {
     s.add(f2);
     clock += 10;
     final f3 = textFrame(3);
-    s.add(f3); // should evict f1 (soonest expiry)
-    expect(s.length, 2);
+    s.add(f3); // cap 2: evicts the OLDEST stored (f1)
+
+    expect(s.durableCount, 2);
     expect(s.contains(f1.msgIdHex), isFalse);
-    expect(s.contains(f3.msgIdHex), isTrue);
+    expect(
+        changes,
+        containsAllInOrder([
+          (f1.msgIdHex, true),
+          (f2.msgIdHex, true),
+          (f1.msgIdHex, false), // evicted
+          (f3.msgIdHex, true),
+        ]));
+
+    // Delivered (RECEIPT) → removed + persistence notified.
+    s.remove(f2.msgIdHex);
+    expect(changes.last, (f2.msgIdHex, false));
+
+    // User purge: durable gone, no callbacks (caller clears its own db).
+    final before = changes.length;
+    s.clearDurable();
+    expect(s.durableCount, 0);
+    expect(changes.length, before);
+  });
+
+  test('seed restores durable frames without firing callbacks', () {
+    final s = makeStore();
+    final changes = <String>[];
+    s.onDurableChanged = (id, _) => changes.add(id);
+    final f = textFrame(4);
+    s.seed([f]);
+    expect(s.contains(f.msgIdHex), isTrue);
+    expect(s.durableCount, 1);
+    expect(changes, isEmpty);
+    // Seeded frames serve WANT requests like any stored frame.
+    expect(s.framesForWanted([f.msgId]).single.msgIdHex, f.msgIdHex);
   });
 
   test('remove deletes an entry (e.g. on receipt)', () {

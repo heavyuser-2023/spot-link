@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import '../core/ble/mesh_transport.dart' show RadioStatus;
 import '../core/crypto/identity.dart';
 import '../core/mesh_node.dart';
+import '../core/model/frame.dart';
 import '../core/model/peer_id.dart';
 import '../core/transfer/file_transfer.dart';
 import '../data/app_database.dart';
@@ -121,6 +122,17 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   /// Mesh distance to a nearby peer: 1 = direct, 2 = one relay between us, …
   int hopsTo(String peerHex) => _lastHops[peerHex] ?? 1;
 
+  /// Relay mailbox stats for the settings UI.
+  int get relayStoreCount => node.store.durableCount;
+  int get relayStoreBytes => node.store.durableBytes;
+
+  /// User-initiated purge of messages we are carrying for others.
+  Future<void> clearRelayStore() async {
+    node.store.clearDurable();
+    await db.clearRelayStore();
+    notifyListeners();
+  }
+
   List<ChatMessage> conversation(String peerHex) =>
       List.unmodifiable(_conversations[peerHex] ?? const []);
 
@@ -174,6 +186,24 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     // Transfers that were mid-flight when the app last died can never finish
     // now — fail them so no bubble is stuck on a spinner forever.
     await db.failStaleTransfers();
+
+    // Reload the durable store-and-forward mailbox (undelivered texts we
+    // carry for others survive restarts — "언젠가 전달"), then mirror every
+    // change back to disk.
+    final relayFrames = <Frame>[];
+    for (final bytes in await db.loadRelayFrames()) {
+      try {
+        relayFrames.add(Frame.decode(bytes));
+      } catch (_) {} // corrupt row: skip
+    }
+    node.store.seed(relayFrames);
+    node.store.onDurableChanged = (msgIdHex, frame) {
+      if (frame == null) {
+        unawaited(db.deleteRelayFrame(msgIdHex));
+      } else {
+        unawaited(db.upsertRelayFrame(msgIdHex, frame.encode()));
+      }
+    };
     // Seed the inbox with the last message of each known conversation.
     for (final hex in await db.conversationPeers()) {
       final last = await db.lastMessageFor(hex);

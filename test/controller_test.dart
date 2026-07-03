@@ -142,6 +142,48 @@ void main() {
     cb.dispose();
   });
 
+  test('durable relay store survives an app restart', () async {
+    final id = await Identity.generate();
+    final bob = await Identity.generate();
+    final dbPath = p.join(tmp.path, 'c${counter++}.db');
+    MeshController make() {
+      final radio = FakeRadio();
+      return MeshController(
+        identity: id,
+        displayName: 'Me',
+        db: AppDatabase(overridePath: dbPath),
+        identityStore: IdentityStore(),
+        node: MeshNode(
+            identity: id, displayName: 'Me', transport: radio.create(id.peerId)),
+      );
+    }
+
+    // Send a text to a known-but-offline peer: it parks in the durable store.
+    var c = make();
+    await c.init();
+    await c.addContactFromBundle(bob.publicBundle, name: 'Bob');
+    await c.sendText(bob.peerId.hex, '언젠가 도착할 메시지');
+    expect(c.node.store.durableCount, greaterThanOrEqualTo(1));
+    // Let the fire-and-forget db mirror writes land.
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    await c.node.dispose();
+    c.dispose();
+
+    // "App restart": new controller over the same database.
+    c = make();
+    await c.init();
+    expect(c.node.store.durableCount, greaterThanOrEqualTo(1),
+        reason: '보관된 텍스트는 재시작 후에도 살아있어야 한다');
+
+    // User purge empties both memory and disk.
+    await c.clearRelayStore();
+    expect(c.node.store.durableCount, 0);
+    expect(await c.db.loadRelayFrames(), isEmpty);
+
+    await c.node.dispose();
+    c.dispose();
+  });
+
   test('retry syncs the inbox summary (_lastMessage), not just the thread',
       () async {
     final (c, _) = await build();

@@ -160,6 +160,13 @@ class MeshNode {
   /// chatty (every node, every 15s) and its privacy blast-radius should stay
   /// small, while messages can still travel the full 7 hops.
   static const int announceTtl = 3;
+
+  /// TTL for text messages and their end-to-end ACKs. Effectively unbounded
+  /// for human-scale meshes: with duplicate suppression a frame is sent once
+  /// per link regardless of TTL, so a large value costs nothing extra — it
+  /// only lets a store-and-forwarded message keep travelling ("언젠가 전달")
+  /// across many encounters. Files keep the default 7 (bulky payloads).
+  static const int durableTtl = 32;
   Timer? _announceTimer;
 
   /// Text messages awaiting an end-to-end ACK, retransmitted until confirmed.
@@ -314,6 +321,7 @@ class MeshNode {
       dst: dst,
       payload: cipher,
       flags: FrameFlags.encrypted | FrameFlags.ackRequested,
+      ttl: durableTtl,
     );
     _awaitingAck[frame.msgIdHex] = _PendingText(frame);
     await _dispatch(frame);
@@ -642,6 +650,9 @@ class MeshNode {
     final body = kex != null ? await crypto.encrypt(payload, kex) : payload;
     await _dispatch(router.originate(
       type: FrameType.ack,
+      // The ACK must be able to travel back as far as the text came from,
+      // including over store-and-forward hops.
+      ttl: durableTtl,
       dst: dst,
       payload: body,
       flags: flags,
