@@ -13,43 +13,77 @@ class PeopleTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.watch<MeshController>();
-    final contacts = [...c.contacts]..sort((a, b) {
-        final an = c.isNearby(a.peerHex) ? 0 : 1;
-        final bn = c.isNearby(b.peerHex) ? 0 : 1;
-        if (an != bn) return an - bn;
-        return a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
+    int byName(Contact a, Contact b) =>
+        a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
+    // 주변(지금 연결 가능)과 나머지 연락처를 분리: "지금 대화 가능한 사람"이
+    // 항상 맨 위 섹션에 모여 있어야 동선이 짧다.
+    final nearby = c.contacts.where((x) => c.isNearby(x.peerHex)).toList()
+      ..sort((a, b) {
+        final ha = c.hopsTo(a.peerHex);
+        final hb = c.hopsTo(b.peerHex);
+        if (ha != hb) return ha - hb; // direct first
+        return byName(a, b);
       });
-    final nearby = c.nearbyCount;
+    final offline = c.contacts.where((x) => !c.isNearby(x.peerHex)).toList()
+      ..sort(byName);
 
     return Scaffold(
-      body: contacts.isEmpty
+      body: c.contacts.isEmpty
           ? const _EmptyPeople()
-          : Column(
+          : ListView(
+              padding: const EdgeInsets.only(top: 4, bottom: 88),
               children: [
-                if (nearby > 0)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text('주변에 $nearby명',
-                          style: Theme.of(context).textTheme.labelLarge),
-                    ),
-                  ),
-                Expanded(
-                  child: ListView.separated(
-                    itemCount: contacts.length,
-                    separatorBuilder: (_, _) =>
-                        const Divider(height: 1, indent: 72),
-                    itemBuilder: (context, i) =>
-                        _PersonTile(contact: contacts[i]),
-                  ),
-                ),
+                if (nearby.isNotEmpty) ...[
+                  _SectionHeader(
+                      label: '주변', count: nearby.length, live: true),
+                  ...nearby.map((x) => _PersonTile(contact: x)),
+                ],
+                if (offline.isNotEmpty) ...[
+                  _SectionHeader(label: '연락처', count: offline.length),
+                  ...offline.map((x) => _PersonTile(contact: x)),
+                ],
               ],
             ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => pushWithController(context, const ScanScreen()),
         icon: const Icon(Icons.qr_code_scanner),
         label: const Text('QR로 추가'),
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  final String label;
+  final int count;
+  final bool live;
+  const _SectionHeader(
+      {required this.label, required this.count, this.live = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+      child: Row(
+        children: [
+          if (live) ...[
+            Container(
+              width: 8,
+              height: 8,
+              decoration: const BoxDecoration(
+                  color: Color(0xFF2E7D32), shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Text(
+            '$label · $count',
+            style: Theme.of(context)
+                .textTheme
+                .labelLarge
+                ?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
       ),
     );
   }
@@ -152,10 +186,48 @@ class _PersonTile extends StatelessWidget {
                 _rename(context, c);
               },
             ),
+            ListTile(
+              leading: Icon(Icons.delete_outline,
+                  color: Theme.of(context).colorScheme.error),
+              title: Text('삭제',
+                  style:
+                      TextStyle(color: Theme.of(context).colorScheme.error)),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _confirmDelete(context, c);
+              },
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _confirmDelete(BuildContext context, MeshController c) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('${contact.displayName} 삭제'),
+        content: const Text(
+            '대화 내용과 주고받은 파일이 함께 삭제됩니다.\n\n'
+            '차단 기능이 아니므로, 상대가 주변에 있으면 새 연락처로 다시 '
+            '나타날 수 있습니다.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('취소')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) await c.deleteContact(contact.peerHex);
   }
 
   Future<void> _rename(BuildContext context, MeshController c) async {

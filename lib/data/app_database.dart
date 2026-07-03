@@ -155,6 +155,16 @@ class AppDatabase {
         whereArgs: [MsgStatus.sending.index, MsgStatus.receiving.index]);
   }
 
+  Future<void> deleteContact(String peerHex) async {
+    final db = await _database;
+    await db.delete('contacts', where: 'peer_hex = ?', whereArgs: [peerHex]);
+  }
+
+  Future<void> deleteMessagesFor(String peerHex) async {
+    final db = await _database;
+    await db.delete('messages', where: 'peer_hex = ?', whereArgs: [peerHex]);
+  }
+
   // ----- Durable relay store (store-and-forward mailbox) -----
 
   Future<List<Uint8List>> loadRelayFrames() async {

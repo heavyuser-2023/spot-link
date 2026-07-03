@@ -216,6 +216,28 @@ void main() {
     c.dispose();
   });
 
+  test('deleteContact removes contact, conversation and db rows', () async {
+    final (c, _) = await build();
+    final bob = await Identity.generate();
+    final bobHex = bob.peerId.hex;
+    await c.addContactFromBundle(bob.publicBundle, name: 'Bob');
+    await c.openConversation(bobHex);
+    await c.sendText(bobHex, '지워질 대화');
+    expect(c.conversation(bobHex), isNotEmpty);
+
+    await c.deleteContact(bobHex);
+
+    expect(c.contacts, isEmpty);
+    expect(c.conversation(bobHex), isEmpty);
+    expect(await c.db.contact(bobHex), isNull);
+    expect(await c.db.messagesFor(bobHex), isEmpty);
+    // The inbox row is gone too.
+    expect(c.conversations().where((s) => s.peerHex == bobHex), isEmpty);
+
+    await c.node.dispose();
+    c.dispose();
+  });
+
   test('renameContact updates the contact and persists', () async {
     final (c, _) = await build();
     final bob = await Identity.generate();
