@@ -315,7 +315,8 @@ class _Bubble extends StatelessWidget {
               if (failed)
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
-                  child: Text('탭하여 다시 시도',
+                  child: Text(
+                      _isMe ? '탭하여 다시 시도' : '수신이 중단되었습니다',
                       style: TextStyle(
                           color: scheme.onErrorContainer, fontSize: 11)),
                 ),
@@ -327,12 +328,38 @@ class _Bubble extends StatelessWidget {
   }
 
   void _onTap(BuildContext context) {
-    if (message.status == MsgStatus.failed &&
-        message.kind == MsgKind.text) {
-      controller.retryText(message);
+    if (message.status == MsgStatus.failed) {
+      if (message.kind == MsgKind.text) {
+        controller.retryText(message);
+      } else if (message.direction == MsgDirection.outgoing) {
+        controller.retryFile(message);
+      }
+    } else if (message.kind == MsgKind.file &&
+        message.direction == MsgDirection.outgoing &&
+        message.status == MsgStatus.sending) {
+      _confirmCancel(context);
     } else if (message.kind == MsgKind.file && message.filePath != null) {
       controller.openFile(message);
     }
+  }
+
+  Future<void> _confirmCancel(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('전송 취소'),
+        content: Text('${message.fileName ?? '파일'} 전송을 취소할까요?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('계속 보내기')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('전송 취소')),
+        ],
+      ),
+    );
+    if (ok == true) await controller.cancelFile(message);
   }
 
   Widget _statusIcon(BuildContext context, Color fg, ColorScheme scheme) {

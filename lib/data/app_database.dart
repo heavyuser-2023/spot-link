@@ -101,9 +101,10 @@ class AppDatabase {
     return rows.map(ChatMessage.fromMap).toList();
   }
 
-  Future<void> updateStatusByMsgId(String msgId, MsgStatus status) async {
+  /// Returns the number of rows updated (0 = message not persisted yet).
+  Future<int> updateStatusByMsgId(String msgId, MsgStatus status) async {
     final db = await _database;
-    await db.update('messages', {'status': status.index},
+    return db.update('messages', {'status': status.index},
         where: 'msg_id = ?', whereArgs: [msgId]);
   }
 
@@ -114,6 +115,26 @@ class AppDatabase {
     final db = await _database;
     await db.update('messages', {'msg_id': msgId, 'status': status.index},
         where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Attach the saved file path (+ new status) to a file message, e.g. when an
+  /// in-progress incoming transfer completes. Returns the number of rows
+  /// updated (0 = no such message).
+  Future<int> updateFileByMsgId(
+      String msgId, String filePath, MsgStatus status) async {
+    final db = await _database;
+    return db.update(
+        'messages', {'file_path': filePath, 'status': status.index},
+        where: 'msg_id = ?', whereArgs: [msgId]);
+  }
+
+  /// Mark transfers that were mid-flight when the app died as failed, so no
+  /// bubble is stuck on "sending/receiving" forever after a restart.
+  Future<void> failStaleTransfers() async {
+    final db = await _database;
+    await db.update('messages', {'status': MsgStatus.failed.index},
+        where: 'status IN (?, ?)',
+        whereArgs: [MsgStatus.sending.index, MsgStatus.receiving.index]);
   }
 
   /// Distinct peers with at least one message, most-recent first.

@@ -13,6 +13,7 @@ import '../features/home_screen.dart';
 import '../features/onboarding_screen.dart';
 import 'background_service.dart';
 import 'mesh_controller.dart';
+import 'notification_service.dart';
 import 'permissions.dart';
 
 /// Runs one-time async startup behind a branded splash so the app never shows
@@ -41,6 +42,7 @@ class _BootstrapState extends State<Bootstrap> {
     await initializeDateFormatting('ko', null);
     await _wireBleFileLog();
     await BackgroundService.init();
+    await NotificationService.init();
     await Permissions.request(); // best-effort; UI surfaces failures later
 
     final stored = await _identityStore.storedName();

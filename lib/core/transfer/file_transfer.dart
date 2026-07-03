@@ -229,8 +229,16 @@ class FileReceiver {
     return missing;
   }
 
-  FileAck buildAck() =>
-      FileAck(meta.transferId, isComplete, isComplete ? const [] : missingSeqs());
+  /// [maxMissing] bounds the ACK frame size for huge transfers: the sender
+  /// fills the reported gaps first and later ACKs cover the rest.
+  FileAck buildAck({int? maxMissing}) {
+    if (isComplete) return FileAck(meta.transferId, true, const []);
+    var missing = missingSeqs();
+    if (maxMissing != null && missing.length > maxMissing) {
+      missing = missing.sublist(0, maxMissing);
+    }
+    return FileAck(meta.transferId, false, missing);
+  }
 
   /// Assemble the full file. Throws if incomplete or the hash mismatches.
   Uint8List assemble() {

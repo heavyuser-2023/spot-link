@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'package:mime/mime.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -16,6 +18,7 @@ import '../data/app_database.dart';
 import '../data/identity_store.dart';
 import '../data/models.dart';
 import 'background_service.dart';
+import 'notification_service.dart';
 
 /// A row in the conversation (inbox) list.
 class ConversationSummary {
@@ -38,7 +41,7 @@ class ConversationSummary {
 
 /// The application "brain": owns the [MeshNode], persists to [AppDatabase],
 /// and exposes observable state to the Flutter UI via [ChangeNotifier].
-class MeshController extends ChangeNotifier {
+class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   final Identity identity;
   String displayName;
   final AppDatabase db;
@@ -59,13 +62,27 @@ class MeshController extends ChangeNotifier {
   final Map<String, List<ChatMessage>> _conversations = {};
   final Map<String, ChatMessage> _lastMessage = {}; // peerHex -> latest msg
   final Map<String, double> transferProgress = {};
+
+  /// Status events (delivered/failed) that arrived before the message row
+  /// was persisted; applied by [_persistAndCache] on insert.
+  final Map<String, MsgStatus> _pendingStatus = {};
   String? _openPeer; // conversation currently on screen (suppresses unread)
 
   Timer? _presenceTimer;
   StreamSubscription? _sub;
   StreamSubscription? _availabilitySub;
   bool _restarting = false;
+
+  /// Whether the app is currently in the foreground. Incoming messages fire a
+  /// local notification only when it is NOT (screen off / backgrounded).
+  bool _foreground = true;
+
   final _errors = StreamController<String>.broadcast();
+
+  /// Dispatches a background notification. Injectable so tests can observe it
+  /// without a platform channel.
+  final void Function(String conversationKey, String title, String body)
+      _notify;
 
   MeshController({
     required this.identity,
@@ -73,8 +90,13 @@ class MeshController extends ChangeNotifier {
     required this.db,
     required this.identityStore,
     MeshNode? node,
-  }) : node = node ??
-            MeshNode(identity: identity, displayName: displayName);
+    void Function(String conversationKey, String title, String body)? notifier,
+  })  : node = node ?? MeshNode(identity: identity, displayName: displayName),
+        _notify = notifier ?? _defaultNotify;
+
+  static void _defaultNotify(String key, String title, String body) =>
+      NotificationService.showMessage(
+          conversationKey: key, title: title, body: body);
 
   /// Transient, user-facing errors (for snackbars).
   Stream<String> get errorEvents => _errors.stream;
@@ -129,6 +151,10 @@ class MeshController extends ChangeNotifier {
   }
 
   Future<void> init() async {
+    WidgetsBinding.instance.addObserver(this);
+    _foreground = WidgetsBinding.instance.lifecycleState ==
+            AppLifecycleState.resumed ||
+        WidgetsBinding.instance.lifecycleState == null;
     _contacts
       ..clear()
       ..addAll(await db.allContacts());
@@ -141,6 +167,9 @@ class MeshController extends ChangeNotifier {
         verified: c.verified,
       ));
     }
+    // Transfers that were mid-flight when the app last died can never finish
+    // now — fail them so no bubble is stuck on a spinner forever.
+    await db.failStaleTransfers();
     // Seed the inbox with the last message of each known conversation.
     for (final hex in await db.conversationPeers()) {
       final last = await db.lastMessageFor(hex);
@@ -189,6 +218,29 @@ class MeshController extends ChangeNotifier {
     }
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
+    // Coming back to the foreground: clear the notification for the open chat.
+    if (_foreground && _openPeer != null) {
+      NotificationService.cancelFor(_openPeer!);
+    }
+  }
+
+  /// Fire a local notification for an incoming message when the app isn't in
+  /// the foreground (screen off / backgrounded). Suppressed for the chat the
+  /// user currently has open.
+  void _notifyIncoming(PeerId from, String body) {
+    // Only when the app is not in the foreground (screen off / backgrounded).
+    if (_foreground) return;
+    final name = contactByHex(from.hex)?.displayName ?? from.short;
+    _notify(from.hex, name, body);
+  }
+
+  /// Test hook: drive the app-foreground flag without a real lifecycle event.
+  @visibleForTesting
+  void setForegroundForTest(bool value) => _foreground = value;
+
   Future<void> _onEvent(NodeEvent e) async {
     switch (e) {
       case LinksChanged(:final count):
@@ -203,25 +255,34 @@ class MeshController extends ChangeNotifier {
       case TextReceived(:final from, :final text, :final msgId):
         await _onText(from, text, msgId);
       case DeliveryConfirmed(:final msgId):
-        await db.updateStatusByMsgId(msgId, MsgStatus.delivered);
-        _patchStatus(msgId, MsgStatus.delivered);
-        notifyListeners();
+        await _applyStatus(msgId, MsgStatus.delivered);
       case TextDeliveryFailed(:final msgId):
-        await db.updateStatusByMsgId(msgId, MsgStatus.failed);
-        _patchStatus(msgId, MsgStatus.failed);
-        notifyListeners();
-      case FileOffered():
-        break;
+        await _applyStatus(msgId, MsgStatus.failed);
+      case FileOffered(:final from, :final meta):
+        await _onFileOffered(from, meta);
       case FileProgress(:final transferId, :final progress):
         transferProgress[transferId] = progress;
         notifyListeners();
       case FileReceived(:final from, :final meta, :final bytes):
         await _onFileReceived(from, meta, bytes);
+      case FileFailed(:final transferIdHex):
+        transferProgress.remove(transferIdHex);
+        await _applyStatus(transferIdHex, MsgStatus.failed);
       case NodeError(:final message):
         lastError = message;
         _errors.add(message);
         notifyListeners();
     }
+  }
+
+  /// Apply a delivery-status change to a message. A tiny transfer can be
+  /// acknowledged before the outgoing bubble is even persisted — remember the
+  /// status and let [_persistAndCache] apply it on insert.
+  Future<void> _applyStatus(String msgId, MsgStatus status) async {
+    final updated = await db.updateStatusByMsgId(msgId, status);
+    if (updated == 0) _pendingStatus[msgId] = status;
+    _patchStatus(msgId, status);
+    notifyListeners();
   }
 
   // ---- contacts ----
@@ -343,6 +404,7 @@ class MeshController extends ChangeNotifier {
   Future<void> openConversation(String peerHex) async {
     _openPeer = peerHex;
     _unread.remove(peerHex);
+    NotificationService.cancelFor(peerHex);
     if (!_conversations.containsKey(peerHex)) {
       // Install a placeholder list *before* the await so messages that arrive
       // during the DB load (via _persistAndCache) are captured, then merge them
@@ -402,19 +464,80 @@ class MeshController extends ChangeNotifier {
       required String mime}) async {
     final peer = PeerId.fromHex(peerHex);
     final now = DateTime.now().millisecondsSinceEpoch;
+    // Returns as soon as the META frame is out; the chunks stream in the
+    // background and report back via FileProgress / DeliveryConfirmed /
+    // FileFailed events. The bubble must appear immediately.
     final tid = await node.sendFile(peer, bytes: bytes, name: name, mime: mime);
+    final msgId = tid ?? 'local-$now';
+    // Keep a local copy so our own bubble can be opened and a failed
+    // transfer retried later.
+    final path = await _saveLocalCopy(msgId, name, bytes);
     final msg = ChatMessage(
       peerHex: peerHex,
-      msgId: tid ?? 'local-$now',
+      msgId: msgId,
       direction: MsgDirection.outgoing,
       kind: MsgKind.file,
       fileName: name,
+      filePath: path,
       fileSize: bytes.length,
-      status: tid == null ? MsgStatus.failed : MsgStatus.sent,
+      status: tid == null ? MsgStatus.failed : MsgStatus.sending,
       timestamp: now,
     );
-    // Also keep a local copy of what we sent so it can be re-opened.
     await _persistAndCache(msg);
+  }
+
+  Future<String?> _saveLocalCopy(
+      String tid, String name, Uint8List bytes) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final folder = Directory(p.join(dir.path, 'sent'));
+      if (!await folder.exists()) await folder.create(recursive: true);
+      final safeName = name.replaceAll(RegExp(r'[/\\]'), '_');
+      final path = p.join(folder.path, '${tid}_$safeName');
+      await File(path).writeAsBytes(bytes);
+      return path;
+    } catch (_) {
+      return null; // the copy is best-effort; sending still works without it
+    }
+  }
+
+  /// Cancel an in-progress outgoing transfer (stops the chunk stream).
+  Future<void> cancelFile(ChatMessage msg) async {
+    node.cancelSend(msg.msgId);
+    transferProgress.remove(msg.msgId);
+    await _applyStatus(msg.msgId, MsgStatus.failed);
+  }
+
+  /// Re-send a failed file transfer from the local copy saved at send time.
+  Future<void> retryFile(ChatMessage failed) async {
+    final path = failed.filePath;
+    Uint8List? bytes;
+    if (path != null) {
+      try {
+        bytes = await File(path).readAsBytes();
+      } catch (_) {}
+    }
+    if (bytes == null) {
+      _errors.add('원본 파일이 없어 다시 보낼 수 없습니다');
+      return;
+    }
+    final name = failed.fileName ?? p.basename(path!);
+    final tid = await node.sendFile(
+      PeerId.fromHex(failed.peerHex),
+      bytes: bytes,
+      name: name,
+      mime: lookupMimeType(name) ?? 'application/octet-stream',
+    );
+    if (tid == null) {
+      _errors.add('Still unable to send — no route yet');
+      return;
+    }
+    if (failed.id != null) {
+      await db.updateMessageDelivery(failed.id!, tid, MsgStatus.sending);
+    }
+    _patchMessage(failed.peerHex, failed.msgId,
+        newMsgId: tid, status: MsgStatus.sending);
+    notifyListeners();
   }
 
   Future<void> _onText(PeerId from, String text, String msgId) async {
@@ -429,6 +552,23 @@ class MeshController extends ChangeNotifier {
       timestamp: now,
     );
     await _persistAndCache(msg, incoming: true);
+    _notifyIncoming(from, text);
+  }
+
+  /// An incoming transfer just started (META received): show a progress
+  /// bubble right away instead of staying silent until the file completes.
+  Future<void> _onFileOffered(PeerId from, FileMeta meta) async {
+    final msg = ChatMessage(
+      peerHex: from.hex,
+      msgId: meta.transferIdHex,
+      direction: MsgDirection.incoming,
+      kind: MsgKind.file,
+      fileName: meta.name,
+      fileSize: meta.fileSize,
+      status: MsgStatus.receiving,
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+    );
+    await _persistAndCache(msg, incoming: true);
   }
 
   Future<void> _onFileReceived(
@@ -440,7 +580,20 @@ class MeshController extends ChangeNotifier {
     final path = p.join(folder.path, '${meta.transferIdHex}_$safeName');
     await File(path).writeAsBytes(bytes);
 
-    final now = DateTime.now().millisecondsSinceEpoch;
+    transferProgress.remove(meta.transferIdHex);
+    _notifyIncoming(from, '📎 ${meta.name}');
+
+    // Normally the "receiving" placeholder from _onFileOffered exists —
+    // complete it in place.
+    final updated = await db.updateFileByMsgId(
+        meta.transferIdHex, path, MsgStatus.received);
+    if (updated > 0) {
+      _patchFile(meta.transferIdHex, path, MsgStatus.received);
+      notifyListeners();
+      return;
+    }
+
+    // No placeholder (edge case) — insert the complete message directly.
     final msg = ChatMessage(
       peerHex: from.hex,
       msgId: meta.transferIdHex,
@@ -450,13 +603,16 @@ class MeshController extends ChangeNotifier {
       filePath: path,
       fileSize: meta.fileSize,
       status: MsgStatus.received,
-      timestamp: now,
+      timestamp: DateTime.now().millisecondsSinceEpoch,
     );
-    transferProgress.remove(meta.transferIdHex);
     await _persistAndCache(msg, incoming: true);
   }
 
   Future<void> _persistAndCache(ChatMessage msg, {bool incoming = false}) async {
+    // A status event (e.g. the completion ACK of a tiny file) may have raced
+    // ahead of this insert — apply it now instead of losing it.
+    final pending = _pendingStatus.remove(msg.msgId);
+    if (pending != null) msg = msg.copyWith(status: pending);
     final id = await db.insertMessage(msg);
     final stored = msg.withId(id);
     _conversations[msg.peerHex]?.add(stored);
@@ -478,6 +634,24 @@ class MeshController extends ChangeNotifier {
   }
 
   // ---- helpers ----
+
+  /// Like [_patchStatus] but also attaches the saved file path (an incoming
+  /// transfer completing in place).
+  void _patchFile(String msgId, String filePath, MsgStatus status) {
+    for (final list in _conversations.values) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].msgId == msgId) {
+          list[i] = list[i].copyWith(filePath: filePath, status: status);
+        }
+      }
+    }
+    for (final entry in _lastMessage.entries.toList()) {
+      if (entry.value.msgId == msgId) {
+        _lastMessage[entry.key] =
+            entry.value.copyWith(filePath: filePath, status: status);
+      }
+    }
+  }
 
   void _patchStatus(String msgId, MsgStatus status) {
     for (final list in _conversations.values) {
@@ -514,6 +688,7 @@ class MeshController extends ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _presenceTimer?.cancel();
     _sub?.cancel();
     _availabilitySub?.cancel();
