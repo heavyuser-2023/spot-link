@@ -1,0 +1,156 @@
+import 'dart:async';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:spot_link/core/crypto/identity.dart';
+import 'package:spot_link/core/mesh_node.dart';
+import 'package:spot_link/core/model/frame.dart';
+
+import 'fake_transport.dart';
+
+class TestNode {
+  final MeshNode node;
+  final List<NodeEvent> events = [];
+  TestNode(this.node) {
+    node.events.listen(events.add);
+  }
+
+  Iterable<T> ofType<T>() => events.whereType<T>();
+}
+
+Future<TestNode> makeNode(FakeRadio radio, Identity id, String name,
+    {Duration retransmit = const Duration(milliseconds: 40),
+    int maxAttempts = 3}) async {
+  final node = MeshNode(
+    identity: id,
+    displayName: name,
+    transport: radio.create(id.peerId),
+    retransmitInterval: retransmit,
+    maxTextAttempts: maxAttempts,
+  );
+  final tn = TestNode(node);
+  await node.start();
+  return tn;
+}
+
+Future<T> waitFor<T extends NodeEvent>(TestNode n, bool Function(T) test,
+    {Duration timeout = const Duration(seconds: 3)}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    final m = n.events.whereType<T>().where(test);
+    if (m.isNotEmpty) return m.last;
+    await Future<void>.delayed(const Duration(milliseconds: 3));
+  }
+  throw TimeoutException('event ${T.toString()} not observed', timeout);
+}
+
+Future<void> settle([int ms = 60]) =>
+    Future<void>.delayed(Duration(milliseconds: ms));
+
+void main() {
+  test('text with a route is delivered and never reported failed', () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'A');
+    final b = await makeNode(radio, idB, 'B');
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await settle();
+
+    final msgId = await a.node.sendText(idB.peerId, 'hi');
+    await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == msgId);
+    // Give the retransmit timer several ticks; it must NOT fire a failure.
+    await settle(250);
+    expect(a.ofType<TextDeliveryFailed>(), isEmpty);
+  });
+
+  test('text with no route eventually reports TextDeliveryFailed', () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'A',
+        retransmit: const Duration(milliseconds: 40), maxAttempts: 3);
+    // Know B's key but have no link to anyone.
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+
+    final msgId = await a.node.sendText(idB.peerId, 'into the void');
+    final failed =
+        await waitFor<TextDeliveryFailed>(a, (e) => e.msgId == msgId);
+    expect(failed.msgId, msgId);
+  });
+
+  test('retransmit stops once delivered (no failure after ack)', () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'A',
+        retransmit: const Duration(milliseconds: 30), maxAttempts: 10);
+    final b = await makeNode(radio, idB, 'B');
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await settle();
+
+    final msgId = await a.node.sendText(idB.peerId, 'ok');
+    await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == msgId);
+    final deliveredCount = b.ofType<TextReceived>().length;
+    // Even though retransmit ticks quickly, dedup + ack means exactly one
+    // delivery on the receiver.
+    await settle(200);
+    expect(b.ofType<TextReceived>().length, deliveredCount);
+    expect(deliveredCount, 1);
+  });
+
+  test('recovers when the recipient\'s first ACK is lost (re-ACK on retransmit)',
+      () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'A',
+        retransmit: const Duration(milliseconds: 40), maxAttempts: 10);
+    final b = await makeNode(radio, idB, 'B');
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+
+    // Drop B's FIRST outgoing ACK frame; later ACKs get through.
+    var droppedOne = false;
+    radio.nodes[idB.peerId.hex]!.dropOutgoing = (bytes) {
+      final f = Frame.decode(bytes);
+      if (!droppedOne && f.type == FrameType.ack) {
+        droppedOne = true;
+        return true;
+      }
+      return false;
+    };
+
+    radio.connect(idA.peerId, idB.peerId);
+    await settle();
+
+    final msgId = await a.node.sendText(idB.peerId, 'hello');
+    // B received & displayed it, but its first ACK was dropped. A retransmits;
+    // B must re-ACK the duplicate so A can confirm rather than fail.
+    final ok =
+        await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == msgId);
+    expect(ok.msgId, msgId);
+    await settle(150);
+    expect(a.ofType<TextDeliveryFailed>(), isEmpty);
+    expect(droppedOne, isTrue); // ensure the ACK-loss path was actually exercised
+    expect(b.ofType<TextReceived>().length, 1); // delivered exactly once
+  });
+
+  test('display name change re-announces to neighbours', () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'Alice');
+    final b = await makeNode(radio, idB, 'Bob');
+    radio.connect(idA.peerId, idB.peerId);
+    await waitFor<PeerAnnounced>(b, (e) => e.contact.displayName == 'Alice');
+
+    await a.node.updateDisplayName('Alice2');
+    final renamed =
+        await waitFor<PeerAnnounced>(b, (e) => e.contact.displayName == 'Alice2');
+    expect(renamed.contact.peerId, idA.peerId);
+  });
+}

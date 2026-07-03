@@ -1,0 +1,95 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3556F5"/>
+      <stop offset="0.55" stop-color="#1E32C8"/>
+      <stop offset="1" stop-color="#0A1560"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.65">
+      <stop offset="0" stop-color="#7FB4FF" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#7FB4FF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bubble" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E7EEFF"/>
+    </linearGradient>
+    <linearGradient id="hub" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4FE3FF"/>
+      <stop offset="1" stop-color="#00AEEF"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="22" stdDeviation="30" flood-color="#050D3A" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- background -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+
+  <!-- faint ambient mesh in the background -->
+  <g stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="4" stroke-linecap="round">
+    <line x1="104" y1="168" x2="216" y2="108"/>
+    <line x1="216" y1="108" x2="160" y2="252"/>
+    <line x1="896" y1="836" x2="820" y2="912"/>
+    <line x1="896" y1="836" x2="936" y2="742"/>
+    <line x1="884" y1="150" x2="806" y2="104"/>
+  </g>
+  <g fill="#FFFFFF" fill-opacity="0.16">
+    <circle cx="104" cy="168" r="11"/>
+    <circle cx="216" cy="108" r="8"/>
+    <circle cx="160" cy="252" r="7"/>
+    <circle cx="896" cy="836" r="11"/>
+    <circle cx="820" cy="912" r="7"/>
+    <circle cx="936" cy="742" r="8"/>
+    <circle cx="884" cy="150" r="9"/>
+    <circle cx="806" cy="104" r="6"/>
+    <circle cx="120" cy="880" r="9"/>
+  </g>
+
+  <!-- speech bubble -->
+  <g filter="url(#shadow)">
+    <path fill="url(#bubble)" d="
+      M 332 248
+      L 692 248
+      Q 812 248 812 368
+      L 812 568
+      Q 812 688 692 688
+      L 468 688
+      Q 440 780 340 826
+      Q 352 750 350 688
+      L 332 688
+      Q 212 688 212 568
+      L 212 368
+      Q 212 248 332 248
+      Z"/>
+  </g>
+
+  <!-- mesh links -->
+  <g transform="translate(0,14)">
+  <g stroke="#2336D6" stroke-linecap="round" fill="none">
+    <g stroke-width="20">
+      <line x1="512" y1="470" x2="338" y2="368"/>
+      <line x1="512" y1="470" x2="664" y2="338"/>
+      <line x1="512" y1="470" x2="700" y2="545"/>
+      <line x1="512" y1="470" x2="352" y2="566"/>
+    </g>
+    <g stroke-width="13" stroke-opacity="0.75">
+      <line x1="338" y1="368" x2="664" y2="338"/>
+      <line x1="352" y1="566" x2="700" y2="545"/>
+    </g>
+  </g>
+
+  <!-- mesh nodes -->
+  <g fill="#2336D6">
+    <circle cx="338" cy="368" r="34"/>
+    <circle cx="664" cy="338" r="37"/>
+    <circle cx="700" cy="545" r="32"/>
+    <circle cx="352" cy="566" r="34"/>
+  </g>
+
+  <!-- central hub node (the "Spot") -->
+  <circle cx="512" cy="470" r="86" fill="none" stroke="#19C8FF" stroke-width="10" stroke-opacity="0.35"/>
+  <circle cx="512" cy="470" r="58" fill="url(#hub)"/>
+  <circle cx="512" cy="470" r="58" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-opacity="0.9"/>
+  </g>
+</svg>
