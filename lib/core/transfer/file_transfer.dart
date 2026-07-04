@@ -240,6 +240,26 @@ class FileReceiver {
     return FileAck(meta.transferId, false, missing);
   }
 
+  /// Fast-lane path: accept the whole plaintext at once (arrived out-of-band,
+  /// already decrypted). Verifies the manifest hash, then marks every chunk
+  /// present so [buildAck] reports a genuine complete. Throws on mismatch so
+  /// the caller can fall back to BLE recovery.
+  void seedAssembled(Uint8List bytes) {
+    if (bytes.length != meta.fileSize) {
+      throw StateError(
+          'size mismatch: ${bytes.length} != ${meta.fileSize}');
+    }
+    final actual = classic.sha256.convert(bytes).bytes;
+    if (!_bytesEqual(actual, meta.sha256)) {
+      throw StateError('sha256 mismatch on fast-lane file');
+    }
+    for (var i = 0; i < meta.totalChunks; i++) {
+      final start = i * meta.chunkSize;
+      final end = min(start + meta.chunkSize, bytes.length);
+      _chunks[i] = Uint8List.sublistView(bytes, start, end);
+    }
+  }
+
   /// Assemble the full file. Throws if incomplete or the hash mismatches.
   Uint8List assemble() {
     if (!isComplete) {

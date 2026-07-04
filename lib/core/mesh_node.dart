@@ -136,7 +136,7 @@ class MeshNode {
   final Set<String> _completedTransfers = {};
 
   /// Reasonable ceiling for a single file over BLE (see docs §8).
-  static const int maxFileBytes = 20 * 1024 * 1024;
+  static const int maxFileBytes = 100 * 1024 * 1024;
   static const Duration _fileAckInterval = Duration(milliseconds: 700);
 
   /// A transfer fails only when it makes NO progress for this long — an
@@ -521,6 +521,7 @@ class MeshNode {
 
     bleLogSink?.call('FT fast accept: ${accept.offer.kind.name}');
     FastLaneSession? session;
+    Timer? feeder;
     try {
       session = await fastLane!.connect(tid, accept.offer);
       if (session == null) {
@@ -528,6 +529,10 @@ class MeshNode {
         return false;
       }
       _fastActive.add(tid);
+      // While the fast lane owns the transfer there are no BLE ACKs to feed
+      // the idle watchdog, so feed it ourselves for the duration.
+      feeder = Timer.periodic(const Duration(seconds: 20),
+          (_) => _armSenderWatchdog(tid, sender.meta.name));
       bleLogSink?.call('FT fast connected: ${accept.offer.kind.name}');
       // Send the whole file as one encrypted, length-prefixed blob.
       final cipher = await crypto.encrypt(bytes, kex);
@@ -539,10 +544,10 @@ class MeshNode {
       // .reliable sends asynchronously, and disconnecting now would drop
       // whatever hasn't left the radio yet. The receiver closes its side once
       // it has assembled the file, so wait for that EOF before closing ours.
+      // Budget scales with size (floor ~512KB/s) so big files aren't cut off.
       try {
-        await session.incoming
-            .drain<void>()
-            .timeout(const Duration(seconds: 30));
+        await session.incoming.drain<void>().timeout(
+            Duration(seconds: 30 + bytes.length ~/ (512 * 1024)));
       } catch (_) {}
       bleLogSink?.call('FT fast send done: ${sender.meta.name} '
           '(${bytes.length}B via ${accept.offer.kind.name})');
@@ -554,6 +559,7 @@ class MeshNode {
       bleLogSink?.call('FT fast send error: $e');
       return false;
     } finally {
+      feeder?.cancel();
       _fastActive.remove(tid);
       await session?.close();
     }
@@ -1001,9 +1007,13 @@ class MeshNode {
         _events.add(DeliveryConfirmed(ack.transferIdHex));
         return;
       }
-      // The initial burst is still streaming: everything "missing" is already
-      // on the way. Resending now would duplicate the whole transfer.
-      if (_streaming.contains(ack.transferIdHex)) return;
+      // The initial burst is still streaming (BLE) or the fast lane owns the
+      // wire: everything "missing" is already on the way. Resending now would
+      // duplicate the whole transfer over BLE.
+      if (_streaming.contains(ack.transferIdHex) ||
+          _fastActive.contains(ack.transferIdHex)) {
+        return;
+      }
       bleLogSink?.call('FT resend requested: ${ack.missing.length} chunks');
       for (final chunk in sender.chunksToResend(ack)) {
         if (!_senders.containsKey(ack.transferIdHex)) return; // retired
@@ -1110,33 +1120,47 @@ class MeshNode {
         return; // sender never connected → BLE recovery timer handles it
       }
       bleLogSink?.call('FT fast recv connected, reading…');
-      // Read a 4-byte length prefix then that many ciphertext bytes.
-      final buf = BytesBuilder();
-      var logged = false;
+      // Read a 4-byte length prefix then that many ciphertext bytes. Parts are
+      // only assembled twice (header parse + completion) so a 100MB transfer
+      // isn't O(n²) in copying.
+      final buf = BytesBuilder(copy: false);
+      int? total; // 4 + ciphertext length, known once the header arrived
+      var lastPct = 0;
       await for (final part in session.incoming) {
         buf.add(part);
-        if (!logged) {
-          logged = true;
-          bleLogSink?.call('FT fast recv first bytes: ${buf.length}');
+        _rxLastChunk[tid] = DateTime.now(); // feed the idle watchdog
+        if (total == null && buf.length >= 4) {
+          final head = buf.takeBytes();
+          total = ByteData.view(head.buffer, head.offsetInBytes)
+                  .getUint32(0, Endian.big) +
+              4;
+          buf.add(head);
+          bleLogSink?.call('FT fast recv expecting ${total}B');
         }
-        if (buf.length >= 4) {
-          final all = buf.toBytes();
-          final total = ByteData.view(all.buffer).getUint32(0, Endian.big) + 4;
-          if (all.length >= total) {
-            final cipher = Uint8List.sublistView(all, 4, total);
-            final receiver = _receivers[tid];
-            if (receiver == null) return;
-            final bytes = await crypto.decrypt(cipher, kex);
-            bleLogSink?.call('FT fast recv complete: ${receiver.meta.name}');
-            _events.add(FileProgress(tid, 1.0, false));
-            _events.add(FileReceived(from, receiver.meta, bytes));
-            _completeReceiver(tid);
-            _rememberCompleted(tid);
-            // Reuse the exact BLE completion path: a signed "complete" ACK
-            // stops the sender and flips its bubble to delivered.
-            await _sendFileAck(from, receiver.buildAck());
-            return;
-          }
+        if (total == null) continue;
+        final pct = (buf.length * 100) ~/ total;
+        if (pct >= lastPct + 5 && buf.length < total) {
+          lastPct = pct;
+          _events.add(FileProgress(tid, buf.length / total, false));
+        }
+        if (buf.length >= total) {
+          final all = buf.takeBytes();
+          final cipher = Uint8List.sublistView(all, 4, total);
+          final receiver = _receivers[tid];
+          if (receiver == null) return;
+          final bytes = await crypto.decrypt(cipher, kex);
+          // Verify the manifest hash and mark the receiver complete so the
+          // ACK below is a genuine complete (not a full missing-list).
+          receiver.seedAssembled(bytes);
+          bleLogSink?.call('FT fast recv complete: ${receiver.meta.name}');
+          _events.add(FileProgress(tid, 1.0, false));
+          _events.add(FileReceived(from, receiver.meta, bytes));
+          _completeReceiver(tid);
+          _rememberCompleted(tid);
+          // Reuse the exact BLE completion path: a signed "complete" ACK
+          // stops the sender and flips its bubble to delivered.
+          await _sendFileAck(from, receiver.buildAck());
+          return;
         }
       }
     } catch (e) {
@@ -1270,6 +1294,10 @@ class MeshNode {
         );
         return;
       }
+      // While the fast lane is delivering, BLE chunks aren't expected — a
+      // missing-list ACK now would just trigger a duplicate BLE resend. The
+      // idle timeout above still applies (fast parts feed [_rxLastChunk]).
+      if (_fastActive.contains(tidHex)) return;
       final sinceAck = now.difference(_rxLastAck[tidHex] ?? now);
       if (idle >= _ackIdleGap || sinceAck >= _ackHeartbeat) {
         _rxLastAck[tidHex] = now;
