@@ -33,6 +33,10 @@
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
 
+    <!-- gal: saving received media to the gallery needs this on API <= 29. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <application

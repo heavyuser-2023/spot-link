@@ -446,6 +446,7 @@ class _Bubble extends StatelessWidget {
       alignment: _isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
         onTap: () => _onTap(context),
+        onLongPress: () => _showMenu(context),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 3),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -513,8 +514,131 @@ class _Bubble extends StatelessWidget {
         message.status == MsgStatus.sending) {
       _confirmCancel(context);
     } else if (message.kind == MsgKind.file && message.filePath != null) {
+      _view(context);
+    }
+  }
+
+  bool get _isImage => (lookupMimeType(
+          message.fileName ?? message.filePath ?? '') ??
+          '')
+      .startsWith('image/');
+
+  bool get _isMedia {
+    final mime =
+        lookupMimeType(message.fileName ?? message.filePath ?? '') ?? '';
+    return mime.startsWith('image/') || mime.startsWith('video/');
+  }
+
+  /// Images open in the in-app viewer; everything else via the system app.
+  void _view(BuildContext context) {
+    if (_isImage) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              _ImageViewerPage(message: message, controller: controller),
+        ),
+      );
+    } else {
       controller.openFile(message);
     }
+  }
+
+  /// Long-press management menu: view/save/share/delete for files,
+  /// copy/delete for texts.
+  void _showMenu(BuildContext context) {
+    final messenger = ScaffoldMessenger.of(context);
+    final isText = message.kind == MsgKind.text;
+    final hasFile = message.kind == MsgKind.file && message.filePath != null;
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isText)
+              ListTile(
+                leading: const Icon(Icons.copy_outlined),
+                title: const Text('복사'),
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: message.text ?? ''));
+                  Navigator.pop(sheet);
+                  messenger.showSnackBar(
+                      const SnackBar(content: Text('복사했습니다')));
+                },
+              ),
+            if (hasFile) ...[
+              ListTile(
+                leading: const Icon(Icons.visibility_outlined),
+                title: const Text('보기'),
+                onTap: () {
+                  Navigator.pop(sheet);
+                  _view(context);
+                },
+              ),
+              if (_isMedia)
+                ListTile(
+                  leading: const Icon(Icons.photo_library_outlined),
+                  title: const Text('갤러리에 저장'),
+                  onTap: () async {
+                    Navigator.pop(sheet);
+                    final ok = await controller.saveToGallery(message);
+                    messenger.showSnackBar(SnackBar(
+                        content: Text(ok
+                            ? '갤러리에 저장했습니다'
+                            : '갤러리에 저장하지 못했습니다')));
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.ios_share),
+                title: const Text('공유 · 파일 앱에 저장'),
+                onTap: () {
+                  Navigator.pop(sheet);
+                  controller.shareFile(message);
+                },
+              ),
+            ],
+            ListTile(
+              leading: Icon(Icons.delete_outline,
+                  color: Theme.of(context).colorScheme.error),
+              title: Text('삭제',
+                  style: TextStyle(
+                      color: Theme.of(context).colorScheme.error)),
+              onTap: () {
+                Navigator.pop(sheet);
+                _confirmDelete(context);
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmDelete(BuildContext context) async {
+    final isFile = message.kind == MsgKind.file;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('메시지 삭제'),
+        content: Text(isFile
+            ? '${message.fileName ?? '파일'}이(가) 내 기기에서 삭제됩니다. '
+                '상대방 기기에는 남아 있습니다.'
+            : '이 메시지를 내 기기에서 삭제할까요? '
+                '상대방 기기에는 남아 있습니다.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('취소')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('삭제')),
+        ],
+      ),
+    );
+    if (ok == true) await controller.deleteMessage(message);
   }
 
   Future<void> _confirmCancel(BuildContext context) async {
@@ -554,6 +678,29 @@ class _Bubble extends StatelessWidget {
   Widget _fileContent(BuildContext context, Color fg) {
     final progress = controller.transferProgress[message.msgId];
     final canOpen = message.filePath != null;
+    // Received/sent images render as an inline thumbnail — tap for viewer.
+    if (canOpen && _isImage) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 280),
+          child: Image.file(
+            File(message.filePath!),
+            cacheWidth: 720,
+            fit: BoxFit.cover,
+            errorBuilder: (_, e, s) => Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.broken_image_outlined, color: fg),
+                const SizedBox(width: 8),
+                Text(message.fileName ?? '이미지',
+                    style: TextStyle(color: fg)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -607,6 +754,52 @@ class _EmptyChat extends StatelessWidget {
             Text('첫 인사를 건네보세요 👋',
                 style: Theme.of(context).textTheme.bodySmall),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Full-screen image viewer with pinch-zoom and quick save/share actions.
+class _ImageViewerPage extends StatelessWidget {
+  final ChatMessage message;
+  final MeshController controller;
+  const _ImageViewerPage({required this.message, required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final messenger = ScaffoldMessenger.of(context);
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: Text(message.fileName ?? '이미지',
+            style: const TextStyle(fontSize: 16),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.photo_library_outlined),
+            tooltip: '갤러리에 저장',
+            onPressed: () async {
+              final ok = await controller.saveToGallery(message);
+              messenger.showSnackBar(SnackBar(
+                  content: Text(
+                      ok ? '갤러리에 저장했습니다' : '갤러리에 저장하지 못했습니다')));
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.ios_share),
+            tooltip: '공유',
+            onPressed: () => controller.shareFile(message),
+          ),
+        ],
+      ),
+      body: Center(
+        child: InteractiveViewer(
+          maxScale: 6,
+          child: Image.file(File(message.filePath!)),
         ),
       ),
     );

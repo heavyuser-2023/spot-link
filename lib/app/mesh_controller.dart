@@ -4,8 +4,10 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
+import 'package:gal/gal.dart';
 import 'package:mime/mime.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -779,6 +781,58 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     if (result.type != ResultType.done) {
       _errors.add('Could not open file: ${result.message}');
     }
+  }
+
+  /// Save a received image/video into the device photo gallery.
+  /// Returns false (and surfaces an error) when the file kind can't go there.
+  Future<bool> saveToGallery(ChatMessage msg) async {
+    final path = msg.filePath;
+    if (path == null) return false;
+    final mime = lookupMimeType(msg.fileName ?? path) ?? '';
+    try {
+      if (mime.startsWith('image/')) {
+        await Gal.putImage(path);
+      } else if (mime.startsWith('video/')) {
+        await Gal.putVideo(path);
+      } else {
+        return false; // not a media file — use share/Files instead
+      }
+      return true;
+    } catch (e) {
+      _errors.add('갤러리 저장 실패: $e');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// System share sheet — covers "파일 앱에 저장", AirDrop, other apps.
+  Future<void> shareFile(ChatMessage msg) async {
+    final path = msg.filePath;
+    if (path == null) return;
+    await SharePlus.instance.share(ShareParams(files: [XFile(path)]));
+  }
+
+  /// Delete one message bubble on this device (DB + memory), removing the
+  /// stored file from disk for file messages. Purely local — the peer's copy
+  /// is untouched.
+  Future<void> deleteMessage(ChatMessage msg) async {
+    await db.deleteMessage(msg.msgId);
+    final path = msg.filePath;
+    if (path != null) {
+      try {
+        await File(path).delete();
+      } catch (_) {} // already gone — fine
+    }
+    _conversations[msg.peerHex]?.removeWhere((m) => m.msgId == msg.msgId);
+    if (_lastMessage[msg.peerHex]?.msgId == msg.msgId) {
+      final rest = _conversations[msg.peerHex];
+      if (rest != null && rest.isNotEmpty) {
+        _lastMessage[msg.peerHex] = rest.last;
+      } else {
+        _lastMessage.remove(msg.peerHex);
+      }
+    }
+    notifyListeners();
   }
 
   // ---- helpers ----

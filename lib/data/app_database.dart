@@ -165,6 +165,12 @@ class AppDatabase {
     await db.delete('messages', where: 'peer_hex = ?', whereArgs: [peerHex]);
   }
 
+  /// Delete a single message (text or file bubble) by its frame msgId.
+  Future<void> deleteMessage(String msgId) async {
+    final db = await _database;
+    await db.delete('messages', where: 'msg_id = ?', whereArgs: [msgId]);
+  }
+
   // ----- Durable relay store (store-and-forward mailbox) -----
 
   Future<List<Uint8List>> loadRelayFrames() async {
