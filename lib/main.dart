@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'app/bootstrap.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Receive port for messages from the foreground-service (headless mesh)
+  // isolate — must exist before any ping/handoff can reach us.
+  FlutterForegroundTask.initCommunicationPort();
   runApp(const SpotLinkApp());
 }
 

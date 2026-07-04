@@ -93,6 +93,12 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   final void Function(String conversationKey, String title, String body)
       _notify;
 
+  /// True when running inside the Android foreground-service isolate with no
+  /// UI attached (boot / swipe-kill recovery): skip widget lifecycle wiring,
+  /// treat every incoming message as background (→ always notify), and never
+  /// negotiate mesh ownership with ourselves.
+  final bool headless;
+
   MeshController({
     required this.identity,
     required this.displayName,
@@ -100,6 +106,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     required this.identityStore,
     MeshNode? node,
     void Function(String conversationKey, String title, String body)? notifier,
+    this.headless = false,
   })  : node = node ?? MeshNode(identity: identity, displayName: displayName),
         _notify = notifier ?? _defaultNotify;
 
@@ -195,10 +202,15 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> init() async {
-    WidgetsBinding.instance.addObserver(this);
-    _foreground = WidgetsBinding.instance.lifecycleState ==
-            AppLifecycleState.resumed ||
-        WidgetsBinding.instance.lifecycleState == null;
+    if (headless) {
+      // No UI in this isolate: every incoming message should notify.
+      _foreground = false;
+    } else {
+      WidgetsBinding.instance.addObserver(this);
+      _foreground = WidgetsBinding.instance.lifecycleState ==
+              AppLifecycleState.resumed ||
+          WidgetsBinding.instance.lifecycleState == null;
+    }
     _contacts
       ..clear()
       ..addAll(await db.allContacts());
@@ -243,9 +255,15 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
       if (last != null) _lastMessage[hex] = last;
     }
 
+    // Android: if the foreground service is running a HEADLESS mesh (started
+    // at boot / after a swipe-kill), take ownership before starting our own
+    // node — two BLE stacks with the same identity collide.
+    if (!headless) await BackgroundService.claimMeshOwnership();
+
     _sub = node.events.listen(_onEvent);
     _rssiSub = node.rssiSamples.listen(_onRssi);
     started = await node.start();
+    if (started && !headless) BackgroundService.setUiMeshActive(true);
     if (!started) {
       lastError = 'Bluetooth unavailable';
       // On a fresh install the first start fails because the OS permission
@@ -278,7 +296,10 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
         lastError = null;
         await _availabilitySub?.cancel();
         _availabilitySub = null;
-        await BackgroundService.start();
+        if (!headless) {
+          BackgroundService.setUiMeshActive(true);
+          await BackgroundService.start();
+        }
         notifyListeners();
       }
     } finally {
@@ -789,7 +810,10 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
+    if (!headless) {
+      WidgetsBinding.instance.removeObserver(this);
+      BackgroundService.setUiMeshActive(false);
+    }
     _presenceTimer?.cancel();
     _sub?.cancel();
     _rssiSub?.cancel();

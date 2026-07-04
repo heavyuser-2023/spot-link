@@ -1,9 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../app/background_service.dart';
 import '../app/mesh_controller.dart';
 import 'ui_utils.dart';
 
@@ -137,6 +140,24 @@ class MeTab extends StatelessWidget {
                   ),
           ),
         ),
+        if (Platform.isAndroid) ...[
+          const SizedBox(height: 8),
+          const _BatteryExemptionCard(),
+        ],
+        if (Platform.isIOS) ...[
+          const SizedBox(height: 8),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.info_outline),
+              title: const Text('실시간 수신 안내'),
+              subtitle: const Text(
+                  '앱을 위로 밀어 완전히 종료하면 실시간 수신이 멈춥니다. '
+                  '홈으로 나가 백그라운드에 두면 계속 받을 수 있고, 놓친 '
+                  '메시지도 다시 만나면 자동으로 도착합니다.'),
+              isThreeLine: true,
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -194,5 +215,80 @@ class MeTab extends StatelessWidget {
     } finally {
       controller.dispose();
     }
+  }
+}
+
+/// Android only: OEM battery managers (Samsung 등) silently kill background
+/// services after a while. This card shows whether SpotLink is exempted and
+/// requests the exemption — the difference between a relay that dies in an
+/// hour and one that runs for days.
+class _BatteryExemptionCard extends StatefulWidget {
+  const _BatteryExemptionCard();
+
+  @override
+  State<_BatteryExemptionCard> createState() => _BatteryExemptionCardState();
+}
+
+class _BatteryExemptionCardState extends State<_BatteryExemptionCard>
+    with WidgetsBindingObserver {
+  bool? _exempted;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Coming back from the system dialog/settings: re-check.
+    if (state == AppLifecycleState.resumed) _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final v = await BackgroundService.isIgnoringBatteryOptimizations;
+    if (mounted) setState(() => _exempted = v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final exempted = _exempted;
+    return Card(
+      child: ListTile(
+        leading: Icon(
+          exempted == true
+              ? Icons.verified_outlined
+              : Icons.battery_alert_outlined,
+          color: exempted == true ? Colors.green : scheme.error,
+        ),
+        title: const Text('백그라운드 항상 실행'),
+        subtitle: Text(
+          exempted == null
+              ? '확인 중…'
+              : exempted
+                  ? '배터리 최적화에서 제외되어 있습니다. 화면을 꺼도 메시가 유지됩니다.'
+                  : '배터리 최적화가 켜져 있어 시스템이 수신을 중단시킬 수 '
+                      '있습니다. 항상 받으려면 허용해 주세요.',
+        ),
+        isThreeLine: exempted == false,
+        trailing: exempted == false
+            ? FilledButton.tonal(
+                onPressed: () async {
+                  await BackgroundService.requestIgnoreBatteryOptimization();
+                  await _refresh();
+                },
+                child: const Text('허용'),
+              )
+            : null,
+      ),
+    );
   }
 }
