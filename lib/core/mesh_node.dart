@@ -11,6 +11,7 @@ import 'model/peer_id.dart';
 import 'router/router.dart';
 import 'router/seen_cache.dart';
 import 'router/store_forward.dart';
+import 'transfer/fast_lane.dart';
 import 'transfer/file_transfer.dart';
 
 /// ACK payload kinds (first byte of an ACK frame's decrypted-agnostic payload).
@@ -203,18 +204,41 @@ class MeshNode {
   final _events = StreamController<NodeEvent>.broadcast();
   final List<StreamSubscription> _subs = [];
 
+  /// Optional Wi-Fi bulk accelerator. Null ⇒ every transfer uses BLE chunking
+  /// (unchanged behaviour). When present, large files upgrade to a direct
+  /// Wi-Fi channel with automatic BLE fallback. See docs/WIFI_HYBRID_DESIGN.md.
+  final FastLaneInterface? fastLane;
+
+  /// Only files at/above this size attempt the fast lane — below it, BLE's
+  /// ~1s setup-free start beats Wi-Fi's multi-second handshake.
+  static const int fastLaneMinBytes = 256 * 1024;
+
+  /// How long the sender waits for a fast-lane ACCEPT before falling back to
+  /// BLE chunking.
+  static const Duration fastLaneNegotiateWindow = Duration(seconds: 5);
+
+  /// Pending fast-lane accepts, keyed by transferId, completed when the
+  /// receiver's ACCEPT frame arrives (sender side).
+  final Map<String, Completer<_FastAccept>> _fastAcceptWaiters = {};
+
+  /// TransferIds currently being delivered over the fast lane (sender or
+  /// receiver) — suppresses the parallel BLE chunk path for them.
+  final Set<String> _fastActive = {};
+
   MeshNode({
     required this.identity,
     required this.displayName,
     int Function()? clock,
     MeshTransportInterface? transport,
+    this.fastLane,
     this.retransmitInterval = const Duration(seconds: 4),
     this.maxTextAttempts = 5,
-  })  : seen = SeenCache(nowMs: clock ?? _wallClock),
-        store = StoreForward(nowMs: clock ?? _wallClock) {
+  }) : seen = SeenCache(nowMs: clock ?? _wallClock),
+       store = StoreForward(nowMs: clock ?? _wallClock) {
     router = Router(myId: identity.peerId, seen: seen);
     crypto = SessionCrypto(identity);
-    this.transport = transport ??
+    this.transport =
+        transport ??
         MeshTransport(
           myShortId: identity.peerId,
           infoValue: identity.publicBundle,
@@ -255,10 +279,14 @@ class MeshNode {
     _subs.add(transport.inbound.listen(_onPacket));
     _subs.add(transport.linkEvents.listen(_onLinkEvent));
     await transport.start();
-    _announceTimer =
-        Timer.periodic(announceInterval, (_) => _broadcastAnnounce());
-    _retransmitTimer =
-        Timer.periodic(retransmitInterval, (_) => _retransmitPending());
+    _announceTimer = Timer.periodic(
+      announceInterval,
+      (_) => _broadcastAnnounce(),
+    );
+    _retransmitTimer = Timer.periodic(
+      retransmitInterval,
+      (_) => _retransmitPending(),
+    );
     return true;
   }
 
@@ -321,6 +349,11 @@ class MeshNode {
       t.cancel();
     }
     _senderTimers.clear();
+    for (final w in _fastAcceptWaiters.values) {
+      if (!w.isCompleted) w.completeError(StateError('node stopped'));
+    }
+    _fastAcceptWaiters.clear();
+    _fastActive.clear();
     await transport.stop();
   }
 
@@ -352,7 +385,9 @@ class MeshNode {
       return null;
     }
     final cipher = await crypto.encrypt(
-        Uint8List.fromList(utf8.encode(text)), kex);
+      Uint8List.fromList(utf8.encode(text)),
+      kex,
+    );
     final frame = router.originate(
       type: FrameType.text,
       dst: dst,
@@ -383,15 +418,21 @@ class MeshNode {
       return null;
     }
     if (bytes.length > maxFileBytes) {
-      _events.add(NodeError(
-          'File too large (${bytes.length} bytes, max $maxFileBytes)'));
+      _events.add(
+        NodeError('File too large (${bytes.length} bytes, max $maxFileBytes)'),
+      );
       return null;
     }
     final sender = FileSender.forFile(
-        bytes: bytes, name: name, mime: mime, chunkSize: chunkSize);
+      bytes: bytes,
+      name: name,
+      mime: mime,
+      chunkSize: chunkSize,
+    );
     final tid = sender.meta.transferIdHex;
     bleLogSink?.call(
-        'FT send start: $name ${bytes.length}B chunks=${sender.meta.totalChunks}');
+      'FT send start: $name ${bytes.length}B chunks=${sender.meta.totalChunks}',
+    );
     _senders[tid] = sender;
     // Watchdog: if no completion ACK arrives, retire the sender so it can't
     // leak forever (e.g. recipient went away, or the final ACK was lost).
@@ -399,20 +440,107 @@ class MeshNode {
 
     // 1. Send META.
     final metaCipher = await crypto.encrypt(sender.meta.encode(), kex);
-    await _dispatch(router.originate(
-      type: FrameType.fileMeta,
-      dst: dst,
-      payload: metaCipher,
-      flags: FrameFlags.encrypted,
-    ));
+    await _dispatch(
+      router.originate(
+        type: FrameType.fileMeta,
+        dst: dst,
+        payload: metaCipher,
+        flags: FrameFlags.encrypted,
+      ),
+    );
 
-    // 2. Stream the chunks in the background (gaps are recovered via file
-    // ACK). With BLE backpressure a large file takes a while — the caller
-    // needs the transferId immediately so the UI can show the outgoing
-    // bubble and live progress instead of freezing until the burst ends.
-    _streaming.add(tid);
-    unawaited(_streamChunks(sender, dst, kex));
+    // 2. Deliver the bytes. Try the Wi-Fi fast lane for large files; on any
+    // failure (no fast lane, no shared capability, connect/stream error) fall
+    // back to BLE chunking. The caller gets the transferId immediately so the
+    // UI shows the bubble + progress regardless of path.
+    unawaited(_deliverFile(sender, dst, kex, bytes));
     return tid;
+  }
+
+  /// Choose the fast lane when possible, else BLE chunking. Always ends up on
+  /// exactly one path per transfer.
+  Future<void> _deliverFile(
+    FileSender sender,
+    PeerId dst,
+    Uint8List kex,
+    Uint8List bytes,
+  ) async {
+    final tid = sender.meta.transferIdHex;
+    if (fastLane != null &&
+        fastLane!.capabilities.isNotEmpty &&
+        bytes.length >= fastLaneMinBytes) {
+      final ok = await _trySendFast(sender, dst, kex, bytes);
+      if (ok) return; // fast lane carried it (delivery ACK arrives via BLE)
+      if (!_senders.containsKey(tid)) return; // cancelled/retired meanwhile
+      bleLogSink?.call(
+        'FT fast lane unavailable → BLE fallback: ${sender.meta.name}',
+      );
+    }
+    _streaming.add(tid);
+    await _streamChunks(sender, dst, kex);
+  }
+
+  /// Sender fast path: offer over BLE, await ACCEPT, dial Wi-Fi, stream the
+  /// whole ciphertext. Returns true only if the peer confirmed the bytes.
+  Future<bool> _trySendFast(
+    FileSender sender,
+    PeerId dst,
+    Uint8List kex,
+    Uint8List bytes,
+  ) async {
+    final tid = sender.meta.transferIdHex;
+    final caps = fastLane!.capabilities;
+    // Offer: transferId(16) + capsBitmask(1).
+    var bitmask = 0;
+    for (final k in caps) {
+      bitmask |= 1 << k.code;
+    }
+    final offerPlain = Uint8List(17)
+      ..setRange(0, 16, sender.meta.transferId)
+      ..[16] = bitmask;
+    final waiter = _fastAcceptWaiters[tid] = Completer<_FastAccept>();
+    await _dispatch(
+      router.originate(
+        type: FrameType.fileFastOffer,
+        dst: dst,
+        payload: await crypto.encrypt(offerPlain, kex),
+        flags: FrameFlags.encrypted,
+      ),
+      persist: false,
+    );
+
+    _FastAccept accept;
+    try {
+      accept = await waiter.future.timeout(fastLaneNegotiateWindow);
+    } catch (_) {
+      _fastAcceptWaiters.remove(tid);
+      return false; // no ACCEPT in time → BLE
+    } finally {
+      _fastAcceptWaiters.remove(tid);
+    }
+
+    FastLaneSession? session;
+    try {
+      session = await fastLane!.connect(tid, accept.offer);
+      if (session == null) return false;
+      _fastActive.add(tid);
+      // Send the whole file as one encrypted, length-prefixed blob.
+      final cipher = await crypto.encrypt(bytes, kex);
+      final header = ByteData(4)..setUint32(0, cipher.length, Endian.big);
+      session.add(header.buffer.asUint8List());
+      session.add(cipher);
+      await session.finishSending();
+      // Wait for the receiver's completion ACK (arrives over BLE) — the
+      // watchdog already fails the transfer if it never comes.
+      _events.add(FileProgress(tid, 1.0, true));
+      return true;
+    } catch (e) {
+      bleLogSink?.call('FT fast send error: $e');
+      return false;
+    } finally {
+      _fastActive.remove(tid);
+      await session?.close();
+    }
   }
 
   /// Keep the sender watchdog fed. It is (re)armed on send start and on every
@@ -440,7 +568,10 @@ class MeshNode {
   }
 
   Future<void> _streamChunks(
-      FileSender sender, PeerId dst, Uint8List kex) async {
+    FileSender sender,
+    PeerId dst,
+    Uint8List kex,
+  ) async {
     final tid = sender.meta.transferIdHex;
     var sent = 0;
     var lastPct = -1;
@@ -466,7 +597,9 @@ class MeshNode {
           _events.add(FileProgress(tid, sent / sender.meta.totalChunks, true));
         }
       }
-      bleLogSink?.call('FT send burst done: ${sender.meta.name} ($sent chunks)');
+      bleLogSink?.call(
+        'FT send burst done: ${sender.meta.name} ($sent chunks)',
+      );
     } catch (e) {
       bleLogSink?.call('FT send burst error: $e');
     } finally {
@@ -504,7 +637,9 @@ class MeshNode {
   /// delivered or re-relayed.
   Frame _announceFrame() {
     final ann = Announce(
-        publicBundle: identity.publicBundle, displayName: displayName);
+      publicBundle: identity.publicBundle,
+      displayName: displayName,
+    );
     return router.originate(
       type: FrameType.announce,
       dst: PeerId.broadcast,
@@ -589,8 +724,10 @@ class MeshNode {
         if (frame.type != FrameType.announce) {
           store.add(decision.relay!);
         }
-        await transport.broadcast(decision.relay!.encode(),
-            exceptLinkId: pkt.link.id);
+        await transport.broadcast(
+          decision.relay!.encode(),
+          exceptLinkId: pkt.link.id,
+        );
       }
       if (decision.deliverLocal) {
         await _deliverLocal(frame);
@@ -604,9 +741,10 @@ class MeshNode {
     switch (frame.type) {
       case FrameType.have:
         final remoteHave = MsgIdList.decode(frame.payload);
-        final wanted = store.selectWanted(remoteHave,
-            alreadySeen: (hex) =>
-                seen.contains(hex) || _receipted.contains(hex));
+        final wanted = store.selectWanted(
+          remoteHave,
+          alreadySeen: (hex) => seen.contains(hex) || _receipted.contains(hex),
+        );
         if (wanted.isNotEmpty) {
           final want = Frame.create(
             type: FrameType.want,
@@ -656,8 +794,10 @@ class MeshNode {
         if (frame.src == myId) break; // our own flood echoed back
         try {
           final ann = Announce.decode(payload);
-          final contact = ContactIdentity.fromBundle(ann.publicBundle,
-              displayName: ann.displayName);
+          final contact = ContactIdentity.fromBundle(
+            ann.publicBundle,
+            displayName: ann.displayName,
+          );
           _knownKex[contact.peerId.hex] = contact.kexPublic;
           _knownSigning[contact.peerId.hex] = contact.signingPublic;
           // TTL is decremented once per relay: direct = announceTtl, one
@@ -696,7 +836,8 @@ class MeshNode {
           break;
         }
         bleLogSink?.call(
-            'FT recv meta: ${meta.name} chunks=${meta.totalChunks}');
+          'FT recv meta: ${meta.name} chunks=${meta.totalChunks}',
+        );
         _receivers[meta.transferIdHex] = FileReceiver(meta);
         _receiverPeers[meta.transferIdHex] = frame.src;
         _startReceiverRecovery(meta.transferIdHex, frame.src);
@@ -704,6 +845,12 @@ class MeshNode {
         break;
       case FrameType.fileChunk:
         await _handleFileChunk(frame.src, payload);
+        break;
+      case FrameType.fileFastOffer:
+        await _handleFastOffer(frame.src, payload);
+        break;
+      case FrameType.fileFastAccept:
+        _handleFastAccept(payload);
         break;
       case FrameType.receipt:
         await _handleReceipt(frame, payload);
@@ -725,12 +872,14 @@ class MeshNode {
     final payload = Uint8List(16 + 64)
       ..setRange(0, 16, msgId)
       ..setRange(16, 80, sig);
-    await _dispatch(router.originate(
-      type: FrameType.receipt,
-      dst: PeerId.broadcast,
-      ttl: durableTtl,
-      payload: payload,
-    ));
+    await _dispatch(
+      router.originate(
+        type: FrameType.receipt,
+        dst: PeerId.broadcast,
+        ttl: durableTtl,
+        payload: payload,
+      ),
+    );
   }
 
   /// Verify and apply a delivery receipt: only the message's addressee can
@@ -787,15 +936,17 @@ class MeshNode {
     final kex = _knownKex[dst.hex];
     final flags = kex != null ? FrameFlags.encrypted : 0;
     final body = kex != null ? await crypto.encrypt(payload, kex) : payload;
-    await _dispatch(router.originate(
-      type: FrameType.ack,
-      // The ACK must be able to travel back as far as the text came from,
-      // including over store-and-forward hops.
-      ttl: durableTtl,
-      dst: dst,
-      payload: body,
-      flags: flags,
-    ));
+    await _dispatch(
+      router.originate(
+        type: FrameType.ack,
+        // The ACK must be able to travel back as far as the text came from,
+        // including over store-and-forward hops.
+        ttl: durableTtl,
+        dst: dst,
+        payload: body,
+        flags: flags,
+      ),
+    );
   }
 
   Future<void> _handleAck(PeerId from, Uint8List payload) async {
@@ -860,7 +1011,131 @@ class MeshNode {
     _streaming.remove(transferIdHex);
   }
 
+  // ---------------------------------------------------------------------------
+  // Wi-Fi fast lane (receiver side). Negotiation rides the BLE mesh; only the
+  // file bytes move over Wi-Fi. Any failure leaves the BLE receiver + recovery
+  // timer intact, so the transfer completes over BLE instead.
+  // ---------------------------------------------------------------------------
+
+  Future<void> _handleFastOffer(PeerId from, Uint8List payload) async {
+    if (fastLane == null || fastLane!.capabilities.isEmpty) return; // → BLE
+    if (payload.length < 17) return;
+    final transferId = Uint8List.fromList(payload.sublist(0, 16));
+    final tid = MsgId.hex(transferId);
+    // Only act if we're actually expecting this transfer and haven't finished.
+    final receiver = _receivers[tid];
+    if (receiver == null || _completedTransfers.contains(tid)) return;
+    if (_fastActive.contains(tid)) return; // already negotiating
+
+    // Intersect capabilities; prefer the higher-code (newer) transport.
+    final senderMask = payload[16];
+    FastLaneKind? chosen;
+    for (final k in fastLane!.capabilities) {
+      if ((senderMask & (1 << k.code)) != 0) {
+        if (chosen == null || k.code > chosen.code) chosen = k;
+      }
+    }
+    if (chosen == null) return; // no shared transport → BLE
+
+    final kex = _knownKex[from.hex];
+    if (kex == null) return;
+
+    FastLaneInbound? inbound;
+    try {
+      inbound = await fastLane!.prepareInbound(tid, chosen);
+    } catch (_) {
+      inbound = null;
+    }
+    if (inbound == null) return; // couldn't listen → BLE
+
+    _fastActive.add(tid);
+    // ACCEPT: transferId(16) + chosenKind(1) + offerLen(2) + offerBlob.
+    final blob = inbound.offer.blob;
+    final accept = Uint8List(16 + 1 + 2 + blob.length);
+    accept.setRange(0, 16, transferId);
+    accept[16] = chosen.code;
+    ByteData.view(accept.buffer).setUint16(17, blob.length, Endian.big);
+    accept.setRange(19, 19 + blob.length, blob);
+    await _dispatch(
+      router.originate(
+        type: FrameType.fileFastAccept,
+        dst: from,
+        payload: await crypto.encrypt(accept, kex),
+        flags: FrameFlags.encrypted,
+      ),
+      persist: false,
+    );
+
+    // Read the file over the fast lane in the background.
+    unawaited(_receiveFast(from, tid, kex, inbound));
+  }
+
+  Future<void> _receiveFast(
+    PeerId from,
+    String tid,
+    Uint8List kex,
+    FastLaneInbound inbound,
+  ) async {
+    FastLaneSession? session;
+    try {
+      session = await inbound.session;
+      if (session == null) {
+        _fastActive.remove(tid);
+        return; // sender never connected → BLE recovery timer handles it
+      }
+      // Read a 4-byte length prefix then that many ciphertext bytes.
+      final buf = BytesBuilder();
+      await for (final part in session.incoming) {
+        buf.add(part);
+        if (buf.length >= 4) {
+          final all = buf.toBytes();
+          final total = ByteData.view(all.buffer).getUint32(0, Endian.big) + 4;
+          if (all.length >= total) {
+            final cipher = Uint8List.sublistView(all, 4, total);
+            final receiver = _receivers[tid];
+            if (receiver == null) return;
+            final bytes = await crypto.decrypt(cipher, kex);
+            bleLogSink?.call('FT fast recv complete: ${receiver.meta.name}');
+            _events.add(FileProgress(tid, 1.0, false));
+            _events.add(FileReceived(from, receiver.meta, bytes));
+            _completeReceiver(tid);
+            _rememberCompleted(tid);
+            // Reuse the exact BLE completion path: a signed "complete" ACK
+            // stops the sender and flips its bubble to delivered.
+            await _sendFileAck(from, receiver.buildAck());
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      bleLogSink?.call('FT fast recv error: $e — falling back to BLE');
+      // Leave the BLE receiver + recovery timer running: it will ACK the
+      // missing chunks and the sender re-sends over BLE.
+    } finally {
+      _fastActive.remove(tid);
+      await session?.close();
+    }
+  }
+
+  void _handleFastAccept(Uint8List payload) {
+    if (payload.length < 19) return;
+    final tid = MsgId.hex(Uint8List.fromList(payload.sublist(0, 16)));
+    final waiter = _fastAcceptWaiters[tid];
+    if (waiter == null || waiter.isCompleted) return;
+    final kind = FastLaneKind.fromCode(payload[16]);
+    if (kind == null) return;
+    final blobLen = ByteData.view(
+      payload.buffer,
+      payload.offsetInBytes,
+    ).getUint16(17, Endian.big);
+    if (payload.length < 19 + blobLen) return;
+    final blob = Uint8List.fromList(payload.sublist(19, 19 + blobLen));
+    waiter.complete(_FastAccept(FastLaneOffer(kind, blob)));
+  }
+
   Future<void> _handleFileChunk(PeerId from, Uint8List payload) async {
+    // The fast lane owns this transfer's bytes — ignore any stray BLE chunks.
+    // (Both paths can momentarily race during fallback.)
     final FileChunk chunk;
     try {
       chunk = FileChunk.decode(payload);
@@ -873,8 +1148,7 @@ class MeshNode {
       // A stray chunk for a transfer we already completed: the sender never
       // got our completion ACK. Re-send it so the sender can stop.
       if (_completedTransfers.contains(tidHex)) {
-        await _sendFileAck(
-            from, FileAck(chunk.transferId, true, const []));
+        await _sendFileAck(from, FileAck(chunk.transferId, true, const []));
       }
       return; // META not seen yet (or already done)
     }
@@ -959,14 +1233,15 @@ class MeshNode {
         bleLogSink?.call('FT recv timeout: ${receiver.meta.name}');
         _completeReceiver(tidHex);
         _events.add(FileFailed(tidHex, receiver.meta.name, incoming: true));
-        _events.add(NodeError('Incoming file timed out: ${receiver.meta.name}'));
+        _events.add(
+          NodeError('Incoming file timed out: ${receiver.meta.name}'),
+        );
         return;
       }
       final sinceAck = now.difference(_rxLastAck[tidHex] ?? now);
       if (idle >= _ackIdleGap || sinceAck >= _ackHeartbeat) {
         _rxLastAck[tidHex] = now;
-        await _sendFileAck(
-            from, receiver.buildAck(maxMissing: _ackMaxMissing));
+        await _sendFileAck(from, receiver.buildAck(maxMissing: _ackMaxMissing));
       }
     });
   }
@@ -1006,4 +1281,10 @@ class _PendingText {
   final Frame frame;
   int attempts = 0;
   _PendingText(this.frame);
+}
+
+/// The receiver's fast-lane ACCEPT, delivered to the waiting sender.
+class _FastAccept {
+  final FastLaneOffer offer;
+  _FastAccept(this.offer);
 }

@@ -12,7 +12,9 @@ enum FrameType {
   ack(0x05), // e2e: delivery acknowledgement of a msgId
   have(0x06), // link-local: store-and-forward inventory
   want(0x07), // link-local: request specific msgIds
-  receipt(0x08); // e2e: end-to-end delivery receipt
+  receipt(0x08), // e2e: end-to-end delivery receipt
+  fileFastOffer(0x09), // e2e: sender offers a Wi-Fi fast-lane for this transfer
+  fileFastAccept(0x0a); // e2e: receiver accepts + returns its connection info
 
   final int code;
   const FrameType(this.code);

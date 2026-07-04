@@ -7,6 +7,9 @@ import 'package:spot_link/core/crypto/identity.dart';
 import 'package:spot_link/core/mesh_node.dart';
 import 'package:spot_link/core/model/frame.dart';
 import 'package:spot_link/core/model/peer_id.dart';
+import 'package:spot_link/core/transfer/fast_lane.dart';
+
+import 'fake_fast_lane.dart';
 
 import 'fake_transport.dart';
 
@@ -21,12 +24,18 @@ class TestNode {
   Iterable<T> ofType<T>() => events.whereType<T>();
 }
 
-Future<TestNode> makeNode(FakeRadio radio, Identity id, String name) async {
+Future<TestNode> makeNode(
+  FakeRadio radio,
+  Identity id,
+  String name, {
+  FastLaneInterface? fastLane,
+}) async {
   final transport = radio.create(id.peerId);
   final node = MeshNode(
     identity: id,
     displayName: name,
     transport: transport,
+    fastLane: fastLane,
   );
   final tn = TestNode(node);
   await node.start();
@@ -75,8 +84,10 @@ void main() {
     expect(received.from, idA.peerId);
 
     // Alice should get an end-to-end delivery confirmation.
-    final confirmed =
-        await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == msgId);
+    final confirmed = await waitFor<DeliveryConfirmed>(
+      a,
+      (e) => e.msgId == msgId,
+    );
     expect(confirmed.msgId, msgId);
   });
 
@@ -102,40 +113,46 @@ void main() {
     expect(rx.text, 'hi via announce');
   });
 
-  test('presence floods over relays: A sees C at 2 hops (A-B-C line)',
-      () async {
-    final radio = FakeRadio();
-    final idA = await Identity.generate();
-    final idB = await Identity.generate();
-    final idC = await Identity.generate();
-    final a = await makeNode(radio, idA, 'Alice');
-    final b = await makeNode(radio, idB, 'Bridge');
-    final c = await makeNode(radio, idC, 'Carol');
+  test(
+    'presence floods over relays: A sees C at 2 hops (A-B-C line)',
+    () async {
+      final radio = FakeRadio();
+      final idA = await Identity.generate();
+      final idB = await Identity.generate();
+      final idC = await Identity.generate();
+      final a = await makeNode(radio, idA, 'Alice');
+      final b = await makeNode(radio, idB, 'Bridge');
+      final c = await makeNode(radio, idC, 'Carol');
 
-    // Line topology: A <-> B <-> C (A and C are out of radio range).
-    radio.connect(idA.peerId, idB.peerId);
-    radio.connect(idB.peerId, idC.peerId);
+      // Line topology: A <-> B <-> C (A and C are out of radio range).
+      radio.connect(idA.peerId, idB.peerId);
+      radio.connect(idB.peerId, idC.peerId);
 
-    // A hears B directly (1 hop) and C via B's relay (2 hops).
-    final annB = await waitFor<PeerAnnounced>(
-        a, (e) => e.contact.peerId == idB.peerId);
-    expect(annB.hops, 1);
-    final annC = await waitFor<PeerAnnounced>(
-        a, (e) => e.contact.peerId == idC.peerId);
-    expect(annC.hops, 2);
-    expect(annC.contact.displayName, 'Carol');
+      // A hears B directly (1 hop) and C via B's relay (2 hops).
+      final annB = await waitFor<PeerAnnounced>(
+        a,
+        (e) => e.contact.peerId == idB.peerId,
+      );
+      expect(annB.hops, 1);
+      final annC = await waitFor<PeerAnnounced>(
+        a,
+        (e) => e.contact.peerId == idC.peerId,
+      );
+      expect(annC.hops, 2);
+      expect(annC.contact.displayName, 'Carol');
 
-    // The relayed announce carried C's keys: A can message C with no QR
-    // and no manual key exchange, relayed end-to-end encrypted through B.
-    await settle();
-    final msgId = await a.node.sendText(idC.peerId, '2홉 안녕!');
-    expect(msgId, isNotNull);
-    final rx = await waitFor<TextReceived>(c, (e) => true);
-    expect(rx.text, '2홉 안녕!');
-    expect(rx.from, idA.peerId);
-    // B relayed but never saw the plaintext (no TextReceived on B).
-    expect(b.ofType<TextReceived>(), isEmpty);
-  });
+      // The relayed announce carried C's keys: A can message C with no QR
+      // and no manual key exchange, relayed end-to-end encrypted through B.
+      await settle();
+      final msgId = await a.node.sendText(idC.peerId, '2홉 안녕!');
+      expect(msgId, isNotNull);
+      final rx = await waitFor<TextReceived>(c, (e) => true);
+      expect(rx.text, '2홉 안녕!');
+      expect(rx.from, idA.peerId);
+      // B relayed but never saw the plaintext (no TextReceived on B).
+      expect(b.ofType<TextReceived>(), isEmpty);
+    },
+  );
 
   test('multi-hop: A -> R -> B (A and B not directly linked)', () async {
     final radio = FakeRadio();
@@ -159,8 +176,11 @@ void main() {
     final msgId = await a.node.sendText(idB.peerId, 'relayed hello');
     expect(msgId, isNotNull);
 
-    final rx = await waitFor<TextReceived>(b, (e) => true,
-        timeout: const Duration(seconds: 3));
+    final rx = await waitFor<TextReceived>(
+      b,
+      (e) => true,
+      timeout: const Duration(seconds: 3),
+    );
     expect(rx.text, 'relayed hello');
     expect(rx.from, idA.peerId);
 
@@ -168,8 +188,11 @@ void main() {
     expect(r.ofType<TextReceived>(), isEmpty);
 
     // Delivery ack travels back A <- R <- B.
-    await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == msgId,
-        timeout: const Duration(seconds: 3));
+    await waitFor<DeliveryConfirmed>(
+      a,
+      (e) => e.msgId == msgId,
+      timeout: const Duration(seconds: 3),
+    );
   });
 
   test('store-and-forward: B receives after connecting later', () async {
@@ -201,8 +224,11 @@ void main() {
     // Later, B comes into range of R -> HAVE/WANT sync delivers it.
     radio.connect(idR.peerId, idB.peerId);
 
-    final rx = await waitFor<TextReceived>(b, (e) => true,
-        timeout: const Duration(seconds: 3));
+    final rx = await waitFor<TextReceived>(
+      b,
+      (e) => true,
+      timeout: const Duration(seconds: 3),
+    );
     expect(rx.text, 'catch you later');
   });
 
@@ -224,8 +250,9 @@ void main() {
     await settle();
 
     final rnd = Random(42);
-    final fileBytes =
-        Uint8List.fromList(List.generate(9000, (_) => rnd.nextInt(256)));
+    final fileBytes = Uint8List.fromList(
+      List.generate(9000, (_) => rnd.nextInt(256)),
+    );
 
     final tid = await a.node.sendFile(
       idB.peerId,
@@ -236,70 +263,217 @@ void main() {
     );
     expect(tid, isNotNull);
 
-    final got = await waitFor<FileReceived>(b, (e) => true,
-        timeout: const Duration(seconds: 5));
+    final got = await waitFor<FileReceived>(
+      b,
+      (e) => true,
+      timeout: const Duration(seconds: 5),
+    );
     expect(got.meta.name, 'secret.bin');
     expect(got.bytes, fileBytes);
     expect(got.from, idB.peerId == got.from ? got.from : idA.peerId);
   });
 
-  test('signed receipt purges relay copies; forged receipt is rejected',
-      () async {
+  test(
+    'fast lane: large file goes over Wi-Fi, sender confirmed delivered',
+    () async {
+      final radio = FakeRadio();
+      final medium = FakeFastMedium();
+      final idA = await Identity.generate();
+      final idB = await Identity.generate();
+      final a = await makeNode(
+        radio,
+        idA,
+        'Alice',
+        fastLane: medium.endpoint({FastLaneKind.wifiAware}),
+      );
+      final b = await makeNode(
+        radio,
+        idB,
+        'Bob',
+        fastLane: medium.endpoint({FastLaneKind.wifiAware}),
+      );
+      a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+      b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+      radio.connect(idA.peerId, idB.peerId);
+      await settle();
+
+      // ≥ fastLaneMinBytes so the fast lane is attempted.
+      final rnd = Random(7);
+      final fileBytes = Uint8List.fromList(
+        List.generate(300 * 1024, (_) => rnd.nextInt(256)),
+      );
+
+      final tid = await a.node.sendFile(
+        idB.peerId,
+        bytes: fileBytes,
+        name: 'big.bin',
+        mime: 'application/octet-stream',
+      );
+      expect(tid, isNotNull);
+
+      final got = await waitFor<FileReceived>(
+        b,
+        (e) => true,
+        timeout: const Duration(seconds: 5),
+      );
+      expect(got.bytes, fileBytes); // exact bytes over the fast lane
+      // No BLE chunks were used: the file never entered the BLE receiver's
+      // chunk store (it completed via the fast path).
+      final delivered = await waitFor<DeliveryConfirmed>(
+        a,
+        (e) => e.msgId == tid,
+        timeout: const Duration(seconds: 5),
+      );
+      expect(delivered.msgId, tid);
+    },
+  );
+
+  test('fast lane: falls back to BLE when connect fails', () async {
     final radio = FakeRadio();
+    final medium = FakeFastMedium()..failConnect = true; // Wi-Fi dial fails
     final idA = await Identity.generate();
     final idB = await Identity.generate();
-    final idC = await Identity.generate();
-    final a = await makeNode(radio, idA, 'Alice');
-    final b = await makeNode(radio, idB, 'Bridge');
-    final c = await makeNode(radio, idC, 'Carol');
-
-    // A-B connected; C is away. A/C know each other (e.g. QR) — C needs A's
-    // key to decrypt on arrival (A's announce only floods 3 hops / 15s).
-    a.node.addContact(ContactIdentity.fromBundle(idC.publicBundle));
-    c.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    final a = await makeNode(
+      radio,
+      idA,
+      'Alice',
+      fastLane: medium.endpoint({FastLaneKind.wifiAware}),
+    );
+    final b = await makeNode(
+      radio,
+      idB,
+      'Bob',
+      fastLane: medium.endpoint({FastLaneKind.wifiAware}),
+    );
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
     radio.connect(idA.peerId, idB.peerId);
     await settle();
 
-    final msgId = (await a.node.sendText(idC.peerId, '전파 삭제 테스트'))!;
-    await settle();
-    // B relays + parks a copy for C. Keep its bytes for the zombie test.
-    expect(b.node.store.contains(msgId), isTrue);
-    final parkedBytes = b.node.store.frameFor(msgId)!.encode();
-
-    // A forged receipt from B (knows the msgId but is not the addressee)
-    // must NOT bury the message.
-    final forged = Frame.create(
-      type: FrameType.receipt,
-      ttl: 8,
-      src: idB.peerId,
-      dst: PeerId.broadcast,
-      payload: Uint8List(80), // garbage signature
+    final rnd = Random(8);
+    final fileBytes = Uint8List.fromList(
+      List.generate(300 * 1024, (_) => rnd.nextInt(256)),
     );
-    radio.nodes[idB.peerId.hex]!.injectRaw(forged.encode());
-    await settle();
-    expect(b.node.store.contains(msgId), isTrue);
+    final tid = await a.node.sendFile(
+      idB.peerId,
+      bytes: fileBytes,
+      name: 'fb.bin',
+      mime: 'application/octet-stream',
+    );
 
-    // C shows up next to B: parked text is handed over, C floods a SIGNED
-    // receipt, and every carrier drops its copy.
-    radio.connect(idB.peerId, idC.peerId);
-    final rx = await waitFor<TextReceived>(c, (e) => e.msgId == msgId);
-    expect(rx.text, '전파 삭제 테스트');
-    final deadline = DateTime.now().add(const Duration(seconds: 2));
-    while ((b.node.store.contains(msgId) || a.node.store.contains(msgId)) &&
-        DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
-    expect(b.node.store.contains(msgId), isFalse,
-        reason: '중계 노드의 사본이 서명 RECEIPT로 정리되어야 한다');
-    expect(a.node.store.contains(msgId), isFalse,
-        reason: '발신자 사본도 정리되어야 한다');
-
-    // Zombie block: an offline phone resurfacing with the ORIGINAL frame
-    // must not get it re-stored/re-relayed at B (tombstoned).
-    radio.nodes[idB.peerId.hex]!.injectRaw(parkedBytes);
-    await settle();
-    expect(b.node.store.contains(msgId), isFalse);
+    // Despite the Wi-Fi failure, BLE chunking delivers the exact file.
+    final got = await waitFor<FileReceived>(
+      b,
+      (e) => true,
+      timeout: const Duration(seconds: 20),
+    );
+    expect(got.bytes, fileBytes);
+    expect(tid, isNotNull);
   });
+
+  test('fast lane: cross-capability mismatch stays on BLE', () async {
+    final radio = FakeRadio();
+    final medium = FakeFastMedium();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    // A offers Wi-Fi Aware, B only Multipeer → no shared transport.
+    final a = await makeNode(
+      radio,
+      idA,
+      'Alice',
+      fastLane: medium.endpoint({FastLaneKind.wifiAware}),
+    );
+    final b = await makeNode(
+      radio,
+      idB,
+      'Bob',
+      fastLane: medium.endpoint({FastLaneKind.multipeer}),
+    );
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await settle();
+
+    final rnd = Random(9);
+    final fileBytes = Uint8List.fromList(
+      List.generate(300 * 1024, (_) => rnd.nextInt(256)),
+    );
+    await a.node.sendFile(
+      idB.peerId,
+      bytes: fileBytes,
+      name: 'mm.bin',
+      mime: 'application/octet-stream',
+    );
+
+    final got = await waitFor<FileReceived>(
+      b,
+      (e) => true,
+      timeout: const Duration(seconds: 20),
+    );
+    expect(got.bytes, fileBytes); // delivered over BLE
+  });
+
+  test(
+    'signed receipt purges relay copies; forged receipt is rejected',
+    () async {
+      final radio = FakeRadio();
+      final idA = await Identity.generate();
+      final idB = await Identity.generate();
+      final idC = await Identity.generate();
+      final a = await makeNode(radio, idA, 'Alice');
+      final b = await makeNode(radio, idB, 'Bridge');
+      final c = await makeNode(radio, idC, 'Carol');
+
+      // A-B connected; C is away. A/C know each other (e.g. QR) — C needs A's
+      // key to decrypt on arrival (A's announce only floods 3 hops / 15s).
+      a.node.addContact(ContactIdentity.fromBundle(idC.publicBundle));
+      c.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+      radio.connect(idA.peerId, idB.peerId);
+      await settle();
+
+      final msgId = (await a.node.sendText(idC.peerId, '전파 삭제 테스트'))!;
+      await settle();
+      // B relays + parks a copy for C. Keep its bytes for the zombie test.
+      expect(b.node.store.contains(msgId), isTrue);
+      final parkedBytes = b.node.store.frameFor(msgId)!.encode();
+
+      // A forged receipt from B (knows the msgId but is not the addressee)
+      // must NOT bury the message.
+      final forged = Frame.create(
+        type: FrameType.receipt,
+        ttl: 8,
+        src: idB.peerId,
+        dst: PeerId.broadcast,
+        payload: Uint8List(80), // garbage signature
+      );
+      radio.nodes[idB.peerId.hex]!.injectRaw(forged.encode());
+      await settle();
+      expect(b.node.store.contains(msgId), isTrue);
+
+      // C shows up next to B: parked text is handed over, C floods a SIGNED
+      // receipt, and every carrier drops its copy.
+      radio.connect(idB.peerId, idC.peerId);
+      final rx = await waitFor<TextReceived>(c, (e) => e.msgId == msgId);
+      expect(rx.text, '전파 삭제 테스트');
+      final deadline = DateTime.now().add(const Duration(seconds: 2));
+      while ((b.node.store.contains(msgId) || a.node.store.contains(msgId)) &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(
+        b.node.store.contains(msgId),
+        isFalse,
+        reason: '중계 노드의 사본이 서명 RECEIPT로 정리되어야 한다',
+      );
+      expect(a.node.store.contains(msgId), isFalse, reason: '발신자 사본도 정리되어야 한다');
+
+      // Zombie block: an offline phone resurfacing with the ORIGINAL frame
+      // must not get it re-stored/re-relayed at B (tombstoned).
+      radio.nodes[idB.peerId.hex]!.injectRaw(parkedBytes);
+      await settle();
+      expect(b.node.store.contains(msgId), isFalse);
+    },
+  );
 
   test('message from an unknown sender is parked and delivered once their '
       'ANNOUNCE arrives', () async {
