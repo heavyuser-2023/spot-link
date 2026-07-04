@@ -292,6 +292,59 @@ void main() {
     c.dispose();
   });
 
+  test('headless controller: no UI lifecycle, always notifies + relays',
+      () async {
+    // Models the Android foreground-service isolate (boot / swipe-kill
+    // recovery): no widget lifecycle, every incoming message must notify,
+    // and it must still receive + relay.
+    final ida = await Identity.generate();
+    final idb = await Identity.generate();
+    final radio = FakeRadio();
+    final notifications = <(String, String, String)>[];
+
+    final headless = MeshController(
+      identity: ida,
+      displayName: 'A',
+      db: AppDatabase(overridePath: p.join(tmp.path, 'c${counter++}.db')),
+      identityStore: IdentityStore(),
+      node: MeshNode(
+          identity: ida, displayName: 'A', transport: radio.create(ida.peerId)),
+      notifier: (key, title, body) => notifications.add((key, title, body)),
+      headless: true,
+    );
+    final bob = MeshController(
+      identity: idb,
+      displayName: 'Bob',
+      db: AppDatabase(overridePath: p.join(tmp.path, 'c${counter++}.db')),
+      identityStore: IdentityStore(),
+      node: MeshNode(
+          identity: idb, displayName: 'Bob', transport: radio.create(idb.peerId)),
+    );
+    await headless.init();
+    await bob.init();
+    expect(headless.started, isTrue); // mesh runs with no UI attached
+    radio.connect(ida.peerId, idb.peerId);
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+
+    // A headless node never went through the widget lifecycle, so it must
+    // treat itself as "background" and notify on the very first message —
+    // this is exactly the boot/kill-recovery delivery path.
+    await bob.sendText(ida.peerId.hex, '앱이 꺼져 있어도 도착');
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(notifications.length, 1);
+    expect(notifications.single.$2, 'Bob');
+    expect(notifications.single.$3, '앱이 꺼져 있어도 도착');
+    // And it actually received + persisted the message (not just notified) —
+    // checked via the DB since a headless node never opens a chat view.
+    final stored = await headless.db.messagesFor(idb.peerId.hex);
+    expect(stored.any((m) => m.text == '앱이 꺼져 있어도 도착'), isTrue);
+
+    await headless.node.dispose();
+    headless.dispose();
+    await bob.node.dispose();
+    bob.dispose();
+  });
+
   test('incoming message notifies only when app is backgrounded', () async {
     final ida = await Identity.generate();
     final idb = await Identity.generate();
