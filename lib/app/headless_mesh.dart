@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -44,6 +45,12 @@ class _HeadlessMeshHandler extends TaskHandler {
     if (_controller != null) return;
     try {
       WidgetsFlutterBinding.ensureInitialized();
+      // The foreground-service background engine does NOT auto-register
+      // plugins. Without this, every plugin channel (BLE, sqflite, secure
+      // storage, notifications) throws MissingPluginException and the mesh
+      // can't even load its identity. This registers the Dart-side plugin
+      // implementations for this isolate.
+      DartPluginRegistrant.ensureInitialized();
       await NotificationService.init();
       final store = IdentityStore();
       final name = await store.storedName();

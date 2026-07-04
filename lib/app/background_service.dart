@@ -49,6 +49,7 @@ class BackgroundService {
         // 돌린다 — 화면을 한 번도 안 열어도 이 기기는 릴레이 노드로 산다.
         autoRunOnBoot: true,
         autoRunOnMyPackageReplaced: true,
+        // 스와이프 종료(onTaskRemoved) 후 서비스 자동 재시작.
         allowWakeLock: true,
         allowWifiLock: false,
       ),
