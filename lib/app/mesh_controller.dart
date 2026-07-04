@@ -309,10 +309,14 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final wasForeground = _foreground;
     _foreground = state == AppLifecycleState.resumed;
-    // Coming back to the foreground: clear the notification for the open chat.
-    if (_foreground && _openPeer != null) {
-      NotificationService.cancelFor(_openPeer!);
+    if (_foreground && !wasForeground) {
+      // Returning to the foreground after iOS suspended us: immediately
+      // re-announce presence and re-kick discovery so we (and peers) recover
+      // online-status without waiting for the next 15s cycle.
+      if (started) unawaited(node.wakeUp());
+      if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
     }
   }
 

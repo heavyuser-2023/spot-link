@@ -111,6 +111,11 @@ abstract class MeshTransportInterface {
   Future<bool> ensureReady();
   Future<void> start();
   Future<void> stop();
+
+  /// Nudge the radio back to active discovery/advertising (e.g. the app just
+  /// returned to the foreground). No-op if already running.
+  void wake();
+
   Future<void> broadcast(Uint8List frameBytes, {String? exceptLinkId});
   Future<void> sendToLink(String linkId, Uint8List frameBytes);
 }
@@ -252,6 +257,22 @@ class MeshTransport implements MeshTransportInterface {
     // each neighbour is even after advertisements stop (connected peers
     // usually stop advertising).
     _rssiTimer = Timer.periodic(_rssiPollInterval, (_) => _pollRssi());
+  }
+
+  @override
+  void wake() {
+    if (!_started) return;
+    // Re-assert advertising and scanning. iOS suspends both while the app is
+    // backgrounded; on resume this makes us visible / discovering again
+    // without waiting for the next duty cycle.
+    if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
+      unawaited(_setupPeripheral().then((_) => _startAdvertising()));
+    }
+    if (_powerMode == PowerMode.active) {
+      unawaited(_startScanning());
+    } else {
+      _beginDutyCycle();
+    }
   }
 
   Future<void> _pollRssi() async {

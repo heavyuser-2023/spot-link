@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -211,6 +212,35 @@ void main() {
     // The thread copy is updated too.
     final threadMsg = c.conversation(bobHex).last;
     expect(threadMsg.status, MsgStatus.sent);
+
+    await c.node.dispose();
+    c.dispose();
+  });
+
+  test('returning to foreground re-announces + wakes the radio', () async {
+    final id = await Identity.generate();
+    final radio = FakeRadio();
+    final t = radio.create(id.peerId);
+    final c = MeshController(
+      identity: id,
+      displayName: 'Me',
+      db: AppDatabase(overridePath: p.join(tmp.path, 'c${counter++}.db')),
+      identityStore: IdentityStore(),
+      node: MeshNode(identity: id, displayName: 'Me', transport: t),
+    );
+    await c.init();
+    expect(t.wakeCount, 0);
+
+    // Background → foreground should wake the radio exactly once.
+    c.didChangeAppLifecycleState(AppLifecycleState.paused);
+    c.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    await pumpEventQueue();
+    expect(t.wakeCount, 1);
+
+    // Staying resumed (repeat event) must not re-wake.
+    c.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    await pumpEventQueue();
+    expect(t.wakeCount, 1);
 
     await c.node.dispose();
     c.dispose();

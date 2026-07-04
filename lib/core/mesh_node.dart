@@ -294,6 +294,16 @@ class MeshNode {
     await transport.broadcast(_announceFrame().encode());
   }
 
+  /// Immediately re-announce presence and (re)kick discovery. Called when the
+  /// app returns to the foreground: iOS suspends the 15s presence timer while
+  /// backgrounded, so on resume we'd otherwise wait up to a full interval
+  /// before peers see us again. This makes online-status / reachability
+  /// recover instantly.
+  Future<void> wakeUp() async {
+    await _broadcastAnnounce();
+    transport.wake();
+  }
+
   Future<void> stop() async {
     _announceTimer?.cancel();
     _announceTimer = null;

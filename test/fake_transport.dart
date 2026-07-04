@@ -116,6 +116,12 @@ class FakeTransport implements MeshTransportInterface {
     _neighbours.clear();
   }
 
+  /// Test hook: counts wake() calls so tests can assert foreground-resume
+  /// re-announce behaviour.
+  int wakeCount = 0;
+  @override
+  void wake() => wakeCount++;
+
   void _addNeighbor(PeerId other) {
     final linkId = other.hex;
     if (_neighbours.containsKey(linkId)) return;
