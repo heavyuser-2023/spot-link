@@ -201,6 +201,17 @@ class MeshTransport implements MeshTransportInterface {
   /// Request permissions and power state; returns true if BLE is usable.
   @override
   Future<bool> ensureReady() async {
+    // If the adapter already reports powered-on, permissions are granted and
+    // the radio is on — skip the interactive authorize(). This is essential
+    // for the Android HEADLESS service isolate: authorize() there calls
+    // requestPermissions() on an Activity that doesn't exist and fails, which
+    // would stop the mesh from ever starting. Permissions were already
+    // granted in a prior UI session, so the state check (Context-based, no
+    // Activity) is enough. Also spares the UI a redundant prompt.
+    if (_central.state == BluetoothLowEnergyState.poweredOn) {
+      _log('BLE ensureReady: already powered on');
+      return true;
+    }
     try {
       final a = await _central.authorize();
       final b = await _peripheral.authorize();
@@ -209,6 +220,11 @@ class MeshTransport implements MeshTransportInterface {
       // authorize() is unsupported on Darwin/desktop: fall back to the cached
       // adapter state (updated via stateChanged events from the OS).
       _log('BLE ensureReady: state=${_central.state}');
+      return _central.state == BluetoothLowEnergyState.poweredOn;
+    } catch (e) {
+      // Android in a headless isolate: authorize() throws (no Activity). Fall
+      // back to whatever the Context-based state says.
+      _log('BLE ensureReady: authorize failed ($e), state=${_central.state}');
       return _central.state == BluetoothLowEnergyState.poweredOn;
     }
   }
