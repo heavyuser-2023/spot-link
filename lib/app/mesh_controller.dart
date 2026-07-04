@@ -9,7 +9,8 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-import '../core/ble/mesh_transport.dart' show RadioStatus, RssiSample;
+import '../core/ble/mesh_transport.dart'
+    show RadioStatus, RssiSample, bleLogSink;
 import '../core/crypto/identity.dart';
 import '../core/mesh_node.dart';
 import '../core/model/frame.dart';
@@ -221,6 +222,8 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     // Safe on every platform: no native handler → capabilities stays empty
     // and files use the LAN socket or BLE.
     await PlatformFastLane.instance.warmUp();
+    bleLogSink?.call('FastLane caps: '
+        '${PlatformFastLane.instance.capabilities.map((k) => k.name).toList()}');
     if (headless) {
       // No UI in this isolate: every incoming message should notify.
       _foreground = false;

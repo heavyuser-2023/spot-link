@@ -519,17 +519,24 @@ class MeshNode {
       _fastAcceptWaiters.remove(tid);
     }
 
+    bleLogSink?.call('FT fast accept: ${accept.offer.kind.name}');
     FastLaneSession? session;
     try {
       session = await fastLane!.connect(tid, accept.offer);
-      if (session == null) return false;
+      if (session == null) {
+        bleLogSink?.call('FT fast connect null → BLE');
+        return false;
+      }
       _fastActive.add(tid);
+      bleLogSink?.call('FT fast connected: ${accept.offer.kind.name}');
       // Send the whole file as one encrypted, length-prefixed blob.
       final cipher = await crypto.encrypt(bytes, kex);
       final header = ByteData(4)..setUint32(0, cipher.length, Endian.big);
       session.add(header.buffer.asUint8List());
       session.add(cipher);
       await session.finishSending();
+      bleLogSink?.call('FT fast send done: ${sender.meta.name} '
+          '(${bytes.length}B via ${accept.offer.kind.name})');
       // Wait for the receiver's completion ACK (arrives over BLE) — the
       // watchdog already fails the transfer if it never comes.
       _events.add(FileProgress(tid, 1.0, true));
@@ -1036,6 +1043,7 @@ class MeshNode {
       }
     }
     if (chosen == null) return; // no shared transport → BLE
+    bleLogSink?.call('FT fast offer accepted: ${chosen.name} (tid $tid)');
 
     final kex = _knownKex[from.hex];
     if (kex == null) return;
