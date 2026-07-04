@@ -44,7 +44,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   style: Theme.of(context).textTheme.headlineSmall),
               const SizedBox(height: 8),
               Text(
-                '주변 사람들에게 표시될 이름을 정해주세요.\n'
+                '주변 친구들에게 표시될 이름을 정해주세요.\n'
                 '인터넷 없이 블루투스로 안전하게 대화합니다.',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),

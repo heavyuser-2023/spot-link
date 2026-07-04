@@ -65,14 +65,14 @@ void main() {
 
     // Bottom nav labels present.
     expect(find.text('채팅'), findsWidgets);
-    expect(find.text('사람'), findsWidgets);
+    expect(find.text('친구'), findsWidgets);
     expect(find.text('내 정보'), findsWidgets);
 
     // Chats tab empty state.
     expect(find.text('아직 대화가 없어요'), findsOneWidget);
 
     // People tab.
-    await tester.tap(find.text('사람').last);
+    await tester.tap(find.text('친구').last);
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('아직 아무도 없어요'), findsOneWidget);
     expect(find.text('QR로 추가'), findsOneWidget);
@@ -118,7 +118,7 @@ void main() {
     ));
     await tester.pump(const Duration(milliseconds: 50));
 
-    await tester.tap(find.text('사람').last);
+    await tester.tap(find.text('친구').last);
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('Bob'), findsOneWidget);
 

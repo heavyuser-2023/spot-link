@@ -163,7 +163,7 @@ class _EmptyChats extends StatelessWidget {
                 style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
             Text(
-              '인터넷 없이, 주변 사람과 바로 대화할 수 있어요.',
+              '인터넷 없이, 주변 친구와 바로 대화할 수 있어요.',
               textAlign: TextAlign.center,
               style: Theme.of(context)
                   .textTheme
@@ -174,7 +174,7 @@ class _EmptyChats extends StatelessWidget {
             FilledButton.icon(
               onPressed: onFindPeople,
               icon: const Icon(Icons.people_alt_outlined),
-              label: const Text('주변 사람 보기'),
+              label: const Text('주변 친구 보기'),
             ),
             const SizedBox(height: 8),
             OutlinedButton.icon(

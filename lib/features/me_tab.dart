@@ -168,7 +168,7 @@ class MeTab extends StatelessWidget {
       builder: (dialogContext) => AlertDialog(
         title: const Text('중계 보관함 비우기'),
         content: const Text(
-            '다른 사람에게 전달되기를 기다리는 메시지를 모두 삭제합니다.\n'
+            '상대에게 전달되기를 기다리는 메시지를 모두 삭제합니다.\n'
             '삭제하면 이 기기를 통해서는 전달되지 않습니다 (다른 중계 기기가 '
             '갖고 있다면 그쪽으로는 전달될 수 있음).'),
         actions: [

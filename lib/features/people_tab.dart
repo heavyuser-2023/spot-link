@@ -9,8 +9,47 @@ import 'chat_screen.dart';
 import 'scan_screen.dart';
 import 'ui_utils.dart';
 
-class PeopleTab extends StatelessWidget {
-  const PeopleTab({super.key});
+class PeopleTab extends StatefulWidget {
+  /// True while this tab is the visible one. Flipping false→true replays the
+  /// FAB pop-in animation (the tab lives in an IndexedStack, so it isn't
+  /// rebuilt on every switch).
+  final bool active;
+  const PeopleTab({super.key, this.active = true});
+
+  @override
+  State<PeopleTab> createState() => _PeopleTabState();
+}
+
+class _PeopleTabState extends State<PeopleTab> {
+  final _scroll = ScrollController();
+  // 0 = at top (full extended FAB) … 1 = scrolled (collapsed to icon).
+  double _collapse = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_onScroll);
+  }
+
+  @override
+  void didUpdateWidget(PeopleTab old) {
+    super.didUpdateWidget(old);
+    // Became the active tab: the FAB's own AnimatedScale replays via its key.
+    if (!old.active && widget.active) setState(() {});
+  }
+
+  void _onScroll() {
+    if (!_scroll.hasClients) return;
+    // Collapse over the first 60px of scroll — like Instagram's compose FAB.
+    final next = (_scroll.offset / 60).clamp(0.0, 1.0);
+    if ((next - _collapse).abs() > 0.01) setState(() => _collapse = next);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -33,7 +72,8 @@ class PeopleTab extends StatelessWidget {
       body: c.contacts.isEmpty
           ? const _EmptyPeople()
           : ListView(
-              padding: const EdgeInsets.only(top: 4, bottom: 88),
+              controller: _scroll,
+              padding: const EdgeInsets.only(top: 4, bottom: 96),
               children: [
                 if (nearby.isNotEmpty) ...[
                   Padding(
@@ -50,10 +90,108 @@ class PeopleTab extends StatelessWidget {
                 ],
               ],
             ),
-      floatingActionButton: FloatingActionButton.extended(
+      floatingActionButton: _AddFriendFab(
+        active: widget.active,
+        collapse: _collapse,
         onPressed: () => pushWithController(context, const ScanScreen()),
-        icon: const Icon(Icons.qr_code_scanner),
-        label: const Text('QR로 추가'),
+      ),
+    );
+  }
+}
+
+/// Instagram-style compose FAB: pops in slightly oversized then settles when
+/// the tab opens, and shrinks from a labelled pill to a compact icon as the
+/// list scrolls.
+class _AddFriendFab extends StatefulWidget {
+  final bool active;
+  final double collapse; // 0 = full pill, 1 = icon only
+  final VoidCallback onPressed;
+  const _AddFriendFab(
+      {required this.active,
+      required this.collapse,
+      required this.onPressed});
+
+  @override
+  State<_AddFriendFab> createState() => _AddFriendFabState();
+}
+
+class _AddFriendFabState extends State<_AddFriendFab> {
+  bool _entered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.active) {
+      _playEntrance();
+    } else {
+      _entered = true;
+    }
+  }
+
+  @override
+  void didUpdateWidget(_AddFriendFab old) {
+    super.didUpdateWidget(old);
+    // Became the active tab: replay the pop-in without changing the FAB's
+    // identity (a key change would trigger Scaffold's cross-fade and briefly
+    // show two FABs).
+    if (!old.active && widget.active) _playEntrance();
+  }
+
+  void _playEntrance() {
+    setState(() => _entered = false); // start oversized
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _entered = true); // settle → overshoot
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    // Scroll shrink: full pill → compact icon, plus a slight overall scale-down.
+    final t = widget.collapse;
+    final showLabel = t < 0.5;
+    final scale = (_entered ? 1.0 : 1.28) * (1 - 0.12 * t);
+
+    return AnimatedScale(
+      scale: scale,
+      duration: const Duration(milliseconds: 420),
+      curve: Curves.easeOutBack, // overshoot → "조금 크게 보였다가 작아지고"
+      child: Material(
+        color: scheme.primary,
+        elevation: 3,
+        borderRadius: BorderRadius.circular(28),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: widget.onPressed,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOut,
+            height: 56,
+            padding: EdgeInsets.symmetric(horizontal: showLabel ? 20 : 16),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.qr_code_scanner, color: scheme.onPrimary),
+                // Collapse the label to zero width as we scroll.
+                ClipRect(
+                  child: AnimatedAlign(
+                    duration: const Duration(milliseconds: 260),
+                    curve: Curves.easeOut,
+                    alignment: Alignment.centerLeft,
+                    widthFactor: showLabel ? 1.0 : 0.0,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 10),
+                      child: Text('QR로 추가',
+                          style: TextStyle(
+                              color: scheme.onPrimary,
+                              fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

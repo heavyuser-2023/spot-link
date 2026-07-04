@@ -48,10 +48,10 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final c = context.watch<MeshController>();
-    final titles = ['채팅', '사람', '내 정보'];
+    final titles = ['채팅', '친구', '내 정보'];
     final tabs = [
       ChatsTab(onFindPeople: () => setState(() => _index = 1)),
-      const PeopleTab(),
+      PeopleTab(active: _index == 1),
       const MeTab(),
     ];
 
@@ -87,7 +87,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const NavigationDestination(
             icon: Icon(Icons.people_outline),
             selectedIcon: Icon(Icons.people),
-            label: '사람',
+            label: '친구',
           ),
           const NavigationDestination(
             icon: Icon(Icons.qr_code_outlined),
@@ -211,7 +211,7 @@ class _StatusSheet extends StatelessWidget {
                   child: _StatusStat(
                     icon: Icons.people_alt_outlined,
                     value: '${c.nearbyCount}',
-                    label: '주변 사람',
+                    label: '주변 친구',
                     color: c.nearbyCount > 0 ? scheme.primary : scheme.outline,
                   ),
                 ),
@@ -280,7 +280,7 @@ class _BluetoothBanner extends StatelessWidget {
         '블루투스가 꺼져 있습니다. 블루투스를 켜면 자동으로 주변 검색을 시작합니다.',
       RadioStatus.unauthorized =>
         '블루투스 권한이 없습니다. 설정 > SpotLink에서 블루투스를 허용해 주세요.',
-      _ => '블루투스가 꺼져 있거나 권한이 없어 주변 사람을 찾을 수 없습니다.',
+      _ => '블루투스가 꺼져 있거나 권한이 없어 주변 친구를 찾을 수 없습니다.',
     };
     return MaterialBanner(
       backgroundColor: scheme.errorContainer,
