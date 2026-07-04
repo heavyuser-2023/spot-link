@@ -10,6 +10,8 @@
 	<string>SpotLink uses Bluetooth to advertise this device so others can reach you over the mesh.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>The camera is used to scan a contact's QR code to exchange keys securely.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SpotLink sends files directly to nearby people over your local Wi-Fi for faster transfers.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Attach photos and files to send over the mesh.</string>
 	<key>UIBackgroundModes</key>

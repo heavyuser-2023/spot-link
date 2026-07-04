@@ -4,9 +4,10 @@ import 'dart:typed_data';
 /// The kind of direct Wi-Fi transport a device can offer for a bulk transfer.
 /// Values are wire-stable (sent in a negotiation frame) — append only.
 enum FastLaneKind {
-  wifiAware(1), // Android Wi-Fi Aware (NAN)
-  wifiDirect(2), // Android Wi-Fi Direct (WifiP2p)
-  multipeer(3); // iOS/macOS MultipeerConnectivity (AWDL)
+  wifiAware(1), // Android Wi-Fi Aware (NAN) — AP 없는 직접 연결 (네이티브)
+  wifiDirect(2), // Android Wi-Fi Direct (WifiP2p) — 네이티브
+  multipeer(3), // iOS/macOS MultipeerConnectivity (AWDL) — 네이티브
+  lanSocket(4); // 같은 Wi-Fi(AP) 위 TCP 소켓 — 순수 Dart, 크로스플랫폼
 
   final int code;
   const FastLaneKind(this.code);

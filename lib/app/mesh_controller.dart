@@ -13,6 +13,7 @@ import '../core/ble/mesh_transport.dart' show RadioStatus, RssiSample;
 import '../core/crypto/identity.dart';
 import '../core/mesh_node.dart';
 import '../core/model/frame.dart';
+import '../core/transfer/lan_socket_fast_lane.dart';
 import '../core/model/peer_id.dart';
 import '../core/transfer/file_transfer.dart';
 import '../data/app_database.dart';
@@ -107,7 +108,15 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     MeshNode? node,
     void Function(String conversationKey, String title, String body)? notifier,
     this.headless = false,
-  })  : node = node ?? MeshNode(identity: identity, displayName: displayName),
+  })  : node = node ??
+            MeshNode(
+              identity: identity,
+              displayName: displayName,
+              // LAN fast lane: when both peers share a Wi-Fi, files move over
+              // TCP at Wi-Fi speed; otherwise this is inert and BLE carries
+              // everything. Pure Dart, no native dependency, safe default.
+              fastLane: LanSocketFastLane(),
+            ),
         _notify = notifier ?? _defaultNotify;
 
   static void _defaultNotify(String key, String title, String body) =>

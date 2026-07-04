@@ -1,8 +1,23 @@
-# Wi-Fi 고속 파일 전송 하이브리드 — 설계 (제안)
+# Wi-Fi 고속 파일 전송 하이브리드 — 설계 & 구현 현황
 
-> 상태: **설계 초안**. 구현 전 검토용. 기존 BLE 메시는 그대로 두고,
-> **파일 전송에 한해** 조건이 맞을 때만 Wi-Fi 고속 경로로 "업그레이드"하는
-> 보완적(opt-in, 실패 시 자동 폴백) 접근.
+> 상태: **코어 + LAN 소켓 경로 구현·테스트 완료**, 네이티브 AP-less 경로는
+> 실기기 대기. 기존 BLE 메시는 그대로 두고, **파일 전송에 한해** 조건이 맞을
+> 때만 Wi-Fi 고속 경로로 "업그레이드"하는 보완적(opt-in, 실패 시 자동 폴백) 접근.
+>
+> ## 구현 현황
+> - ✅ **코어 추상화**: `FastLaneInterface`/`Kind`/`Offer`/`Session`
+>   (`lib/core/transfer/fast_lane.dart`)
+> - ✅ **BLE 협상**: `fileFastOffer`/`fileFastAccept` 프레임, offer→accept→
+>   connect→stream→완료ACK, 전 구간 폴백 (`lib/core/mesh_node.dart`)
+> - ✅ **LAN 소켓 경로**(순수 Dart, 크로스플랫폼): 같은 Wi-Fi 위 TCP 전송
+>   (`lib/core/transfer/lan_socket_fast_lane.dart`) — 앱에 기본 주입됨
+> - ✅ **테스트**: 페이크 매체 3종(성공/connect실패/능력불일치) + **실제
+>   loopback TCP 소켓** 2종 = 총 113개 통과
+> - ⏳ **네이티브 AP-less 경로**(Wi-Fi Aware/Direct/MultipeerConnectivity):
+>   미구현 — 동일 플랫폼 실기기 2대 검증 필요
+>
+> 즉 **"둘 다 같은 Wi-Fi"면 지금 코드로 고속 전송이 동작**하고, AP 없는 순수
+> P2P는 다음 네이티브 단계다. 어느 경우든 실패하면 BLE로 폴백한다.
 
 ## 1. 목표와 원칙
 

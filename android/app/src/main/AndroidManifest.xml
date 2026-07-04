@@ -25,6 +25,9 @@
          OEM battery managers (Samsung 등) silently kill the relay service. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- LAN fast lane: TCP socket between peers on the same Wi-Fi. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <application
