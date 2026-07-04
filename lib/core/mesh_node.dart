@@ -543,11 +543,15 @@ class MeshNode {
       // The transport may still be flushing queued bytes — Multipeer queues
       // .reliable sends asynchronously, and disconnecting now would drop
       // whatever hasn't left the radio yet. The receiver closes its side once
-      // it has assembled the file, so wait for that EOF before closing ours.
-      // Budget scales with size (floor ~512KB/s) so big files aren't cut off.
+      // it has assembled the file, so wait for that EOF before closing ours —
+      // or for the completion ACK (authoritative; MC's disconnect notice can
+      // lag ~30s when two sessions share the same peer pair). Budget scales
+      // with size (floor ~512KB/s) so big files aren't cut off.
       try {
-        await session.incoming.drain<void>().timeout(
-            Duration(seconds: 30 + bytes.length ~/ (512 * 1024)));
+        await Future.any([
+          session.incoming.drain<void>(),
+          _senderRetired(tid),
+        ]).timeout(Duration(seconds: 30 + bytes.length ~/ (512 * 1024)));
       } catch (_) {}
       bleLogSink?.call('FT fast send done: ${sender.meta.name} '
           '(${bytes.length}B via ${accept.offer.kind.name})');
@@ -562,6 +566,14 @@ class MeshNode {
       feeder?.cancel();
       _fastActive.remove(tid);
       await session?.close();
+    }
+  }
+
+  /// Completes once the sender is retired (complete ACK arrived or it was
+  /// cancelled/timed out) — used to end the post-send flush wait early.
+  Future<void> _senderRetired(String tid) async {
+    while (_senders.containsKey(tid)) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
     }
   }
 
