@@ -27,6 +27,11 @@
 
     <!-- LAN fast lane: TCP socket between peers on the same Wi-Fi. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Wi-Fi Direct fast lane (AP-less P2P file transfer). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 

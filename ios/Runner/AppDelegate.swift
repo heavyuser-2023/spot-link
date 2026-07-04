@@ -12,5 +12,8 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    // Wi-Fi fast lane (MultipeerConnectivity).
+    FastLanePlugin.register(
+      with: engineBridge.pluginRegistry.registrar(forPlugin: "FastLanePlugin")!)
   }
 }

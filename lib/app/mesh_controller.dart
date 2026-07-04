@@ -13,7 +13,9 @@ import '../core/ble/mesh_transport.dart' show RadioStatus, RssiSample;
 import '../core/crypto/identity.dart';
 import '../core/mesh_node.dart';
 import '../core/model/frame.dart';
+import '../core/transfer/composite_fast_lane.dart';
 import '../core/transfer/lan_socket_fast_lane.dart';
+import '../core/transfer/platform_fast_lane.dart';
 import '../core/model/peer_id.dart';
 import '../core/transfer/file_transfer.dart';
 import '../data/app_database.dart';
@@ -112,10 +114,14 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
             MeshNode(
               identity: identity,
               displayName: displayName,
-              // LAN fast lane: when both peers share a Wi-Fi, files move over
-              // TCP at Wi-Fi speed; otherwise this is inert and BLE carries
-              // everything. Pure Dart, no native dependency, safe default.
-              fastLane: LanSocketFastLane(),
+              // Fast lanes, tried in capability order per transfer, all with
+              // BLE fallback: (1) native AP-less P2P (Android Wi-Fi Direct /
+              // iOS MultipeerConnectivity), (2) LAN TCP when on the same
+              // Wi-Fi. Inert where unavailable → BLE carries everything.
+              fastLane: CompositeFastLane([
+                PlatformFastLane.instance,
+                LanSocketFastLane(),
+              ]),
             ),
         _notify = notifier ?? _defaultNotify;
 
@@ -211,6 +217,10 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> init() async {
+    // Detect native P2P fast-lane capabilities (Wi-Fi Direct / Multipeer).
+    // Safe on every platform: no native handler → capabilities stays empty
+    // and files use the LAN socket or BLE.
+    await PlatformFastLane.instance.warmUp();
     if (headless) {
       // No UI in this isolate: every incoming message should notify.
       _foreground = false;

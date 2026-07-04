@@ -10,14 +10,24 @@
 > - ✅ **BLE 협상**: `fileFastOffer`/`fileFastAccept` 프레임, offer→accept→
 >   connect→stream→완료ACK, 전 구간 폴백 (`lib/core/mesh_node.dart`)
 > - ✅ **LAN 소켓 경로**(순수 Dart, 크로스플랫폼): 같은 Wi-Fi 위 TCP 전송
->   (`lib/core/transfer/lan_socket_fast_lane.dart`) — 앱에 기본 주입됨
-> - ✅ **테스트**: 페이크 매체 3종(성공/connect실패/능력불일치) + **실제
->   loopback TCP 소켓** 2종 = 총 113개 통과
-> - ⏳ **네이티브 AP-less 경로**(Wi-Fi Aware/Direct/MultipeerConnectivity):
->   미구현 — 동일 플랫폼 실기기 2대 검증 필요
+>   (`lib/core/transfer/lan_socket_fast_lane.dart`) — 실제 소켓으로 검증
+> - ✅ **컴포지트/채널 계층**: 여러 경로를 능력 순으로 라우팅
+>   (`composite_fast_lane.dart`), 네이티브 채널 브리지(`platform_fast_lane.dart`)
+> - ✅ **네이티브 AP-less 경로 구현**(컴파일·통합 완료, 런타임 미검증):
+>   - Android **Wi-Fi Direct**: 수신자가 자율 그룹(GO 192.168.49.1) 생성→
+>     SSID/passphrase를 BLE로 회신, 송신자가 `WifiNetworkSpecifier`로 그 Wi-Fi에
+>     접속 후 TCP 소켓 — 바이트는 네이티브 소켓이 나름
+>     (`android/.../FastLanePlugin.kt`)
+>   - iOS **MultipeerConnectivity**: MCSession advertiser/browser + `sendData`
+>     (`ios/Runner/FastLanePlugin.swift`)
+> - ✅ **테스트**: 페이크 3종 + 실제 loopback TCP 2종 = 총 113개 통과.
+>   iOS/Android 릴리즈 빌드 성공(네이티브 컴파일 검증)
+> - ⏳ **런타임 검증**: 동일 플랫폼 실기기 2대(Android 2대 / iOS 2대) 필요.
+>   이 환경에서 미수행 — 사용자 요청으로 "테스트 불가 감수, 최선 구현"으로 진행
 >
-> 즉 **"둘 다 같은 Wi-Fi"면 지금 코드로 고속 전송이 동작**하고, AP 없는 순수
-> P2P는 다음 네이티브 단계다. 어느 경우든 실패하면 BLE로 폴백한다.
+> 즉 **LAN(같은 Wi-Fi)은 실동작·검증 완료**, **네이티브 AP-less P2P는 API대로
+> 구현·컴파일 완료했으나 실기기 런타임은 미검증**이다. 어느 경로든 실패하면
+> 항상 BLE로 폴백하므로, 네이티브가 특정 기기에서 안 붙어도 전송은 된다.
 
 ## 1. 목표와 원칙
 
