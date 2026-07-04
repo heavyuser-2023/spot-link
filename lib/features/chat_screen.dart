@@ -20,6 +20,8 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
+enum _AttachSource { gallery, file }
+
 class _ChatScreenState extends State<ChatScreen> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
@@ -69,20 +71,63 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _attach() async {
-    final result = await FilePicker.platform.pickFiles(withData: true);
+    // Ask where to pick from: the photo gallery or the file browser.
+    final source = await showModalBottomSheet<_AttachSource>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor:
+                    Theme.of(sheet).colorScheme.primaryContainer,
+                child: const Icon(Icons.photo_library_outlined),
+              ),
+              title: const Text('사진·동영상'),
+              subtitle: const Text('갤러리에서 선택 (여러 장 가능)'),
+              onTap: () => Navigator.pop(sheet, _AttachSource.gallery),
+            ),
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor:
+                    Theme.of(sheet).colorScheme.secondaryContainer,
+                child: const Icon(Icons.insert_drive_file_outlined),
+              ),
+              title: const Text('파일'),
+              subtitle: const Text('문서·압축 등 모든 파일'),
+              onTap: () => Navigator.pop(sheet, _AttachSource.file),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (source == null || !mounted) return;
+
+    // Gallery uses the platform media picker (PHPicker on iOS, gallery on
+    // Android) and allows multi-select; files keep the single-pick browser.
+    final result = await FilePicker.platform.pickFiles(
+      type: source == _AttachSource.gallery ? FileType.media : FileType.any,
+      allowMultiple: source == _AttachSource.gallery,
+      withData: true,
+    );
     if (result == null || result.files.isEmpty) return;
-    final f = result.files.first;
-    final bytes =
-        f.bytes ?? (f.path != null ? await File(f.path!).readAsBytes() : null);
-    if (bytes == null) return;
     if (!mounted) return;
-    final mime = lookupMimeType(f.name) ?? 'application/octet-stream';
-    await context.read<MeshController>().sendFile(
-          widget.peerHex,
-          bytes: bytes,
-          name: f.name,
-          mime: mime,
-        );
+    final controller = context.read<MeshController>();
+    for (final f in result.files) {
+      final bytes = f.bytes ??
+          (f.path != null ? await File(f.path!).readAsBytes() : null);
+      if (bytes == null) continue;
+      final mime = lookupMimeType(f.name) ?? 'application/octet-stream';
+      await controller.sendFile(
+        widget.peerHex,
+        bytes: bytes,
+        name: f.name,
+        mime: mime,
+      );
+    }
     _animateToBottom();
   }
 

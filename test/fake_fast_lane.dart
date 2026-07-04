@@ -101,5 +101,8 @@ class _FakeSession implements FastLaneSession {
     if (_closed) return;
     _closed = true;
     if (!_incoming.isClosed) await _incoming.close();
+    // Like a real socket/MC disconnect: the peer's read stream ends too.
+    final peer = _peer;
+    if (peer != null && !peer._incoming.isClosed) await peer._incoming.close();
   }
 }

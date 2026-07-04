@@ -535,6 +535,15 @@ class MeshNode {
       session.add(header.buffer.asUint8List());
       session.add(cipher);
       await session.finishSending();
+      // The transport may still be flushing queued bytes — Multipeer queues
+      // .reliable sends asynchronously, and disconnecting now would drop
+      // whatever hasn't left the radio yet. The receiver closes its side once
+      // it has assembled the file, so wait for that EOF before closing ours.
+      try {
+        await session.incoming
+            .drain<void>()
+            .timeout(const Duration(seconds: 30));
+      } catch (_) {}
       bleLogSink?.call('FT fast send done: ${sender.meta.name} '
           '(${bytes.length}B via ${accept.offer.kind.name})');
       // Wait for the receiver's completion ACK (arrives over BLE) — the
