@@ -135,6 +135,9 @@ extension FastLanePlugin: MCSessionDelegate {
       emit(tid, "connected")
     case .notConnected:
       emit(tid, "eof")
+      // Drop this transfer's MC objects so stale advertisers/sessions don't
+      // accumulate across retries and cross-talk between transfers.
+      teardown(tid)
     default:
       break
     }
@@ -150,13 +153,12 @@ extension FastLanePlugin: MCSessionDelegate {
 
 // MARK: - Advertiser (receiver side)
 extension FastLanePlugin: MCNearbyServiceAdvertiserDelegate {
-  func advertiser(_: MCNearbyServiceAdvertiser,
+  func advertiser(_ advertiser: MCNearbyServiceAdvertiser,
                   didReceiveInvitationFromPeer _: MCPeerID,
                   withContext _: Data?,
                   invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-    // Accept into the session we prepared for this transfer. We only run one
-    // advertiser per transferId, so accept into its session.
-    if let tid = advertisers.first(where: { _ in true })?.key,
+    // Accept into the session prepared for THIS advertiser's transfer.
+    if let tid = advertisers.first(where: { $0.value === advertiser })?.key,
        let session = sessions[tid] {
       invitationHandler(true, session)
     } else {

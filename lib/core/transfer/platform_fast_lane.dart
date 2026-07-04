@@ -130,8 +130,8 @@ class PlatformFastLane implements FastLaneInterface {
         return null;
       }
       return _PlatformSession(this, transferIdHex);
-    }).timeout(const Duration(seconds: 10), onTimeout: () {
-      _teardown(transferIdHex);
+    }).timeout(const Duration(seconds: 25), onTimeout: () {
+      unawaited(_close(transferIdHex)); // stop the native advertiser too
       return null;
     });
     return FastLaneInbound(FastLaneOffer(kind, blob), session);
@@ -160,9 +160,9 @@ class PlatformFastLane implements FastLaneInterface {
       return null;
     }
     final ok = await connected.future
-        .timeout(const Duration(seconds: 10), onTimeout: () => false);
+        .timeout(const Duration(seconds: 25), onTimeout: () => false);
     if (!ok) {
-      _teardown(transferIdHex);
+      await _close(transferIdHex); // stop the native browser too
       return null;
     }
     return _PlatformSession(this, transferIdHex);

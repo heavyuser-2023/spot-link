@@ -1024,6 +1024,10 @@ class MeshNode {
   // timer intact, so the transfer completes over BLE instead.
   // ---------------------------------------------------------------------------
 
+  /// Higher = preferred. Native AP-less P2P over the LAN socket.
+  static int _lanePreference(FastLaneKind k) =>
+      k == FastLaneKind.lanSocket ? 1 : 2;
+
   Future<void> _handleFastOffer(PeerId from, Uint8List payload) async {
     if (fastLane == null || fastLane!.capabilities.isEmpty) return; // → BLE
     if (payload.length < 17) return;
@@ -1034,12 +1038,16 @@ class MeshNode {
     if (receiver == null || _completedTransfers.contains(tid)) return;
     if (_fastActive.contains(tid)) return; // already negotiating
 
-    // Intersect capabilities; prefer the higher-code (newer) transport.
+    // Intersect capabilities and pick by preference: native AP-less P2P
+    // (Wi-Fi Aware/Direct/Multipeer) beats the LAN socket, since it works
+    // without a shared access point and is the "purer" direct link.
     final senderMask = payload[16];
     FastLaneKind? chosen;
     for (final k in fastLane!.capabilities) {
       if ((senderMask & (1 << k.code)) != 0) {
-        if (chosen == null || k.code > chosen.code) chosen = k;
+        if (chosen == null || _lanePreference(k) > _lanePreference(chosen)) {
+          chosen = k;
+        }
       }
     }
     if (chosen == null) return; // no shared transport → BLE
@@ -1088,13 +1096,20 @@ class MeshNode {
     try {
       session = await inbound.session;
       if (session == null) {
+        bleLogSink?.call('FT fast recv: no session (peer never connected) → BLE');
         _fastActive.remove(tid);
         return; // sender never connected → BLE recovery timer handles it
       }
+      bleLogSink?.call('FT fast recv connected, reading…');
       // Read a 4-byte length prefix then that many ciphertext bytes.
       final buf = BytesBuilder();
+      var logged = false;
       await for (final part in session.incoming) {
         buf.add(part);
+        if (!logged) {
+          logged = true;
+          bleLogSink?.call('FT fast recv first bytes: ${buf.length}');
+        }
         if (buf.length >= 4) {
           final all = buf.toBytes();
           final total = ByteData.view(all.buffer).getUint32(0, Endian.big) + 4;
