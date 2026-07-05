@@ -30,9 +30,15 @@ class _ChatScreenState extends State<ChatScreen> {
   int _lastCount = 0;
   MeshController? _controller;
 
+  /// True when a message arrived while the user was scrolled up reading
+  /// history — shown as a floating "새 메시지" chip instead of yanking the
+  /// scroll position away from them.
+  bool _showNewMsgChip = false;
+
   @override
   void initState() {
     super.initState();
+    _scroll.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<MeshController>().openConversation(widget.peerHex);
       _jumpToBottom();
@@ -169,25 +175,32 @@ class _ChatScreenState extends State<ChatScreen> {
     _animateToBottom();
   }
 
+  // The list is rendered with reverse: true (chat standard) so offset 0 IS
+  // the bottom — the newest bubble can never be clipped by a stale
+  // maxScrollExtent, with or without the keyboard.
   bool get _nearBottom {
     if (!_scroll.hasClients) return true;
-    return _scroll.position.maxScrollExtent - _scroll.offset < 240;
+    return _scroll.offset < 240;
   }
 
   void _jumpToBottom() {
-    if (_scroll.hasClients) {
-      _scroll.jumpTo(_scroll.position.maxScrollExtent);
-    }
+    if (_scroll.hasClients) _scroll.jumpTo(0);
   }
 
   void _animateToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
-        _scroll.animateTo(_scroll.position.maxScrollExtent,
+        _scroll.animateTo(0,
             duration: const Duration(milliseconds: 250),
             curve: Curves.easeOut);
       }
     });
+  }
+
+  void _onScroll() {
+    if (_showNewMsgChip && _nearBottom) {
+      setState(() => _showNewMsgChip = false);
+    }
   }
 
   @override
@@ -200,11 +213,18 @@ class _ChatScreenState extends State<ChatScreen> {
     final nearby = c.isNearby(widget.peerHex);
     final hops = c.hopsTo(widget.peerHex);
 
-    // Auto-scroll when a new message arrives and we're already near the bottom.
+    // Auto-scroll on new messages when already near the bottom; when the
+    // user is reading history, offer a "새 메시지" chip instead of yanking.
     if (messages.length != _lastCount) {
       final grew = messages.length > _lastCount;
       _lastCount = messages.length;
-      if (grew && _nearBottom) _animateToBottom();
+      if (grew) {
+        if (_nearBottom) {
+          _animateToBottom();
+        } else {
+          _showNewMsgChip = true;
+        }
+      }
     }
 
     final items = _buildItems(messages);
@@ -271,21 +291,68 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: messages.isEmpty
                 ? const _EmptyChat()
-                : ListView.builder(
-                    controller: _scroll,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 12),
-                    itemCount: items.length,
-                    itemBuilder: (_, i) {
-                      final item = items[i];
-                      if (item is _DateItem) {
-                        return _DateChip(label: item.label);
-                      }
-                      return _Bubble(
-                        message: (item as _MsgItem).message,
-                        controller: c,
-                      );
-                    },
+                : Stack(
+                    children: [
+                      ListView.builder(
+                        controller: _scroll,
+                        reverse: true,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 12),
+                        itemCount: items.length,
+                        itemBuilder: (_, i) {
+                          // reverse: index 0 is the bottom-most entry.
+                          final item = items[items.length - 1 - i];
+                          if (item is _DateItem) {
+                            return _DateChip(label: item.label);
+                          }
+                          return _Bubble(
+                            message: (item as _MsgItem).message,
+                            controller: c,
+                          );
+                        },
+                      ),
+                      if (_showNewMsgChip)
+                        Positioned(
+                          bottom: 10,
+                          left: 0,
+                          right: 0,
+                          child: Center(
+                            child: Material(
+                              color: Theme.of(context).colorScheme.primary,
+                              elevation: 3,
+                              borderRadius: BorderRadius.circular(20),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(20),
+                                onTap: () {
+                                  setState(() => _showNewMsgChip = false);
+                                  _animateToBottom();
+                                },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 14, vertical: 8),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.arrow_downward,
+                                          size: 16,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onPrimary),
+                                      const SizedBox(width: 6),
+                                      Text('새 메시지',
+                                          style: TextStyle(
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .onPrimary,
+                                              fontSize: 13)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
           ),
           SafeArea(
@@ -310,6 +377,11 @@ class _ChatScreenState extends State<ChatScreen> {
                       decoration: InputDecoration(
                         hintText: '메시지',
                         isDense: true,
+                        filled: true,
+                        fillColor: Theme.of(context)
+                            .colorScheme
+                            .surfaceContainerHighest
+                            .withValues(alpha: 0.55),
                         contentPadding: const EdgeInsets.symmetric(
                             horizontal: 16, vertical: 10),
                         border: OutlineInputBorder(
