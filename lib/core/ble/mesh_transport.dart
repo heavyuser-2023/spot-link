@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
@@ -613,8 +614,17 @@ class MeshTransport implements MeshTransportInterface {
 
     _subs.add(_central.connectionStateChanged.listen((e) {
       if (e.state == ConnectionState.disconnected) {
-        _tearDown('C:${e.peripheral.uuid}');
-        _connecting.remove(e.peripheral.uuid.toString());
+        final key = e.peripheral.uuid.toString();
+        final hadLink = _links.containsKey('C:$key');
+        _tearDown('C:$key');
+        _connecting.remove(key);
+        // iOS: with both apps backgrounded, scan-based rediscovery is blind —
+        // a backgrounded peripheral's advertisement moves to the overflow
+        // area, which only *foreground* scanners can see. But a pending
+        // connect() to a known peripheral never times out and completes in
+        // the background as soon as the peer is back in range, so re-arm one
+        // whenever an established link drops.
+        if (hadLink) _pendingReconnect(e.peripheral);
       }
     }));
 
@@ -651,14 +661,36 @@ class MeshTransport implements MeshTransportInterface {
     if (_links.length + _connecting.length >= maxLinks) return;
 
     final key = e.peripheral.uuid.toString();
-    final linkId = 'C:$key';
-    if (_links.containsKey(linkId) || _connecting.contains(key)) return;
+    if (_links.containsKey('C:$key') || _connecting.contains(key)) return;
     _connecting.add(key);
     _log('BLE discovered $key (shortId=$remoteId)');
+    await _establishLink(e.peripheral, key, remoteId: remoteId);
+  }
 
+  /// Re-arm a background-proof connection to a peer we were linked with.
+  /// iOS-only: elsewhere the (foreground-service) scanner reconnects fine,
+  /// and Android's connect() can block a radio slot while it retries.
+  /// The pending attempt occupies a [_connecting] slot so discovery won't
+  /// race it; it resolves whenever the peer reappears — minutes later is fine.
+  void _pendingReconnect(Peripheral peripheral) {
+    if (!Platform.isIOS) return;
+    if (_disposed || !_started) return;
+    final key = peripheral.uuid.toString();
+    if (_links.containsKey('C:$key') || _connecting.contains(key)) return;
+    if (_links.length + _connecting.length >= maxLinks) return;
+    _connecting.add(key);
+    _log('BLE pending reconnect armed $key');
+    unawaited(_establishLink(peripheral, key));
+  }
+
+  /// Connect to a SpotLink peripheral and bring up the GATT link. The caller
+  /// must have added [key] to [_connecting]; it is removed here when done.
+  Future<void> _establishLink(Peripheral peripheral, String key,
+      {PeerId? remoteId}) async {
+    final linkId = 'C:$key';
     try {
-      await _central.connect(e.peripheral);
-      final services = await _central.discoverGATT(e.peripheral);
+      await _central.connect(peripheral);
+      final services = await _central.discoverGATT(peripheral);
       final svc = services.firstWhere(
         (s) => s.uuid == BleConstants.serviceUuid,
         orElse: () => throw StateError('service not found'),
@@ -674,25 +706,25 @@ class MeshTransport implements MeshTransportInterface {
 
       var maxPacket = BleConstants.defaultMaxPacketSize;
       try {
-        await _central.requestMTU(e.peripheral, mtu: 247);
+        await _central.requestMTU(peripheral, mtu: 247);
       } catch (_) {}
       try {
         maxPacket = await _central.getMaximumWriteLength(
-          e.peripheral,
+          peripheral,
           type: GATTCharacteristicWriteType.withoutResponse,
         );
       } catch (_) {
         maxPacket = BleConstants.targetMaxPacketSize;
       }
 
-      await _central.setCharacteristicNotifyState(e.peripheral, rx,
+      await _central.setCharacteristicNotifyState(peripheral, rx,
           state: true);
 
       // We may have been stopped/disposed while awaiting the connection. Don't
       // resurrect _links or emit on a closed controller — just disconnect.
       if (!_started) {
         try {
-          await _central.disconnect(e.peripheral);
+          await _central.disconnect(peripheral);
         } catch (_) {}
         return;
       }
@@ -700,7 +732,7 @@ class MeshTransport implements MeshTransportInterface {
       final link = MeshLink(
         id: linkId,
         role: LinkRole.central,
-        peripheral: e.peripheral,
+        peripheral: peripheral,
         remoteTx: tx,
         remoteRx: rx,
         maxPacketSize: maxPacket.clamp(BleConstants.defaultMaxPacketSize, 512),
@@ -710,7 +742,7 @@ class MeshTransport implements MeshTransportInterface {
     } catch (err) {
       _log('BLE connect failed $key: $err');
       try {
-        await _central.disconnect(e.peripheral);
+        await _central.disconnect(peripheral);
       } catch (_) {}
     } finally {
       _connecting.remove(key);
