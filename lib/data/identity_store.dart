@@ -7,7 +7,11 @@ import '../core/crypto/identity.dart';
 class IdentityStore {
   static const _keyIdentity = 'spotlink_identity_v1';
   static const _keyName = 'spotlink_display_name';
-  static const _keyMigrated = 'spotlink_kc_first_unlock_v1';
+
+  /// v2: v1 of this flag was set by a buggy migration that couldn't see the
+  /// legacy items (accessibility-filtered reads) and therefore migrated
+  /// nothing — ignore it entirely.
+  static const _keyMigrated = 'spotlink_kc_migrated_v2';
 
   /// iOS: `first_unlock` accessibility, or a background relaunch on a locked
   /// phone (CoreBluetooth state restoration / beacon wake) cannot read the
@@ -16,33 +20,39 @@ class IdentityStore {
   static const _iosOptions =
       IOSOptions(accessibility: KeychainAccessibility.first_unlock);
 
+  /// New-class storage. NOTE: with an accessibility option set, iOS reads
+  /// and writes only match items of that class — legacy items written with
+  /// the default when-unlocked class are invisible to it (and un-overwritable:
+  /// writes hit errSecDuplicateItem). Hence [_legacy] below.
   final FlutterSecureStorage _storage;
 
-  IdentityStore([FlutterSecureStorage? storage])
-      : _storage = storage ?? const FlutterSecureStorage(iOptions: _iosOptions);
+  /// Option-less storage whose queries match any accessibility class — the
+  /// only way to read/delete pre-migration items.
+  final FlutterSecureStorage _legacy;
 
-  /// Items written before the accessibility change keep their old
-  /// when-unlocked class — rewrite them once (delete+write re-creates the
-  /// keychain item with the new class). Runs only while unlocked, which is
-  /// guaranteed on the interactive path that calls this.
+  IdentityStore([FlutterSecureStorage? storage])
+      : _storage = storage ?? const FlutterSecureStorage(iOptions: _iosOptions),
+        _legacy = storage ?? const FlutterSecureStorage();
+
+  /// Move legacy (when-unlocked) items to the first_unlock class. A backup
+  /// slot brackets the delete+rewrite so a crash in between can never lose
+  /// the identity (losing it changes our peer ID and breaks every
+  /// friendship). Safe to call repeatedly; runs the copy at most once.
   Future<void> _migrateAccessibility() async {
     try {
       if (await _storage.read(key: _keyMigrated) == '1') return;
       for (final key in [_keyIdentity, _keyName]) {
-        final value = await _storage.read(key: key);
-        if (value != null) {
-          // Keep a backup across the delete+write so a crash in between can
-          // never lose the identity (losing it changes our peer ID and
-          // breaks every friendship).
-          await _storage.write(key: '$key.bak', value: value);
-          await _storage.delete(key: key);
-          await _storage.write(key: key, value: value);
-          await _storage.delete(key: '$key.bak');
-        }
+        if (await _storage.read(key: key) != null) continue; // already new
+        final value = await _legacy.read(key: key);
+        if (value == null) continue;
+        await _storage.write(key: '$key.bak', value: value);
+        await _legacy.delete(key: key);
+        await _storage.write(key: key, value: value);
+        await _storage.delete(key: '$key.bak');
       }
       await _storage.write(key: _keyMigrated, value: '1');
     } catch (_) {
-      // Locked or transient keychain failure — retried on a later launch.
+      // Locked or transient keychain failure — retried on a later call.
     }
   }
 
@@ -52,6 +62,9 @@ class IdentityStore {
     // Crash-recovery: a migration interrupted between delete and write left
     // the value only in the backup slot.
     existing ??= await _storage.read(key: '$_keyIdentity.bak');
+    // Not migrated yet (e.g. keychain locked during migration): fall back to
+    // the legacy item rather than regenerating and orphaning every friend.
+    existing ??= await _legacy.read(key: _keyIdentity);
     if (existing != null) {
       try {
         return await Identity.importPrivate(existing);
@@ -66,14 +79,23 @@ class IdentityStore {
 
   static const defaultName = 'SpotLink User';
 
-  Future<String> displayName() async {
-    return await _storage.read(key: _keyName) ?? defaultName;
-  }
+  Future<String> displayName() async => await storedName() ?? defaultName;
 
   /// The stored name, or null if the user has never set one (first run).
-  Future<String?> storedName() async => _storage.read(key: _keyName);
+  Future<String?> storedName() async {
+    await _migrateAccessibility();
+    return await _storage.read(key: _keyName) ??
+        await _storage.read(key: '$_keyName.bak') ??
+        await _legacy.read(key: _keyName);
+  }
 
   Future<void> setDisplayName(String name) async {
+    await _migrateAccessibility();
+    // Clear any legacy-class item first or the new-class write collides
+    // with it (errSecDuplicateItem).
+    try {
+      await _legacy.delete(key: _keyName);
+    } catch (_) {}
     await _storage.write(key: _keyName, value: name);
   }
 }
