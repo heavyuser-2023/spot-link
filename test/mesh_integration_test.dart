@@ -91,6 +91,30 @@ void main() {
     expect(confirmed.msgId, msgId);
   });
 
+  test('unacked text is delivered the moment the link comes back', () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'Alice');
+    final b = await makeNode(radio, idB, 'Bob');
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+
+    // Send while the link is down — nothing can flow yet.
+    final msgId = await a.node.sendText(idB.peerId, '재회 후 도착해야 함');
+    await settle();
+
+    // The link comes back (e.g. iOS pending reconnect completed): the unacked
+    // text must ride the fresh link immediately — link-up resend, no waiting
+    // for the periodic retransmit tick.
+    radio.connect(idA.peerId, idB.peerId);
+    final rx = await waitFor<TextReceived>(b, (e) => true);
+    expect(rx.text, '재회 후 도착해야 함');
+    final confirmed =
+        await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == msgId);
+    expect(confirmed.msgId, msgId);
+  });
+
   test('ANNOUNCE teaches neighbours each others keys', () async {
     final radio = FakeRadio();
     final idA = await Identity.generate();

@@ -162,6 +162,11 @@ class MeshTransport implements MeshTransportInterface {
   Timer? _rssiTimer;
   static const Duration _rssiPollInterval = Duration(seconds: 5);
 
+  /// Consecutive failed RSSI reads per central link — the zombie-link
+  /// detector's evidence. Reset on any successful read or teardown.
+  final Map<String, int> _rssiFails = {};
+  static const int _staleRssiFailures = 3;
+
   final Map<String, MeshLink> _links = {};
   final Set<String> _connecting = {};
 
@@ -280,14 +285,33 @@ class MeshTransport implements MeshTransportInterface {
     if (!_started) return;
     for (final link in _links.values.toList()) {
       if (link.role != LinkRole.central || link.peripheral == null) continue;
-      if (link.remoteShortId == null) continue; // can't attribute the reading
       try {
         final rssi = await _central.readRSSI(link.peripheral!);
         if (_disposed) return;
-        _rssiSamples.add(RssiSample(link.remoteShortId, rssi));
+        _rssiFails.remove(link.id);
+        if (link.remoteShortId != null) {
+          _rssiSamples.add(RssiSample(link.remoteShortId, rssi));
+        }
       } catch (_) {
-        // Link died mid-read or the platform refused; the link teardown
-        // paths handle the rest.
+        if (_disposed || !_links.containsKey(link.id)) return;
+        // A half-dead GATT connection (peer walked away mid-suspend, stack
+        // wedged) can eat frames for minutes without ever reporting a
+        // disconnect. Three straight failed reads ≈ 15s of silence — cut the
+        // link ourselves; the disconnect path re-arms the pending reconnect.
+        final fails = (_rssiFails[link.id] ?? 0) + 1;
+        _rssiFails[link.id] = fails;
+        if (fails >= _staleRssiFailures) {
+          _log('BLE link stale ($fails failed RSSI reads) — cutting ${link.id}');
+          _rssiFails.remove(link.id);
+          try {
+            await _central.disconnect(link.peripheral!);
+          } catch (_) {
+            // The radio refused even the disconnect — tear down locally and
+            // arm the reconnect by hand (no disconnect event will come).
+            _tearDown(link.id);
+            _pendingReconnect(link.peripheral!);
+          }
+        }
       }
     }
   }
@@ -778,6 +802,7 @@ class MeshTransport implements MeshTransportInterface {
   }
 
   void _tearDown(String linkId) {
+    _rssiFails.remove(linkId);
     final link = _links.remove(linkId);
     if (link != null && !_disposed) {
       _log('BLE link down $linkId');

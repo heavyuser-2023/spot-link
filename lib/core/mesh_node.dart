@@ -663,6 +663,13 @@ class MeshNode {
       // Introduce ourselves and sync our store-and-forward inventory.
       await _sendAnnounce(e.link.id);
       await _sendHave(e.link.id);
+      // A fresh link is the best moment to retry unacked texts — push them
+      // down the new pipe right now instead of waiting for the retransmit
+      // tick or the HAVE/WANT round-trip. Receivers dedup, and this is a
+      // free shot: it doesn't count against maxTextAttempts.
+      for (final pending in _awaitingAck.values.toList()) {
+        await transport.sendToLink(e.link.id, pending.frame.encode());
+      }
     }
   }
 
@@ -853,6 +860,8 @@ class MeshNode {
         if (_deliveredIncoming.contains(frame.msgIdHex)) break;
         _rememberDelivered(frame.msgIdHex);
         final text = utf8.decode(payload, allowMalformed: true);
+        bleLogSink?.call('MSG recv ${frame.msgIdHex.substring(0, 8)} '
+            '(${text.length} chars)');
         _events.add(TextReceived(frame.src, text, frame.msgIdHex));
         // Tell the whole mesh this text arrived so relays can drop their
         // copies, and never accept it back ourselves.
@@ -996,6 +1005,7 @@ class MeshNode {
         if (_confirmedText.length > _deliveredIncomingCap) {
           _confirmedText.remove(_confirmedText.first);
         }
+        bleLogSink?.call('MSG delivered ${hex.substring(0, 8)}');
         _events.add(DeliveryConfirmed(hex));
       }
     } else if (kind == _AckKind.file) {
