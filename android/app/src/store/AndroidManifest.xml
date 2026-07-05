@@ -8,4 +8,15 @@
     <uses-permission
         android:name="android.permission.REQUEST_INSTALL_PACKAGES"
         tools:node="remove" />
+
+    <!-- file_picker merges broad media permissions, but Play only allows them
+         when media access is a core purpose. SpotLink uses gallery attachment
+         as one-off selection, so we strip these and rely on the Android Photo
+         Picker (file_picker uses it on Android 13+, no permission required). -->
+    <uses-permission
+        android:name="android.permission.READ_MEDIA_IMAGES"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.READ_MEDIA_VIDEO"
+        tools:node="remove" />
 </manifest>
