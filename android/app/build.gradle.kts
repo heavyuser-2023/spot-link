@@ -64,6 +64,23 @@ android {
             }
         }
     }
+
+    // Two distribution channels:
+    //  - sideload: GitHub releases APK. Keeps REQUEST_INSTALL_PACKAGES for
+    //    offline self-distribution (mesh/Quick Share APK sharing).
+    //  - store: Google Play AAB. src/store/AndroidManifest.xml removes
+    //    REQUEST_INSTALL_PACKAGES (restricted permission on Play); build with
+    //    --dart-define=STORE_BUILD=true to also hide the APK-sharing UI.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("sideload") {
+            dimension = "distribution"
+            isDefault = true
+        }
+        create("store") {
+            dimension = "distribution"
+        }
+    }
 }
 
 flutter {

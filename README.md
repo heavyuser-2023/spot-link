@@ -100,13 +100,20 @@ flutter run                 # 실제 기기 2대 이상 권장 (BLE는 시뮬레
 
 ### Android
 
+배포 채널별 flavor가 있습니다:
+
 ```bash
-flutter build apk --release   # → build/app/outputs/flutter-apk/app-release.apk
-adb install -r build/app/outputs/flutter-apk/app-release.apk
+# GitHub 릴리즈용 APK (오프라인 앱 공유 기능 포함)
+flutter build apk --flavor sideload
+adb install -r build/app/outputs/flutter-apk/app-sideload-release.apk
+
+# Google Play용 AAB (REQUEST_INSTALL_PACKAGES 제거 + 앱 공유 UI 숨김)
+flutter build appbundle --flavor store --dart-define=STORE_BUILD=true
+# → build/app/outputs/bundle/storeRelease/app-store-release.aab
 ```
 
-현재 릴리즈 빌드는 **디버그 키로 서명**됩니다(템플릿 기본값). 스토어 배포 전에는
-`android/app/build.gradle.kts`의 TODO대로 릴리즈 키스토어를 설정해야 합니다.
+릴리즈 서명은 `android/key.properties` + `android/app/spotlink-release.jks`
+(둘 다 gitignore)로 이뤄지며, 없는 머신에서는 디버그 키로 폴백합니다.
 
 ### iOS
 

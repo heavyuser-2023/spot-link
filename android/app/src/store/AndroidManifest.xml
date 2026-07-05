@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Google Play forbids REQUEST_INSTALL_PACKAGES for messengers; strip it
+         from the store flavor (also removes copies merged from plugins such
+         as open_filex). Offline APK self-distribution exists only in the
+         sideload (GitHub releases) flavor. -->
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+</manifest>

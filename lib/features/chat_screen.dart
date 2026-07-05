@@ -7,6 +7,7 @@ import 'package:mime/mime.dart';
 import 'package:provider/provider.dart';
 
 import '../app/app_share.dart';
+import '../app/build_flags.dart';
 import '../app/mesh_controller.dart';
 import '../core/ble/mesh_transport.dart' show bleLogSink;
 import '../core/model/peer_id.dart';
@@ -100,7 +101,7 @@ class _ChatScreenState extends State<ChatScreen> {
               subtitle: const Text('문서·압축 등 모든 파일'),
               onTap: () => Navigator.pop(sheet, _AttachSource.file),
             ),
-            if (Platform.isAndroid)
+            if (Platform.isAndroid && !kStoreBuild)
               ListTile(
                 leading: CircleAvatar(
                   backgroundColor:
