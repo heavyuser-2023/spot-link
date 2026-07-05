@@ -71,7 +71,12 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        onDestinationSelected: (i) {
+          // Drop any lingering text focus so the keyboard never covers the
+          // destination tab's content.
+          FocusManager.instance.primaryFocus?.unfocus();
+          setState(() => _index = i);
+        },
         destinations: [
           NavigationDestination(
             icon: _UnreadBadge(

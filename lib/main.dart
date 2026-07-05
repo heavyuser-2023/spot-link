@@ -81,6 +81,14 @@ class SpotLinkApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: _theme(Brightness.light),
       darkTheme: _theme(Brightness.dark),
+      // Tapping anywhere outside a text field dismisses the keyboard. Without
+      // this, focus surviving a closed dialog/route leaves an orphaned
+      // keyboard covering the tab bar — with no way to escape the screen.
+      builder: (context, child) => GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+        child: child,
+      ),
       home: const Bootstrap(),
     );
   }

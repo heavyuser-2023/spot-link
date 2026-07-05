@@ -296,6 +296,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       ListView.builder(
                         controller: _scroll,
                         reverse: true,
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
                         padding: const EdgeInsets.symmetric(
                             horizontal: 12, vertical: 12),
                         itemCount: items.length,
