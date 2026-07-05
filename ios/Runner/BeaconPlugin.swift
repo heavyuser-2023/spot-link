@@ -1,0 +1,120 @@
+import CoreBluetooth
+import CoreLocation
+import Flutter
+import Foundation
+
+/// iBeacon wake path — the one legitimate way to revive a SpotLink app the
+/// user swipe-killed (or that never ran since reboot): CoreLocation region
+/// monitoring relaunches an app for beacon-region entry even after a user
+/// termination, which CoreBluetooth restoration cannot do.
+///
+/// - RX (monitoring): every SpotLink node monitors one fixed beacon region.
+///   When any SpotLink beacon appears nearby, iOS launches us in the
+///   background; the Flutter engine boots and the mesh starts — queued
+///   messages then flow in over BLE.
+/// - TX (transmitting): iOS can only transmit iBeacon in the FOREGROUND, so
+///   an open SpotLink app acts as the "wake torch" for dead phones around it.
+///   (Android SpotLink transmits in the background — see BeaconPlugin.kt.)
+///
+/// Channel `spotlink/beacon`: requestAlways / enableMonitoring /
+/// disableMonitoring / status / startTx / stopTx.
+class BeaconPlugin: NSObject {
+  /// Fixed SpotLink wake-beacon identity (major/minor unused).
+  static let beaconUUID = UUID(uuidString: "7A3B5C4D-1E2F-4A5B-8C9D-0E1F2A3B4C5D")!
+  private static let monitorFlagKey = "spotlink.beacon.monitor"
+
+  private let location = CLLocationManager()
+  private var tx: CBPeripheralManager?
+  private var txWanted = false
+  private var channel: FlutterMethodChannel?
+
+  static func register(with registrar: FlutterPluginRegistrar) {
+    let instance = BeaconPlugin()
+    let channel = FlutterMethodChannel(
+      name: "spotlink/beacon", binaryMessenger: registrar.messenger())
+    channel.setMethodCallHandler(instance.handle)
+    instance.channel = channel
+    instance.location.delegate = instance
+    // Re-assert monitoring on every launch — including a CoreLocation
+    // relaunch after the user killed the app.
+    if UserDefaults.standard.bool(forKey: monitorFlagKey) {
+      instance.startMonitoring()
+    }
+  }
+
+  private func makeRegion() -> CLBeaconRegion {
+    let region = CLBeaconRegion(
+      uuid: Self.beaconUUID, identifier: "spotlink.wake")
+    region.notifyOnEntry = true
+    region.notifyOnExit = false
+    return region
+  }
+
+  private func startMonitoring() {
+    location.startMonitoring(for: makeRegion())
+  }
+
+  func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "requestAlways":
+      location.requestAlwaysAuthorization()
+      result(nil)
+    case "enableMonitoring":
+      UserDefaults.standard.set(true, forKey: Self.monitorFlagKey)
+      startMonitoring()
+      result(true)
+    case "disableMonitoring":
+      UserDefaults.standard.set(false, forKey: Self.monitorFlagKey)
+      location.stopMonitoring(for: makeRegion())
+      result(nil)
+    case "status":
+      let auth: String
+      switch location.authorizationStatus {
+      case .authorizedAlways: auth = "always"
+      case .authorizedWhenInUse: auth = "whenInUse"
+      case .denied, .restricted: auth = "denied"
+      default: auth = "notDetermined"
+      }
+      result([
+        "auth": auth,
+        "monitoring": UserDefaults.standard.bool(forKey: Self.monitorFlagKey),
+      ])
+    case "startTx":
+      txWanted = true
+      if tx == nil {
+        tx = CBPeripheralManager(delegate: self, queue: nil)
+      } else {
+        startTxIfReady()
+      }
+      result(nil)
+    case "stopTx":
+      txWanted = false
+      tx?.stopAdvertising()
+      result(nil)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func startTxIfReady() {
+    guard txWanted, let tx = tx, tx.state == .poweredOn else { return }
+    guard !tx.isAdvertising else { return }
+    let data = makeRegion().peripheralData(withMeasuredPower: nil)
+    tx.startAdvertising(((data as NSDictionary) as! [String: Any]))
+  }
+}
+
+extension BeaconPlugin: CLLocationManagerDelegate {
+  func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
+    // If we were relaunched just for this, the Flutter engine is already
+    // booting and the mesh will start on its own; this nudge is best-effort
+    // diagnostics for a live app.
+    channel?.invokeMethod("regionEntered", arguments: region.identifier)
+  }
+}
+
+extension BeaconPlugin: CBPeripheralManagerDelegate {
+  func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+    startTxIfReady()
+  }
+}

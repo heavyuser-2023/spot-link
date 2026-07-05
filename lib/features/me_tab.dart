@@ -160,6 +160,21 @@ class MeTab extends StatelessWidget {
         if (Platform.isIOS) ...[
           const SizedBox(height: 8),
           Card(
+            child: SwitchListTile(
+              secondary: const Icon(Icons.wifi_tethering),
+              title: const Text('꺼진 뒤에도 깨어나기 (비콘)'),
+              subtitle: const Text(
+                  '주변 SpotLink 기기의 비콘을 감지하면 앱이 종료됐어도 '
+                  'iOS가 깨워서 메시지를 받습니다. 위치 권한(항상 허용)이 '
+                  '필요합니다.'),
+              isThreeLine: true,
+              value: c.beaconMonitoring,
+              onChanged: (v) =>
+                  context.read<MeshController>().setBeaconMonitoring(v),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
             child: ListTile(
               leading: const Icon(Icons.info_outline),
               title: const Text('실시간 수신 안내'),

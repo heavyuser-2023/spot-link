@@ -55,6 +55,13 @@ dependencies:
   flutter_local_notifications: ^22.0.1
   gal: ^2.3.2
 
+# iOS 안정화 포크: State Restoration(복원 식별자·willRestoreState) +
+# 시스템 retrievePeripherals 폴백 + getPeripheral(uuid) 구현.
+# 원본: bluetooth_low_energy_darwin 6.2.1 (docs/IOS_RELIABILITY.md 참고)
+dependency_overrides:
+  bluetooth_low_energy_darwin:
+    path: packages/bluetooth_low_energy_darwin
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

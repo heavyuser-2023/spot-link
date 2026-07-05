@@ -21,6 +21,10 @@
 	<string>Attach photos and files to send over the mesh.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Save received photos and videos to your photo library.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Detecting a nearby SpotLink beacon lets the app wake up and receive messages even after it was closed.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Detecting a nearby SpotLink beacon lets the app wake up and receive messages even after it was closed.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>

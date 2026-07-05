@@ -42,12 +42,11 @@ packages:
     source: hosted
     version: "6.2.1"
   bluetooth_low_energy_darwin:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: bluetooth_low_energy_darwin
-      sha256: "63243add2f57ad201f09d42878a31bad6e5b93291c6ae3c36de24b5213178a0d"
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/bluetooth_low_energy_darwin"
+      relative: true
+    source: path
     version: "6.2.1"
   bluetooth_low_energy_linux:
     dependency: transitive

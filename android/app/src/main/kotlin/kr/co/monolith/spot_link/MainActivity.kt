@@ -9,6 +9,8 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         // Wi-Fi fast lane (Wi-Fi Direct).
         flutterEngine.plugins.add(FastLanePlugin())
+        // Wake-beacon transmitter (revives nearby swipe-killed iPhones).
+        flutterEngine.plugins.add(BeaconPlugin())
         // Offline self-distribution: hand Dart the path of our own installed
         // APK so it can be shared/sent without any app store.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "spotlink/app")

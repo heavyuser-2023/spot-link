@@ -18,6 +18,13 @@ const bool _logBle = kDebugMode || bool.fromEnvironment('BLE_LOG');
 /// way to diagnose BLE behaviour on a real device without a debugger.
 void Function(String line)? bleLogSink;
 
+/// Persistence for known-peer peripheral identifiers, wired by the app layer
+/// (a small JSON file). Lets a fresh launch — including an iOS
+/// state-restoration relaunch — re-arm pending connects to known peers
+/// without scanning.
+Future<List<String>> Function()? knownPeersLoad;
+void Function(List<String> uuids)? knownPeersSave;
+
 void _log(String msg) {
   if (_logBle) debugPrint(msg);
   bleLogSink?.call(msg);
@@ -167,6 +174,47 @@ class MeshTransport implements MeshTransportInterface {
   final Map<String, int> _rssiFails = {};
   static const int _staleRssiFailures = 3;
 
+  /// Recently linked peer peripheral identifiers, most recent last. Persisted
+  /// via [knownPeersLoad]/[knownPeersSave] so a fresh launch (including an
+  /// iOS state-restoration relaunch) can re-arm pending connects to every
+  /// known peer without needing to scan — a backgrounded peer's overflow
+  /// advertisement is invisible to a scan, but a connect-by-identifier works.
+  final Set<String> _knownPeers = {};
+  static const int _maxKnownPeers = 6;
+
+  void _rememberPeer(String uuid) {
+    _knownPeers.remove(uuid);
+    _knownPeers.add(uuid);
+    while (_knownPeers.length > _maxKnownPeers) {
+      _knownPeers.remove(_knownPeers.first);
+    }
+    knownPeersSave?.call(_knownPeers.toList());
+  }
+
+  /// iOS: stand up pending connects to every persisted peer. Capped so the
+  /// standing connects can't starve scan-driven links of [maxLinks] slots.
+  Future<void> _reconnectKnownPeers() async {
+    try {
+      final saved = await knownPeersLoad?.call() ?? const <String>[];
+      if (saved.isEmpty) return;
+      _knownPeers.addAll(saved);
+      final budget = maxLinks - _links.length - _connecting.length - 2;
+      var armed = 0;
+      for (final uuid in saved.reversed) {
+        if (armed >= budget) break;
+        try {
+          final peripheral = await _central.getPeripheral(uuid);
+          if (_links.containsKey('C:$uuid') || _connecting.contains(uuid)) {
+            continue;
+          }
+          _pendingReconnect(peripheral);
+          armed++;
+        } catch (_) {} // malformed/unknown id — scan will find them instead
+      }
+      if (armed > 0) _log('BLE known-peer reconnect armed x$armed');
+    } catch (_) {}
+  }
+
   /// Failed (re)connect attempts per peripheral, driving retry backoff.
   /// A pending reconnect is one-shot on iOS: once it completes and our GATT
   /// setup fails (e.g. the peer was republishing its service that instant),
@@ -288,6 +336,13 @@ class MeshTransport implements MeshTransportInterface {
       await _startAdvertising();
     }
     await _startScanning();
+    // iOS: also stand up pending connects to every peer we've linked before —
+    // a backgrounded iPhone is invisible to the scan but reachable by a
+    // connect-by-identifier, and after a state-restoration relaunch this is
+    // what stitches the mesh back together.
+    if (Platform.isIOS) {
+      unawaited(_reconnectKnownPeers());
+    }
     // Poll connected links for signal strength so the UI can show how close
     // each neighbour is even after advertisements stop (connected peers
     // usually stop advertising).
@@ -814,6 +869,7 @@ class MeshTransport implements MeshTransportInterface {
       _emitUp(link);
       _reconnectAttempts.remove(key);
       _reconnectTimers.remove(key)?.cancel();
+      _rememberPeer(key);
     } catch (err) {
       _log('BLE connect failed $key: $err');
       try {

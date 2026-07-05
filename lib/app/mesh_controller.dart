@@ -12,7 +12,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../core/ble/mesh_transport.dart'
-    show RadioStatus, RssiSample, bleLogSink;
+    show RadioStatus, RssiSample, bleLogSink, knownPeersLoad, knownPeersSave;
 import '../core/crypto/identity.dart';
 import '../core/mesh_node.dart';
 import '../core/model/frame.dart';
@@ -25,6 +25,7 @@ import '../data/app_database.dart';
 import '../data/identity_store.dart';
 import '../data/models.dart';
 import 'background_service.dart';
+import 'beacon_wake.dart';
 import 'notification_service.dart';
 
 /// A row in the conversation (inbox) list.
@@ -220,6 +221,12 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> init() async {
+    await _wireKnownPeersStore();
+    // Wake-beacon TX: Android transmits always (background OK); iOS only
+    // while foregrounded — re-asserted on every resume. This is what revives
+    // nearby swipe-killed iPhones (they monitor this beacon's region).
+    unawaited(BeaconWake.startTx());
+    unawaited(_refreshBeaconStatus());
     // Detect native P2P fast-lane capabilities (Wi-Fi Direct / Multipeer).
     // Safe on every platform: no native handler → capabilities stays empty
     // and files use the LAN socket or BLE.
@@ -340,6 +347,8 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
       // re-announce presence and re-kick discovery so we (and peers) recover
       // online-status without waiting for the next 15s cycle.
       if (started) unawaited(node.wakeUp());
+      // iOS kills beacon TX in the background — re-light the torch.
+      unawaited(BeaconWake.startTx());
       if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
     }
   }
@@ -771,6 +780,53 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
       _unread[msg.peerHex] = (_unread[msg.peerHex] ?? 0) + 1;
     }
     notifyListeners();
+  }
+
+  // ---- wake beacon (iOS 재기동 트리거) ----
+
+  /// True when iOS beacon-region monitoring is on (always-location granted
+  /// and the user enabled the toggle). Meaningless on Android.
+  bool beaconMonitoring = false;
+
+  Future<void> _refreshBeaconStatus() async {
+    final s = await BeaconWake.status();
+    beaconMonitoring = s['monitoring'] == true;
+    notifyListeners();
+  }
+
+  /// Me-tab toggle: opt in/out of the "wake me via beacon" behaviour.
+  Future<void> setBeaconMonitoring(bool on) async {
+    if (on) {
+      await BeaconWake.requestAlways(); // one-time permission prompt
+      await BeaconWake.enableMonitoring();
+    } else {
+      await BeaconWake.disableMonitoring();
+    }
+    await _refreshBeaconStatus();
+  }
+
+  /// Known-peer peripheral identifiers live in a tiny JSON file so a fresh
+  /// launch (or an iOS state-restoration relaunch) can re-arm pending
+  /// connects to every friend without scanning.
+  Future<void> _wireKnownPeersStore() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File(p.join(dir.path, 'known_peers.json'));
+      knownPeersLoad = () async {
+        try {
+          if (!file.existsSync()) return const <String>[];
+          return (jsonDecode(await file.readAsString()) as List)
+              .cast<String>();
+        } catch (_) {
+          return const <String>[];
+        }
+      };
+      knownPeersSave = (uuids) {
+        try {
+          file.writeAsStringSync(jsonEncode(uuids));
+        } catch (_) {}
+      };
+    } catch (_) {} // diagnostics-grade persistence — never block startup
   }
 
   // ---- files ----

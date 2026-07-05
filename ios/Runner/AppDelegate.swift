@@ -15,5 +15,9 @@ import UIKit
     // Wi-Fi fast lane (MultipeerConnectivity).
     FastLanePlugin.register(
       with: engineBridge.pluginRegistry.registrar(forPlugin: "FastLanePlugin")!)
+    // iBeacon wake: re-arms region monitoring on every launch, including a
+    // CoreLocation relaunch after the user swipe-killed the app.
+    BeaconPlugin.register(
+      with: engineBridge.pluginRegistry.registrar(forPlugin: "BeaconPlugin")!)
   }
 }
