@@ -8,6 +8,16 @@
 
 설계 상세는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 참고.
 
+## 설치 (Android — 스토어 불필요)
+
+[**Releases**](https://github.com/heavyuser-2023/spot-link/releases)에서 최신
+`SpotLink-vX.Y.Z.apk`를 내려받아 설치하세요 ("출처를 알 수 없는 앱 설치" 허용 필요).
+릴리즈 키로 서명되어 이후 버전으로 업데이트 설치가 됩니다.
+
+인터넷이 없는 곳에서는 **앱 자체가 오프라인으로 전파**됩니다: 내 정보 탭 →
+"앱 공유 (오프라인 배포)" 또는 채팅 첨부 → "SpotLink 앱 보내기"(메시 파일 전송).
+iOS는 사이드로딩 제약으로 Xcode 배포가 필요합니다.
+
 ## 기능 (M0–M7 완료)
 
 - **BLE 메시**: 모든 기기가 Peripheral + Central을 동시에 수행하는 대칭 노드
