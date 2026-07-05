@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../app/app_share.dart';
 import '../app/background_service.dart';
 import '../app/mesh_controller.dart';
 import 'ui_utils.dart';
@@ -142,6 +143,18 @@ class MeTab extends StatelessWidget {
         ),
         if (Platform.isAndroid) ...[
           const SizedBox(height: 8),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.android),
+              title: const Text('앱 공유 (오프라인 배포)'),
+              subtitle: const Text(
+                  '설치 파일(APK)을 꺼내 공유합니다 — 스토어·인터넷 없이 '
+                  'Quick Share·블루투스 등으로 전달할 수 있습니다.'),
+              isThreeLine: true,
+              onTap: () => _shareApk(context),
+            ),
+          ),
+          const SizedBox(height: 8),
           const _BatteryExemptionCard(),
         ],
         if (Platform.isIOS) ...[
@@ -160,6 +173,22 @@ class MeTab extends StatelessWidget {
         ],
       ],
     );
+  }
+
+  /// Pull our installed APK out and hand it to the share sheet — Quick
+  /// Share/Bluetooth work with no internet, so the app spreads offline.
+  Future<void> _shareApk(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final apk = await AppShare.apkFile();
+    if (apk == null) {
+      messenger.showSnackBar(
+          const SnackBar(content: Text('설치 파일을 꺼내지 못했습니다')));
+      return;
+    }
+    await SharePlus.instance.share(ShareParams(
+      files: [XFile(apk.path, mimeType: AppShare.apkMime)],
+      subject: 'SpotLink 설치 파일',
+    ));
   }
 
   Future<void> _confirmClearRelay(BuildContext context, MeshController c) async {

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:mime/mime.dart';
 import 'package:provider/provider.dart';
 
+import '../app/app_share.dart';
 import '../app/mesh_controller.dart';
 import '../core/ble/mesh_transport.dart' show bleLogSink;
 import '../core/model/peer_id.dart';
@@ -20,7 +21,7 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-enum _AttachSource { gallery, file }
+enum _AttachSource { gallery, file, apk }
 
 class _ChatScreenState extends State<ChatScreen> {
   final _input = TextEditingController();
@@ -99,12 +100,28 @@ class _ChatScreenState extends State<ChatScreen> {
               subtitle: const Text('문서·압축 등 모든 파일'),
               onTap: () => Navigator.pop(sheet, _AttachSource.file),
             ),
+            if (Platform.isAndroid)
+              ListTile(
+                leading: CircleAvatar(
+                  backgroundColor:
+                      Theme.of(sheet).colorScheme.tertiaryContainer,
+                  child: const Icon(Icons.android),
+                ),
+                title: const Text('SpotLink 앱 보내기'),
+                subtitle: const Text('설치 파일(APK)을 전달 — 스토어 없이 설치'),
+                onTap: () => Navigator.pop(sheet, _AttachSource.apk),
+              ),
             const SizedBox(height: 8),
           ],
         ),
       ),
     );
     if (source == null || !mounted) return;
+
+    if (source == _AttachSource.apk) {
+      await _sendApk();
+      return;
+    }
 
     // Gallery uses the platform media picker (PHPicker on iOS, gallery on
     // Android) and allows multi-select; files keep the single-pick browser.
@@ -128,6 +145,26 @@ class _ChatScreenState extends State<ChatScreen> {
         mime: mime,
       );
     }
+    _animateToBottom();
+  }
+
+  /// Send our own installed APK through the mesh — the receiver taps the
+  /// bubble to install, so the app spreads with no store and no internet.
+  Future<void> _sendApk() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final controller = context.read<MeshController>();
+    final apk = await AppShare.apkFile();
+    if (apk == null) {
+      messenger.showSnackBar(
+          const SnackBar(content: Text('설치 파일을 꺼내지 못했습니다')));
+      return;
+    }
+    await controller.sendFile(
+      widget.peerHex,
+      bytes: await apk.readAsBytes(),
+      name: AppShare.apkName,
+      mime: AppShare.apkMime,
+    );
     _animateToBottom();
   }
 
