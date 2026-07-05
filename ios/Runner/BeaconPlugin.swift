@@ -35,9 +35,16 @@ class BeaconPlugin: NSObject {
     channel.setMethodCallHandler(instance.handle)
     instance.channel = channel
     instance.location.delegate = instance
+    // Default ON: waking after the app was closed is core to an offline
+    // messenger, so opt users in and let the Me-tab toggle opt out. (The
+    // location permission itself is still requested from Dart on first run.)
+    let defaults = UserDefaults.standard
+    if defaults.object(forKey: monitorFlagKey) == nil {
+      defaults.set(true, forKey: monitorFlagKey)
+    }
     // Re-assert monitoring on every launch — including a CoreLocation
     // relaunch after the user killed the app.
-    if UserDefaults.standard.bool(forKey: monitorFlagKey) {
+    if defaults.bool(forKey: monitorFlagKey) {
       instance.startMonitoring()
     }
   }

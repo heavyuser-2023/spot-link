@@ -791,6 +791,11 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _refreshBeaconStatus() async {
     final s = await BeaconWake.status();
     beaconMonitoring = s['monitoring'] == true;
+    // Monitoring defaults to ON (see BeaconPlugin.swift) but only works with
+    // the "always" location grant — ask once on the first run.
+    if (Platform.isIOS && beaconMonitoring && s['auth'] == 'notDetermined') {
+      await BeaconWake.requestAlways();
+    }
     notifyListeners();
   }
 
