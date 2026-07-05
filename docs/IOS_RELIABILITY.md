@@ -68,6 +68,21 @@ CoreLocation 지역 감시는 **사용자가 죽인 앱도 재기동**한다(BLE
 - **Android TX**: `BeaconPlugin.kt` — 백그라운드에서 상시 iBeacon 광고.
   Android 한 대가 근처에 있으면 죽은 아이폰들이 깨어난다.
 
+### 실기기 E2E 검증 (2026-07-06)
+전 체인이 실기기에서 확인됨:
+1. heavy 프로세스 강제 종료(devicectl terminate) — 이후 실행 명령 없음
+2. bluetoothd가 heavy의 GATT 서비스를 보존(peripheral restoration),
+   gold의 pending connect가 그 서비스에 붙는 순간 **iOS가 heavy를 자율
+   재기동** (`=== app start` 01:37:11, 종료 4분 후)
+3. **완전 부팅**: BLE start + known-peer reconnect armed x4 — 잠금 상태
+   부팅을 막던 keychain 버그(-25308)는 first_unlock 접근성으로 해결됨
+4. 상호 링크 복구(01:39:42 양방향 link up) → 메시 재가동
+
+검증 과정에서 잡은 실기기 버그 3건도 함께 수정: 잠긴 폰 keychain 부팅
+크래시(first_unlock+부트 재시도), 접근성 필터로 기존 keychain 항목이 안
+보이던 마이그레이션 버그(신원 무손실 복구 확인), 스테일 광고 발견 폭풍
+(백오프가 발견 경로 지배).
+
 ### 남는 한계 (플랫폼 원천 제약)
 주변 전부가 iPhone이고 전부 스와이프 킬/재부팅 상태(비콘 쏠 주체 없음),
 그리고 iOS↔iOS 둘 다 백그라운드인 낯선 피어의 첫 발견 — 서버 푸시 없이는
