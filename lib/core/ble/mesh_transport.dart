@@ -167,6 +167,35 @@ class MeshTransport implements MeshTransportInterface {
   final Map<String, int> _rssiFails = {};
   static const int _staleRssiFailures = 3;
 
+  /// Failed (re)connect attempts per peripheral, driving retry backoff.
+  /// A pending reconnect is one-shot on iOS: once it completes and our GATT
+  /// setup fails (e.g. the peer was republishing its service that instant),
+  /// nobody re-arms it — so we must, or the node sits link-less until the
+  /// OS suspends it and messages stop flowing entirely.
+  final Map<String, int> _reconnectAttempts = {};
+  final Map<String, Timer> _reconnectTimers = {};
+
+  bool _servicePublished = false;
+
+  void _scheduleReconnect(Peripheral peripheral, String key) {
+    if (!Platform.isIOS || _disposed || !_started) return;
+    final attempt = (_reconnectAttempts[key] ?? 0) + 1;
+    _reconnectAttempts[key] = attempt;
+    final delay = switch (attempt) {
+      1 => const Duration(seconds: 5),
+      2 => const Duration(seconds: 15),
+      3 => const Duration(seconds: 60),
+      _ => const Duration(minutes: 5),
+    };
+    _log('BLE reconnect retry #$attempt in ${delay.inSeconds}s: $key');
+    _reconnectTimers[key]?.cancel();
+    _reconnectTimers[key] = Timer(delay, () {
+      _reconnectTimers.remove(key);
+      if (_disposed || !_started) return;
+      _pendingReconnect(peripheral);
+    });
+  }
+
   final Map<String, MeshLink> _links = {};
   final Set<String> _connecting = {};
 
@@ -270,9 +299,17 @@ class MeshTransport implements MeshTransportInterface {
     if (!_started) return;
     // Re-assert advertising and scanning. iOS suspends both while the app is
     // backgrounded; on resume this makes us visible / discovering again
-    // without waiting for the next duty cycle.
+    // without waiting for the next duty cycle. Do NOT republish the GATT
+    // service here: removeAll+add tears the service down for a moment, and a
+    // peer running discoverGATT in that window sees "service not found" and
+    // fails its (re)connect. The service survives foreground/background — it
+    // only needs publishing once per peripheral power-on.
     if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
-      unawaited(_setupPeripheral().then((_) => _startAdvertising()));
+      if (_servicePublished) {
+        unawaited(_startAdvertising());
+      } else {
+        unawaited(_setupPeripheral().then((_) => _startAdvertising()));
+      }
     }
     if (_powerMode == PowerMode.active) {
       unawaited(_startScanning());
@@ -349,6 +386,9 @@ class MeshTransport implements MeshTransportInterface {
       if (e.state == BluetoothLowEnergyState.poweredOn) {
         await _setupPeripheral();
         await _startAdvertising();
+      } else {
+        // Power-off wipes the published GATT database.
+        _servicePublished = false;
       }
     }));
   }
@@ -372,6 +412,13 @@ class MeshTransport implements MeshTransportInterface {
       await _peripheral.stopAdvertising();
       await _peripheral.removeAllServices();
     } catch (_) {}
+    _servicePublished = false;
+    for (final t in _reconnectTimers.values) {
+      t.cancel();
+    }
+    _reconnectTimers.clear();
+    _reconnectAttempts.clear();
+    _rssiFails.clear();
     _links.clear();
     _connecting.clear();
   }
@@ -479,8 +526,10 @@ class MeshTransport implements MeshTransportInterface {
     } catch (_) {}
     try {
       await _peripheral.addService(service);
+      _servicePublished = true;
       _log('BLE service published');
     } catch (e) {
+      _servicePublished = false;
       _log('BLE addService failed: $e');
     }
   }
@@ -763,11 +812,17 @@ class MeshTransport implements MeshTransportInterface {
       )..remoteShortId = remoteId;
       _links[linkId] = link;
       _emitUp(link);
+      _reconnectAttempts.remove(key);
+      _reconnectTimers.remove(key)?.cancel();
     } catch (err) {
       _log('BLE connect failed $key: $err');
       try {
         await _central.disconnect(peripheral);
       } catch (_) {}
+      // Transient failures happen (the peer republishing its GATT database,
+      // radio contention). Keep trying with backoff — a SpotLink peer that
+      // stays silent is worth a standing reconnect on iOS.
+      _scheduleReconnect(peripheral, key);
     } finally {
       _connecting.remove(key);
     }
