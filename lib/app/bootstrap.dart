@@ -44,13 +44,30 @@ class _BootstrapState extends State<Bootstrap> {
     await BackgroundService.init();
     await NotificationService.init();
     await Permissions.request(); // best-effort; UI surfaces failures later
+    await _startMesh();
+  }
 
-    final stored = await _identityStore.storedName();
-    if (stored == null || stored.trim().isEmpty) {
-      if (mounted) setState(() => _stage = _Stage.onboarding);
-      return;
+  /// Boot the mesh, retrying on failure. A background relaunch (BLE state
+  /// restoration / beacon wake) on a locked phone can't read the Keychain
+  /// (errSecInteractionNotAllowed) — retrying means the node comes up on its
+  /// own the moment the user unlocks, instead of dying silently.
+  Future<void> _startMesh() async {
+    for (var attempt = 0;; attempt++) {
+      try {
+        final stored = await _identityStore.storedName();
+        if (stored == null || stored.trim().isEmpty) {
+          if (mounted) setState(() => _stage = _Stage.onboarding);
+          return;
+        }
+        await _launch(stored);
+        return;
+      } catch (e) {
+        bleLogSink?.call('bootstrap failed (attempt $attempt): $e');
+        if (!mounted) return;
+        await Future<void>.delayed(Duration(seconds: attempt < 6 ? 10 : 60));
+        if (!mounted) return;
+      }
     }
-    await _launch(stored);
   }
 
   Future<void> _onNameChosen(String name) async {

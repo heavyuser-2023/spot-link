@@ -790,6 +790,11 @@ class MeshTransport implements MeshTransportInterface {
 
     final key = e.peripheral.uuid.toString();
     if (_links.containsKey('C:$key') || _connecting.contains(key)) return;
+    // A retry backoff is pending for this peripheral (its GATT setup just
+    // failed — e.g. a stale advertisement of a dead app instance).
+    // Re-attempting on every discovery event would turn the backoff into a
+    // ~3s fail storm; let the scheduled retry own the pace.
+    if (_reconnectTimers.containsKey(key)) return;
     _connecting.add(key);
     _log('BLE discovered $key (shortId=$remoteId)');
     await _establishLink(e.peripheral, key, remoteId: remoteId);
