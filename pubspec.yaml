@@ -61,6 +61,10 @@ dependencies:
 dependency_overrides:
   bluetooth_low_energy_darwin:
     path: packages/bluetooth_low_energy_darwin
+  # Fork: empty scan-filter list → null (true unfiltered scan) so Android
+  # discovers iOS peers whose service UUID hides in the BLE overflow area.
+  bluetooth_low_energy_android:
+    path: packages/bluetooth_low_energy_android
 
 dev_dependencies:
   flutter_test:
