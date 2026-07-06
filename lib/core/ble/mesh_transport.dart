@@ -241,6 +241,11 @@ class MeshTransport implements MeshTransportInterface {
   final Map<String, int> _reconnectAttempts = {};
   final Map<String, Timer> _reconnectTimers = {};
 
+  /// Last discovery-triggered dial per key — a short cooldown that keeps a
+  /// scan burst from becoming a fail storm without letting the long
+  /// background backoff suppress a peer that is advertising right now.
+  final Map<String, DateTime> _lastDialAt = {};
+
   bool _servicePublished = false;
 
   void _scheduleReconnect(Peripheral peripheral, String key) {
@@ -563,6 +568,7 @@ class MeshTransport implements MeshTransportInterface {
     _pendingKeys.clear();
     _pendingPeripherals.clear();
     _probeMisses.clear();
+    _lastDialAt.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -944,11 +950,19 @@ class MeshTransport implements MeshTransportInterface {
 
     final key = e.peripheral.uuid.toString();
     if (_links.containsKey('C:$key') || _connecting.contains(key)) return;
-    // A retry backoff is pending for this peripheral (its GATT setup just
-    // failed — e.g. a stale advertisement of a dead app instance).
-    // Re-attempting on every discovery event would turn the backoff into a
-    // ~3s fail storm; let the scheduled retry own the pace.
-    if (_reconnectTimers.containsKey(key)) return;
+    // Rate-limit per key so a discovery burst can't become a fail storm —
+    // but do NOT let the escalating background backoff (up to 5 min) suppress
+    // this path: a discovery means the peer is physically present RIGHT NOW,
+    // so a short cooldown is enough. (This was the "kill the bridge and
+    // everyone stays offline for 5 minutes" bug.) Acting now supersedes the
+    // scheduled retry, so cancel it.
+    final last = _lastDialAt[key];
+    if (last != null &&
+        DateTime.now().difference(last) < const Duration(seconds: 12)) {
+      return;
+    }
+    _lastDialAt[key] = DateTime.now();
+    _reconnectTimers.remove(key)?.cancel();
     _connecting.add(key);
     _log(probe
         ? 'BLE probing Apple device $key (rssi=${e.rssi})'
@@ -1101,6 +1115,9 @@ class MeshTransport implements MeshTransportInterface {
 
   void _tearDown(String linkId) {
     _rssiFails.remove(linkId);
+    // Clear the dial cooldown for this peer so it can be re-dialled promptly
+    // the moment its advertisement reappears (linkId is 'C:<key>').
+    if (linkId.startsWith('C:')) _lastDialAt.remove(linkId.substring(2));
     final link = _links.remove(linkId);
     if (link != null && !_disposed) {
       _log('BLE link down $linkId');
