@@ -24,6 +24,11 @@ class BleConstants {
   /// 0xFFFF is the "no company" test id — fine for a P2P app.
   static const int manufacturerId = 0xFFFF;
 
+  /// Local name every node advertises. Doubles as a discovery fallback: an
+  /// unfiltered Android scan matches iOS peers by this name when their
+  /// 128-bit service UUID is hidden in the BLE overflow area.
+  static const String advertisedName = 'SL';
+
   /// Conservative default packet size before MTU negotiation completes.
   /// BLE 4.0 guarantees a 23-byte ATT MTU (20 usable payload bytes). Our L2
   /// header is 8 bytes, so 20 leaves 12 data bytes — always splittable.

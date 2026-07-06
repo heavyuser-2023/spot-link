@@ -618,7 +618,7 @@ class MeshTransport implements MeshTransportInterface {
     // peers learn our id from the ANNOUNCE sent right after the link is up.
     try {
       await _peripheral.startAdvertising(Advertisement(
-        name: 'SL',
+        name: BleConstants.advertisedName,
         serviceUUIDs: [BleConstants.serviceUuid],
         manufacturerSpecificData: [
           ManufacturerSpecificData(
@@ -634,7 +634,7 @@ class MeshTransport implements MeshTransportInterface {
     }
     try {
       await _peripheral.startAdvertising(Advertisement(
-        name: 'SL',
+        name: BleConstants.advertisedName,
         serviceUUIDs: [BleConstants.serviceUuid],
       ));
       _log('BLE advertising started (service uuid only)');
@@ -712,8 +712,15 @@ class MeshTransport implements MeshTransportInterface {
     if (_scanning) return;
     _scanning = true;
     try {
+      // iOS peripherals advertise their 128-bit service UUID in the BLE
+      // "overflow" area, which Android's hardware service-UUID scan filter
+      // usually can't match — so a filtered Android scan never sees an iPhone
+      // (Results=0). Scan UNFILTERED on Android and match SpotLink in software
+      // (see [_isSpotLink]); keep the filter on iOS, where it works and is
+      // required for background scanning.
       await _central.startDiscovery(
-          serviceUUIDs: [BleConstants.serviceUuid]);
+        serviceUUIDs: Platform.isAndroid ? null : [BleConstants.serviceUuid],
+      );
       _log('BLE scanning started');
     } catch (e) {
       // Leave the flag down so the next attempt actually retries — a wedged
@@ -788,7 +795,24 @@ class MeshTransport implements MeshTransportInterface {
     }));
   }
 
+  /// An unfiltered Android scan surfaces every BLE device nearby — accept a
+  /// peripheral only if it's actually SpotLink: our service UUID in the scan
+  /// record, or (for iOS peers whose UUID hid in the overflow area) our
+  /// advertised local name 'SL'.
+  bool _isSpotLink(Advertisement adv) {
+    if (adv.serviceUUIDs.contains(BleConstants.serviceUuid)) return true;
+    if (adv.name == BleConstants.advertisedName) return true;
+    for (final m in adv.manufacturerSpecificData) {
+      if (m.id == BleConstants.manufacturerId) return true;
+    }
+    return false;
+  }
+
   Future<void> _onDiscovered(DiscoveredEventArgs e) async {
+    // Filtered out in hardware on iOS; done in software on Android's
+    // unfiltered scan so we never dial random headphones/beacons.
+    if (!_isSpotLink(e.advertisement)) return;
+
     final remoteId = _shortIdFromAdvertisement(e.advertisement);
 
     // Never connect to our own advertisement (can happen with some stacks).
