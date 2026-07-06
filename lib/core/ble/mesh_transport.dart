@@ -394,7 +394,12 @@ class MeshTransport implements MeshTransportInterface {
         }
       }
       if (_powerMode == PowerMode.active) {
-        unawaited(_startScanning());
+        // Recycle, don't just re-assert: the OS can quietly stop delivering
+        // scan results while our _scanning flag stays true (seen on iOS
+        // after long foreground sessions — a fresh app instantly discovered
+        // peers the old one had gone blind to). stop→start forces a real
+        // new scan.
+        unawaited(_stopScanning().then((_) => _startScanning()));
       }
       // Let a previously-missed Apple device be probed again sooner when we
       // have nothing at all.
