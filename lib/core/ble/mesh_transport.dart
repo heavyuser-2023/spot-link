@@ -41,6 +41,11 @@ class MeshLink {
   /// Short id learned from the advertisement (central role) or ANNOUNCE.
   PeerId? remoteShortId;
 
+  /// Last time a packet arrived on this link. Peripheral-role links get no
+  /// reliable disconnect callback on every stack — a link silent past the
+  /// ANNOUNCE heartbeat for minutes is a zombie and gets dropped.
+  DateTime lastActivity = DateTime.now();
+
   int maxPacketSize;
   final L2Reassembler reassembler = L2Reassembler();
 
@@ -168,6 +173,7 @@ class MeshTransport implements MeshTransportInterface {
   final _rssiSamples = StreamController<RssiSample>.broadcast();
   Timer? _rssiTimer;
   Timer? _selfHealTimer;
+  int _linklessTicks = 0;
   static const Duration _rssiPollInterval = Duration(seconds: 5);
 
   /// Consecutive failed RSSI reads per central link — the zombie-link
@@ -353,18 +359,46 @@ class MeshTransport implements MeshTransportInterface {
     // all, periodically re-assert advertising + scanning — both calls are
     // idempotent ("already started" is harmless).
     _selfHealTimer = Timer.periodic(const Duration(seconds: 45), (_) {
-      if (!_started || _links.isNotEmpty) return;
+      if (!_started) return;
+      // Zombie peripheral links: no stack fires a reliable "central left"
+      // callback everywhere, and a dead P-link both lies to the UI and can
+      // wedge the GATT server against NEW incoming connections (seen on
+      // Samsung: fresh centrals time out with CBError 6 while a stale link
+      // sits around). ANNOUNCE heartbeats land every ~15s, so minutes of
+      // silence means the central is gone.
+      for (final link in _links.values.toList()) {
+        if (link.role == LinkRole.peripheral &&
+            DateTime.now().difference(link.lastActivity) >
+                const Duration(minutes: 3)) {
+          _log('BLE peripheral link stale (silent 3m) — dropping ${link.id}');
+          _tearDown(link.id);
+        }
+      }
+      if (_links.isNotEmpty) {
+        _linklessTicks = 0;
+        return;
+      }
+      _linklessTicks++;
       _log('BLE self-heal: no links — re-asserting radio');
+      // Deep heal: linkless for ~3 minutes straight → republish the GATT
+      // service too. A wedged/stale server (engine handoff leftovers) makes
+      // every incoming connect time out; removeAll+add gives the stack a
+      // fresh one.
+      final deep = _linklessTicks % 4 == 0;
       if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
-        if (_servicePublished) {
+        if (_servicePublished && !deep) {
           unawaited(_startAdvertising());
         } else {
+          if (deep) _log('BLE self-heal: republishing GATT service');
           unawaited(_setupPeripheral().then((_) => _startAdvertising()));
         }
       }
       if (_powerMode == PowerMode.active) {
         unawaited(_startScanning());
       }
+      // Let a previously-missed Apple device be probed again sooner when we
+      // have nothing at all.
+      if (_linklessTicks >= 4) _probeMisses.clear();
     });
   }
 
@@ -808,6 +842,28 @@ class MeshTransport implements MeshTransportInterface {
     return false;
   }
 
+  /// A *backgrounded* iPhone hides both its service UUID (overflow area) and
+  /// its local name, so nothing in the advertisement says "SpotLink". The one
+  /// thing iOS can't hide is Apple's own continuity beacon (manufacturer id
+  /// 0x004C). On Android we probe-connect to very-near Apple devices and let
+  /// GATT discovery decide: SpotLink service present → real link; absent →
+  /// remember the miss and leave it alone for a while.
+  static const int _appleManufacturerId = 0x004C;
+  static const Duration _probeMissTtl = Duration(minutes: 10);
+  final Map<String, DateTime> _probeMisses = {};
+
+  bool _isIosProbeCandidate(DiscoveredEventArgs e) {
+    if (!Platform.isAndroid) return false;
+    if (e.rssi < -70) return false; // only close-by devices are worth a dial
+    final missedAt = _probeMisses[e.peripheral.uuid.toString()];
+    if (missedAt != null &&
+        DateTime.now().difference(missedAt) < _probeMissTtl) {
+      return false;
+    }
+    return e.advertisement.manufacturerSpecificData
+        .any((m) => m.id == _appleManufacturerId);
+  }
+
   Future<void> _onDiscovered(DiscoveredEventArgs e) async {
     if (_logBle) {
       final a = e.advertisement;
@@ -818,8 +874,12 @@ class MeshTransport implements MeshTransportInterface {
           'match=${_isSpotLink(a)}');
     }
     // Filtered out in hardware on iOS; done in software on Android's
-    // unfiltered scan so we never dial random headphones/beacons.
-    if (!_isSpotLink(e.advertisement)) return;
+    // unfiltered scan so we never dial random headphones/beacons. Very-near
+    // Apple devices get a probe dial instead: a backgrounded iPhone's
+    // advertisement carries no SpotLink marker at all (see
+    // [_isIosProbeCandidate]) — GATT discovery is the only way to tell.
+    final probe = !_isSpotLink(e.advertisement);
+    if (probe && !_isIosProbeCandidate(e)) return;
 
     final remoteId = _shortIdFromAdvertisement(e.advertisement);
 
@@ -853,8 +913,10 @@ class MeshTransport implements MeshTransportInterface {
     // ~3s fail storm; let the scheduled retry own the pace.
     if (_reconnectTimers.containsKey(key)) return;
     _connecting.add(key);
-    _log('BLE discovered $key (shortId=$remoteId)');
-    await _establishLink(e.peripheral, key, remoteId: remoteId);
+    _log(probe
+        ? 'BLE probing Apple device $key (rssi=${e.rssi})'
+        : 'BLE discovered $key (shortId=$remoteId)');
+    await _establishLink(e.peripheral, key, remoteId: remoteId, probe: probe);
   }
 
   /// Re-arm a background-proof connection to a peer we were linked with.
@@ -876,7 +938,7 @@ class MeshTransport implements MeshTransportInterface {
   /// Connect to a SpotLink peripheral and bring up the GATT link. The caller
   /// must have added [key] to [_connecting]; it is removed here when done.
   Future<void> _establishLink(Peripheral peripheral, String key,
-      {PeerId? remoteId}) async {
+      {PeerId? remoteId, bool probe = false}) async {
     final linkId = 'C:$key';
     try {
       await _central.connect(peripheral);
@@ -929,18 +991,27 @@ class MeshTransport implements MeshTransportInterface {
       )..remoteShortId = remoteId;
       _links[linkId] = link;
       _emitUp(link);
+      if (probe) _log('BLE probe hit: $key is a SpotLink peer');
       _reconnectAttempts.remove(key);
       _reconnectTimers.remove(key)?.cancel();
+      _probeMisses.remove(key);
       _rememberPeer(key);
     } catch (err) {
-      _log('BLE connect failed $key: $err');
       try {
         await _central.disconnect(peripheral);
       } catch (_) {}
-      // Transient failures happen (the peer republishing its GATT database,
-      // radio contention). Keep trying with backoff — a SpotLink peer that
-      // stays silent is worth a standing reconnect on iOS.
-      _scheduleReconnect(peripheral, key);
+      if (probe) {
+        // Just a nearby Apple gadget (or an unreachable one) — remember the
+        // miss so we don't keep dialing it, and never schedule retries.
+        _probeMisses[key] = DateTime.now();
+        _log('BLE probe miss $key');
+      } else {
+        _log('BLE connect failed $key: $err');
+        // Transient failures happen (the peer republishing its GATT database,
+        // radio contention). Keep trying with backoff — a SpotLink peer that
+        // stays silent is worth a standing reconnect on iOS.
+        _scheduleReconnect(peripheral, key);
+      }
     } finally {
       _connecting.remove(key);
     }
@@ -962,6 +1033,7 @@ class MeshTransport implements MeshTransportInterface {
 
   void _ingest(MeshLink link, Uint8List packet) {
     if (_disposed) return;
+    link.lastActivity = DateTime.now();
     final full = link.reassembler.offer(packet);
     if (full != null) {
       _inbound.add(InboundPacket(link, full));
