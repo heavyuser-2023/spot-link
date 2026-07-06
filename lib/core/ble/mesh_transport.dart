@@ -812,8 +812,10 @@ class MeshTransport implements MeshTransportInterface {
     if (_logBle) {
       final a = e.advertisement;
       _log('BLE saw ${e.peripheral.uuid.toString().substring(0, 8)} '
-          'name=${a.name} svc=${a.serviceUUIDs.length} '
-          'mfr=${a.manufacturerSpecificData.length} rssi=${e.rssi}');
+          'name=${a.name} svc=${a.serviceUUIDs.length}'
+          '${a.serviceUUIDs.isNotEmpty ? "[${a.serviceUUIDs.first}]" : ""} '
+          'mfr=${a.manufacturerSpecificData.length} rssi=${e.rssi} '
+          'match=${_isSpotLink(a)}');
     }
     // Filtered out in hardware on iOS; done in software on Android's
     // unfiltered scan so we never dial random headphones/beacons.
