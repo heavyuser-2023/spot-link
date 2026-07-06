@@ -167,6 +167,7 @@ class MeshTransport implements MeshTransportInterface {
   final _linkEvents = StreamController<LinkEvent>.broadcast();
   final _rssiSamples = StreamController<RssiSample>.broadcast();
   Timer? _rssiTimer;
+  Timer? _selfHealTimer;
   static const Duration _rssiPollInterval = Duration(seconds: 5);
 
   /// Consecutive failed RSSI reads per central link — the zombie-link
@@ -347,6 +348,24 @@ class MeshTransport implements MeshTransportInterface {
     // each neighbour is even after advertisements stop (connected peers
     // usually stop advertising).
     _rssiTimer = Timer.periodic(_rssiPollInterval, (_) => _pollRssi());
+    // Self-heal: a start that failed mid-race (engine handoff, adapter busy)
+    // used to leave the node running but mute. While we have no links at
+    // all, periodically re-assert advertising + scanning — both calls are
+    // idempotent ("already started" is harmless).
+    _selfHealTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+      if (!_started || _links.isNotEmpty) return;
+      _log('BLE self-heal: no links — re-asserting radio');
+      if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
+        if (_servicePublished) {
+          unawaited(_startAdvertising());
+        } else {
+          unawaited(_setupPeripheral().then((_) => _startAdvertising()));
+        }
+      }
+      if (_powerMode == PowerMode.active) {
+        unawaited(_startScanning());
+      }
+    });
   }
 
   @override
@@ -453,6 +472,8 @@ class MeshTransport implements MeshTransportInterface {
     _started = false;
     _rssiTimer?.cancel();
     _rssiTimer = null;
+    _selfHealTimer?.cancel();
+    _selfHealTimer = null;
     _dutyTimer?.cancel();
     _dutyTimer = null;
     _scanning = false;
@@ -695,6 +716,10 @@ class MeshTransport implements MeshTransportInterface {
           serviceUUIDs: [BleConstants.serviceUuid]);
       _log('BLE scanning started');
     } catch (e) {
+      // Leave the flag down so the next attempt actually retries — a wedged
+      // "true" here after a failed start (e.g. the adapter was mid-handoff
+      // between the headless and UI engines) silenced the radio forever.
+      _scanning = false;
       _log('BLE startDiscovery failed: $e');
     }
   }
