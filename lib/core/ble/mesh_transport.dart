@@ -222,6 +222,17 @@ class MeshTransport implements MeshTransportInterface {
     } catch (_) {}
   }
 
+  /// Standing pending-reconnect keys (subset of [_connecting]) and their
+  /// peripherals. iOS pending connects never time out, and Android peers
+  /// rotate their advertising address on every restart — so pendings to a
+  /// dead address would otherwise pile up forever, eat the [maxLinks] slot
+  /// budget, and silently block every NEW discovery (observed: killing the
+  /// Android peer knocked the *other* iPhone offline too). Kept out of the
+  /// discovery budget, capped, oldest-evicted.
+  final Set<String> _pendingKeys = {};
+  final Map<String, Peripheral> _pendingPeripherals = {};
+  static const int _maxPendingReconnects = 4;
+
   /// Failed (re)connect attempts per peripheral, driving retry backoff.
   /// A pending reconnect is one-shot on iOS: once it completes and our GATT
   /// setup fails (e.g. the peer was republishing its service that instant),
@@ -385,6 +396,19 @@ class MeshTransport implements MeshTransportInterface {
       // every incoming connect time out; removeAll+add gives the stack a
       // fresh one.
       final deep = _linklessTicks % 4 == 0;
+      if (deep && _pendingKeys.isNotEmpty) {
+        // Linkless for minutes with standing pendings: they're likely aimed
+        // at dead rotated addresses. Cancel them all — scan/probe will find
+        // the peers' live addresses instead.
+        _log('BLE deep heal: cancelling ${_pendingKeys.length} stale '
+            'pending reconnects');
+        for (final k in _pendingKeys.toList()) {
+          final p = _pendingPeripherals[k];
+          if (p != null) {
+            unawaited(_central.disconnect(p).then((_) {}, onError: (_) {}));
+          }
+        }
+      }
       if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
         if (_servicePublished && !deep) {
           unawaited(_startAdvertising());
@@ -536,6 +560,9 @@ class MeshTransport implements MeshTransportInterface {
     _rssiFails.clear();
     _links.clear();
     _connecting.clear();
+    _pendingKeys.clear();
+    _pendingPeripherals.clear();
+    _probeMisses.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -907,8 +934,13 @@ class MeshTransport implements MeshTransportInterface {
 
     // Respect the link cap to bound battery/memory usage. Count in-flight
     // connections too, or a discovery burst can overshoot the cap (every
-    // event sees _links still empty before any connect completes).
-    if (_links.length + _connecting.length >= maxLinks) return;
+    // event sees _links still empty before any connect completes) — but NOT
+    // standing pending-reconnects: a pending to a dead rotated address must
+    // never starve a live discovery (it silently knocked every peer offline).
+    if (_links.length + (_connecting.length - _pendingKeys.length) >=
+        maxLinks) {
+      return;
+    }
 
     final key = e.peripheral.uuid.toString();
     if (_links.containsKey('C:$key') || _connecting.contains(key)) return;
@@ -934,8 +966,22 @@ class MeshTransport implements MeshTransportInterface {
     if (_disposed || !_started) return;
     final key = peripheral.uuid.toString();
     if (_links.containsKey('C:$key') || _connecting.contains(key)) return;
-    if (_links.length + _connecting.length >= maxLinks) return;
+    // Cap the standing pendings, evicting the oldest — rotated (dead)
+    // addresses are the common case and the newest one is likeliest alive.
+    while (_pendingKeys.length >= _maxPendingReconnects) {
+      final oldest = _pendingKeys.first;
+      _pendingKeys.remove(oldest);
+      final old = _pendingPeripherals.remove(oldest);
+      _log('BLE pending reconnect evicted $oldest');
+      if (old != null) {
+        // Cancelling makes its connect() throw; the establishLink cleanup
+        // then releases the _connecting slot.
+        unawaited(_central.disconnect(old).then((_) {}, onError: (_) {}));
+      }
+    }
     _connecting.add(key);
+    _pendingKeys.add(key);
+    _pendingPeripherals[key] = peripheral;
     _log('BLE pending reconnect armed $key');
     unawaited(_establishLink(peripheral, key));
   }
@@ -1019,6 +1065,8 @@ class MeshTransport implements MeshTransportInterface {
       }
     } finally {
       _connecting.remove(key);
+      _pendingKeys.remove(key);
+      _pendingPeripherals.remove(key);
     }
   }
 
