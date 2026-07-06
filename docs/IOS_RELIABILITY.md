@@ -93,3 +93,32 @@ CoreLocation 지역 감시는 **사용자가 죽인 앱도 재기동**한다(BLE
 - 재연결: `link down → pending reconnect armed → link up` (discovered 없이)
 - 좀비 절단: `BLE link stale (3 failed RSSI reads) — cutting C:…`
 - 전달: 송신 `MSG delivered <id>`, 수신 `MSG recv <id>`
+
+## 연결 안정성 수정 이력 (v1.1.3 → v1.2.4)
+
+iOS↔Android 실기기(iPhone 13 mini ×2 + Galaxy S21) 반복 검증으로 잡은
+연결 결함들. 각 항목은 실기기 로그/dumpsys로 원인 확정 후 수정.
+
+| 버전 | 증상 | 근본 원인 | 수정 |
+|---|---|---|---|
+| v1.1.3 | 앱 실행 중인데 서로 발견 0 | 스캔 시작 1회 실패 시 `_scanning=true`로 남아 재시도 no-op → 영구 침묵 | 실패 시 플래그 복원 + 45초 자가치유 |
+| v1.1.4 | "로딩 중" 멈춤 + 발견 0 | 온보딩이 OS 권한 팝업 뒤에 가려짐 → 이름 미설정 → 메시 미시작 | 온보딩을 권한 요청보다 먼저 |
+| v1.2.0 | Android가 iPhone 발견 못함 | ① iOS 서비스 UUID가 overflow 영역 → Android 필터 스캔 매칭 실패 ② 플러그인이 빈 필터를 넘겨 삼성 스캔 결과 0 | Android 무필터 스캔(플러그인 포크: 빈 필터→null) + 소프트웨어 SpotLink 선별(UUID/이름 SL/mfr) |
+| v1.2.1 | 주머니 속(백그라운드) iPhone 발견 못함 / 좀비 P-링크가 새 연결 차단 | 백그라운드 iOS 광고엔 SpotLink 표식 전무; peripheral 링크 사망 콜백 부재 | Apple 비콘(0x004C) 근접 프로브 연결 + 좀비 P-링크 3분 절단 + GATT 딥 리셋 |
+| v1.2.2 | 장시간 후 발견 0 | OS가 스캔 결과 전달을 조용히 중단해도 플래그는 true | 자가치유가 스캔을 stop→start로 리사이클 |
+| v1.2.3 | 한 기기 종료 → 무관한 기기까지 오프라인 | 죽은(회전된) 광고 주소로의 iOS pending connect가 maxLinks 슬롯 고갈 → 새 발견 전부 차단 | pending을 발견 예산에서 분리 + 상한 4·최고령 축출 + 딥힐 시 일괄 취소 |
+| v1.2.4 | 다리(중계) 노드 종료 시 전원 영구 오프라인 | 연결 실패 300초 백오프 중 발견 가드(`_reconnectTimers`)가 눈앞의 피어 발견까지 무시 | 발견 경로를 배경 백오프와 분리(키별 12초 쿨다운) + 발견 시 백오프 취소 |
+
+핵심 교훈: 안정성 가드(백오프·플래그·슬롯 예산)는 **"피어가 지금 물리적으로
+존재한다"는 발견 신호를 절대 억눌러선 안 된다**. 여러 버전에 걸쳐 반복된
+근본 실수가 이것. 발견은 언제나 짧은 쿨다운만 두고 실행하며, 배경 재시도
+로직과 독립적이어야 한다.
+
+### 진단 로그 마커 (BLE_LOG 빌드)
+`flutter build … --dart-define=BLE_LOG=true` → Android는 logcat,
+iOS는 Documents/ble.log:
+- `BLE saw <id> name=.. svc=..[uuid] mfr=.. rssi=.. match=..` — 발견된 모든 광고
+- `BLE probing Apple device` / `probe hit` / `probe miss` — 백그라운드 iPhone 프로브
+- `pending reconnect armed/evicted` — iOS 대기 연결
+- `peripheral link stale (silent 3m)` — 좀비 링크 절단
+- `self-heal: … re-asserting radio` / `republishing GATT service` — 자가치유
