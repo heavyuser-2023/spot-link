@@ -34,12 +34,11 @@ packages:
     source: hosted
     version: "6.2.1"
   bluetooth_low_energy_android:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: bluetooth_low_energy_android
-      sha256: "1a1ad8aa3016b6ae843eeaa86c0f4eab7eda6669c06066a6da2494ffe6350853"
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/bluetooth_low_energy_android"
+      relative: true
+    source: path
     version: "6.2.1"
   bluetooth_low_energy_darwin:
     dependency: "direct overridden"
