@@ -43,9 +43,14 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <!-- No cloud backup: restoring another install's encrypted secure-storage
+         blob can't be decrypted on this device (identity keys are
+         device-bound anyway) and a poisoned restore can wedge first boot. -->
     <application
         android:label="SpotLink"
         android:name="${applicationName}"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"

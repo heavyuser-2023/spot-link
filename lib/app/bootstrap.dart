@@ -32,6 +32,10 @@ class _BootstrapState extends State<Bootstrap> {
   MeshController? _controller;
   final _identityStore = IdentityStore();
 
+  /// Last boot failure, rendered on the splash — turns an opaque endless
+  /// spinner into a readable diagnosis on any phone.
+  String? _bootError;
+
   @override
   void initState() {
     super.initState();
@@ -41,10 +45,29 @@ class _BootstrapState extends State<Bootstrap> {
   Future<void> _start() async {
     await initializeDateFormatting('ko', null);
     await _wireBleFileLog();
-    await BackgroundService.init();
-    await NotificationService.init();
-    await Permissions.request(); // best-effort; UI surfaces failures later
+    await _step('알림 준비', () async {
+      await BackgroundService.init();
+      await NotificationService.init();
+    });
+    // A permission dialog the user never answers must not freeze the splash
+    // forever — proceed and let the in-app banner surface what's missing.
+    await _step(
+        '권한 요청',
+        () => Permissions.request()
+            .timeout(const Duration(seconds: 45), onTimeout: () => false));
     await _startMesh();
+  }
+
+  /// Run one boot step, surfacing failures on the splash instead of dying
+  /// silently — a frozen "로딩 중" screen with no reason is undebuggable on
+  /// someone else's phone.
+  Future<void> _step(String label, Future<void> Function() body) async {
+    try {
+      await body();
+    } catch (e) {
+      bleLogSink?.call('bootstrap step "$label" failed: $e');
+      if (mounted) setState(() => _bootError = '$label 실패: $e');
+    }
   }
 
   /// Boot the mesh, retrying on failure. A background relaunch (BLE state
@@ -60,10 +83,16 @@ class _BootstrapState extends State<Bootstrap> {
           return;
         }
         await _launch(stored);
+        if (mounted && _bootError != null) {
+          setState(() => _bootError = null);
+        }
         return;
       } catch (e) {
         bleLogSink?.call('bootstrap failed (attempt $attempt): $e');
         if (!mounted) return;
+        // Show what's wrong right on the splash so a stuck phone can be
+        // diagnosed by reading the screen.
+        setState(() => _bootError = '시작 실패 (${attempt + 1}회): $e');
         await Future<void>.delayed(Duration(seconds: attempt < 6 ? 10 : 60));
         if (!mounted) return;
       }
@@ -146,7 +175,7 @@ class _BootstrapState extends State<Bootstrap> {
   Widget build(BuildContext context) {
     switch (_stage) {
       case _Stage.loading:
-        return const _Splash();
+        return _Splash(error: _bootError);
       case _Stage.onboarding:
         return OnboardingScreen(onSubmit: _onNameChosen);
       case _Stage.ready:
@@ -159,7 +188,8 @@ class _BootstrapState extends State<Bootstrap> {
 }
 
 class _Splash extends StatelessWidget {
-  const _Splash();
+  final String? error;
+  const _Splash({this.error});
 
   @override
   Widget build(BuildContext context) {
@@ -167,22 +197,35 @@ class _Splash extends StatelessWidget {
     return Scaffold(
       backgroundColor: scheme.primary,
       body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.hub, size: 72, color: scheme.onPrimary),
-            const SizedBox(height: 16),
-            Text('SpotLink',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    color: scheme.onPrimary, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(
-                  strokeWidth: 2.5, color: scheme.onPrimary),
-            ),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.hub, size: 72, color: scheme.onPrimary),
+              const SizedBox(height: 16),
+              Text('SpotLink',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      color: scheme.onPrimary, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2.5, color: scheme.onPrimary),
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 24),
+                Text(
+                  '$error\n자동으로 다시 시도합니다',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      color: scheme.onPrimary.withValues(alpha: 0.9),
+                      fontSize: 12),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
