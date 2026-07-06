@@ -45,17 +45,29 @@ class _BootstrapState extends State<Bootstrap> {
   Future<void> _start() async {
     await initializeDateFormatting('ko', null);
     await _wireBleFileLog();
+
+    // First run (no name yet): show onboarding BEFORE requesting OS
+    // permissions. Otherwise the permission dialogs stack over the splash,
+    // hide the onboarding screen, and the app looks frozen on "로딩 중" —
+    // and since the mesh only starts after a name is set, the phone never
+    // advertises or scans (appears online but undiscoverable). Permissions
+    // are requested from [_onNameChosen] instead.
+    final stored = await _identityStore.storedName();
+    if (stored == null || stored.trim().isEmpty) {
+      if (mounted) setState(() => _stage = _Stage.onboarding);
+      return;
+    }
+
+    // Returning user: bring services + permissions up, then launch.
     await _step('알림 준비', () async {
       await BackgroundService.init();
       await NotificationService.init();
     });
-    // A permission dialog the user never answers must not freeze the splash
-    // forever — proceed and let the in-app banner surface what's missing.
     await _step(
         '권한 요청',
         () => Permissions.request()
             .timeout(const Duration(seconds: 45), onTimeout: () => false));
-    await _startMesh();
+    await _startMesh(stored);
   }
 
   /// Run one boot step, surfacing failures on the splash instead of dying
@@ -74,15 +86,10 @@ class _BootstrapState extends State<Bootstrap> {
   /// restoration / beacon wake) on a locked phone can't read the Keychain
   /// (errSecInteractionNotAllowed) — retrying means the node comes up on its
   /// own the moment the user unlocks, instead of dying silently.
-  Future<void> _startMesh() async {
+  Future<void> _startMesh(String name) async {
     for (var attempt = 0;; attempt++) {
       try {
-        final stored = await _identityStore.storedName();
-        if (stored == null || stored.trim().isEmpty) {
-          if (mounted) setState(() => _stage = _Stage.onboarding);
-          return;
-        }
-        await _launch(stored);
+        await _launch(name);
         if (mounted && _bootError != null) {
           setState(() => _bootError = null);
         }
@@ -101,8 +108,18 @@ class _BootstrapState extends State<Bootstrap> {
 
   Future<void> _onNameChosen(String name) async {
     await _identityStore.setDisplayName(name);
-    setState(() => _stage = _Stage.loading);
-    await _launch(name);
+    if (mounted) setState(() => _stage = _Stage.loading);
+    // Now that the user has a name, bring up services + ask for the OS
+    // permissions the mesh needs, then start.
+    await _step('알림 준비', () async {
+      await BackgroundService.init();
+      await NotificationService.init();
+    });
+    await _step(
+        '권한 요청',
+        () => Permissions.request()
+            .timeout(const Duration(seconds: 45), onTimeout: () => false));
+    await _startMesh(name);
   }
 
   Future<void> _launch(String name) async {
