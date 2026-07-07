@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
@@ -126,23 +125,26 @@ class MeshHost {
     }
   }
 
-  /// The UI hands over a temp file (bytes never cross the port); we own and
-  /// delete it once read.
+  /// The UI hands over a path (bytes never cross the port, and the payload
+  /// never enters RAM here either — the controller copies it with a native
+  /// File.copy and streams chunks from disk). Outbox temp files are ours to
+  /// delete; picker paths belong to the OS cache and are left alone.
   Future<void> _sendFile(Map<String, Object?> m) async {
     final path = m['path'] as String;
-    final file = File(path);
-    final bytes = await file.readAsBytes();
     try {
-      await controller.sendFile(
+      await controller.sendFilePath(
         m['p'] as String,
-        bytes: Uint8List.fromList(bytes),
+        path: path,
         name: m['name'] as String,
         mime: m['mime'] as String,
       );
     } finally {
-      try {
-        await file.delete();
-      } catch (_) {}
+      if (path.contains(
+          '${Platform.pathSeparator}outbox${Platform.pathSeparator}')) {
+        try {
+          await File(path).delete();
+        } catch (_) {}
+      }
     }
   }
 

@@ -132,25 +132,35 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Gallery uses the platform media picker (PHPicker on iOS, gallery on
     // Android) and allows multi-select; files keep the single-pick browser.
+    // withData: false — the picker gives us a path, and the disk-backed send
+    // never loads the payload into RAM (a picked video used to live in the
+    // Dart heap for the whole multi-minute transfer).
     final result = await FilePicker.platform.pickFiles(
       type: source == _AttachSource.gallery ? FileType.media : FileType.any,
       allowMultiple: source == _AttachSource.gallery,
-      withData: true,
+      withData: false,
     );
     if (result == null || result.files.isEmpty) return;
     if (!mounted) return;
     final controller = context.read<MeshFrontend>();
     for (final f in result.files) {
-      final bytes = f.bytes ??
-          (f.path != null ? await File(f.path!).readAsBytes() : null);
-      if (bytes == null) continue;
       final mime = lookupMimeType(f.name) ?? 'application/octet-stream';
-      await controller.sendFile(
-        widget.peerHex,
-        bytes: bytes,
-        name: f.name,
-        mime: mime,
-      );
+      if (f.path != null) {
+        await controller.sendFilePath(
+          widget.peerHex,
+          path: f.path!,
+          name: f.name,
+          mime: mime,
+        );
+      } else if (f.bytes != null) {
+        // No path (rare: web/virtual providers) — byte fallback.
+        await controller.sendFile(
+          widget.peerHex,
+          bytes: f.bytes!,
+          name: f.name,
+          mime: mime,
+        );
+      }
     }
     _animateToBottom();
   }
@@ -166,9 +176,10 @@ class _ChatScreenState extends State<ChatScreen> {
           const SnackBar(content: Text('설치 파일을 꺼내지 못했습니다')));
       return;
     }
-    await controller.sendFile(
+    // Disk-backed: a ~76MB APK read into RAM was itself a jetsam trigger.
+    await controller.sendFilePath(
       widget.peerHex,
-      bytes: await apk.readAsBytes(),
+      path: apk.path,
       name: AppShare.apkName,
       mime: AppShare.apkMime,
     );
@@ -911,7 +922,10 @@ class _ImageViewerPage extends StatelessWidget {
       body: Center(
         child: InteractiveViewer(
           maxScale: 6,
-          child: Image.file(File(message.filePath!)),
+          // Bound the decode: a 12MP photo decodes to ~48MB of bitmap at full
+          // resolution — far beyond what a phone screen can show. 2048px keeps
+          // zooming crisp at a tenth of the RAM.
+          child: Image.file(File(message.filePath!), cacheWidth: 2048),
         ),
       ),
     );

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -293,7 +294,7 @@ void main() {
       timeout: const Duration(seconds: 5),
     );
     expect(got.meta.name, 'secret.bin');
-    expect(got.bytes, fileBytes);
+    expect(File(got.path).readAsBytesSync(), fileBytes);
     expect(got.from, idB.peerId == got.from ? got.from : idA.peerId);
   });
 
@@ -340,7 +341,7 @@ void main() {
         (e) => true,
         timeout: const Duration(seconds: 5),
       );
-      expect(got.bytes, fileBytes); // exact bytes over the fast lane
+      expect(File(got.path).readAsBytesSync(), fileBytes); // exact bytes over the fast lane
       // No BLE chunks were used: the file never entered the BLE receiver's
       // chunk store (it completed via the fast path).
       final delivered = await waitFor<DeliveryConfirmed>(
@@ -391,7 +392,7 @@ void main() {
       (e) => true,
       timeout: const Duration(seconds: 20),
     );
-    expect(got.bytes, fileBytes);
+    expect(File(got.path).readAsBytesSync(), fileBytes);
     expect(tid, isNotNull);
   });
 
@@ -434,7 +435,7 @@ void main() {
       (e) => true,
       timeout: const Duration(seconds: 20),
     );
-    expect(got.bytes, fileBytes); // delivered over BLE
+    expect(File(got.path).readAsBytesSync(), fileBytes); // delivered over BLE
   });
 
   test(

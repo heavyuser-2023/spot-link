@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -10,6 +11,19 @@ Uint8List randomBytes(int n, int seed) {
 }
 
 void main() {
+  late Directory tmp;
+  var partSeq = 0;
+  String newPart() => '${tmp.path}/rx_${partSeq++}.part';
+
+  setUpAll(() {
+    tmp = Directory.systemTemp.createTempSync('ft_test');
+  });
+  tearDownAll(() {
+    try {
+      tmp.deleteSync(recursive: true);
+    } catch (_) {}
+  });
+
   group('FileMeta codec', () {
     test('round-trips', () {
       final meta = FileMeta(
@@ -51,26 +65,46 @@ void main() {
     });
   });
 
-  group('End-to-end file transfer (in-memory)', () {
-    test('perfect channel: send all, assemble matches', () {
+  group('End-to-end file transfer (disk-backed receiver)', () {
+    test('perfect channel: send all, finalized file matches', () async {
       final data = randomBytes(50000, 1);
       final sender = FileSender.forFile(
-          bytes: data, name: 'a.bin', mime: 'application/octet-stream',
+          bytes: data,
+          name: 'a.bin',
+          mime: 'application/octet-stream',
           chunkSize: 4096);
-      final receiver = FileReceiver(sender.meta);
+      final receiver = FileReceiver(sender.meta, newPart());
 
       for (final c in sender.allChunks()) {
         receiver.offer(c);
       }
       expect(receiver.isComplete, isTrue);
-      expect(receiver.assemble(), data);
+      final path = await receiver.finalize();
+      expect(await File(path).readAsBytes(), data);
     });
 
-    test('lossy channel: drop some chunks then retransmit via ACK', () {
+    test('disk-backed sender produces identical chunks', () async {
+      final data = randomBytes(50000, 11);
+      final src = File('${tmp.path}/src.bin')..writeAsBytesSync(data);
+      final sender = await FileSender.forPath(
+          path: src.path,
+          name: 'a.bin',
+          mime: 'application/octet-stream',
+          chunkSize: 4096);
+      final receiver = FileReceiver(sender.meta, newPart());
+      for (final c in sender.allChunks()) {
+        receiver.offer(c);
+      }
+      sender.close();
+      final path = await receiver.finalize();
+      expect(await File(path).readAsBytes(), data);
+    });
+
+    test('lossy channel: drop some chunks then retransmit via ACK', () async {
       final data = randomBytes(30000, 7);
       final sender = FileSender.forFile(
           bytes: data, name: 'b.bin', mime: 'x', chunkSize: 1000);
-      final receiver = FileReceiver(sender.meta);
+      final receiver = FileReceiver(sender.meta, newPart());
 
       // First pass: drop every 3rd chunk.
       var i = 0;
@@ -92,14 +126,15 @@ void main() {
       expect(receiver.isComplete, isTrue);
       ack = receiver.buildAck();
       expect(ack.complete, isTrue);
-      expect(receiver.assemble(), data);
+      final path = await receiver.finalize();
+      expect(await File(path).readAsBytes(), data);
     });
 
     test('duplicate chunks are ignored', () {
       final data = randomBytes(5000, 3);
-      final sender =
-          FileSender.forFile(bytes: data, name: 'c', mime: 'x', chunkSize: 1000);
-      final receiver = FileReceiver(sender.meta);
+      final sender = FileSender.forFile(
+          bytes: data, name: 'c', mime: 'x', chunkSize: 1000);
+      final receiver = FileReceiver(sender.meta, newPart());
 
       final first = sender.chunk(0);
       expect(receiver.offer(first), isTrue);
@@ -107,10 +142,10 @@ void main() {
       expect(receiver.receivedCount, 1);
     });
 
-    test('assemble throws on hash mismatch', () {
+    test('finalize throws on hash mismatch and deletes the part file', () async {
       final data = randomBytes(4000, 9);
-      final sender =
-          FileSender.forFile(bytes: data, name: 'd', mime: 'x', chunkSize: 1000);
+      final sender = FileSender.forFile(
+          bytes: data, name: 'd', mime: 'x', chunkSize: 1000);
       // Build a receiver with tampered meta hash.
       final badMeta = FileMeta(
         transferId: sender.meta.transferId,
@@ -121,22 +156,39 @@ void main() {
         name: sender.meta.name,
         mime: sender.meta.mime,
       );
-      final receiver = FileReceiver(badMeta);
+      final part = newPart();
+      final receiver = FileReceiver(badMeta, part);
       for (final c in sender.allChunks()) {
         receiver.offer(c);
       }
       expect(receiver.isComplete, isTrue);
-      expect(() => receiver.assemble(), throwsStateError);
+      await expectLater(receiver.finalize(), throwsStateError);
+      expect(File(part).existsSync(), isFalse);
     });
 
-    test('single byte file (one chunk)', () {
+    test('single byte file (one chunk)', () async {
       final data = Uint8List.fromList([42]);
-      final sender =
-          FileSender.forFile(bytes: data, name: 'e', mime: 'x', chunkSize: 4096);
+      final sender = FileSender.forFile(
+          bytes: data, name: 'e', mime: 'x', chunkSize: 4096);
       expect(sender.meta.totalChunks, 1);
-      final receiver = FileReceiver(sender.meta);
+      final receiver = FileReceiver(sender.meta, newPart());
       receiver.offer(sender.chunk(0));
-      expect(receiver.assemble(), data);
+      final path = await receiver.finalize();
+      expect(await File(path).readAsBytes(), data);
+    });
+
+    test('discard removes the part file', () {
+      final data = randomBytes(3000, 5);
+      final sender = FileSender.forFile(
+          bytes: data, name: 'f', mime: 'x', chunkSize: 1000);
+      final part = newPart();
+      final receiver = FileReceiver(sender.meta, part);
+      receiver.offer(sender.chunk(0));
+      expect(File(part).existsSync(), isTrue);
+      receiver.discard();
+      expect(File(part).existsSync(), isFalse);
+      // Post-discard chunks are rejected, not written to a closed file.
+      expect(receiver.offer(sender.chunk(1)), isFalse);
     });
   });
 }

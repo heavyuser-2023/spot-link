@@ -122,11 +122,24 @@ class AppDatabase {
     return db.insert('messages', m.toMap()..remove('id'));
   }
 
-  Future<List<ChatMessage>> messagesFor(String peerHex) async {
+  /// Messages for one conversation, oldest first. With [limit] set, only the
+  /// most RECENT [limit] rows are returned (still oldest-first) — the chat
+  /// screen doesn't need years of history pinned in RAM.
+  Future<List<ChatMessage>> messagesFor(String peerHex, {int? limit}) async {
     final db = await _database;
+    if (limit == null) {
+      final rows = await db.query('messages',
+          where: 'peer_hex = ?',
+          whereArgs: [peerHex],
+          orderBy: 'timestamp ASC');
+      return rows.map(ChatMessage.fromMap).toList();
+    }
     final rows = await db.query('messages',
-        where: 'peer_hex = ?', whereArgs: [peerHex], orderBy: 'timestamp ASC');
-    return rows.map(ChatMessage.fromMap).toList();
+        where: 'peer_hex = ?',
+        whereArgs: [peerHex],
+        orderBy: 'timestamp DESC',
+        limit: limit);
+    return rows.map(ChatMessage.fromMap).toList().reversed.toList();
   }
 
   /// Returns the number of rows updated (0 = message not persisted yet).

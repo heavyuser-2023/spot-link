@@ -88,6 +88,12 @@ abstract class MeshFrontend extends ChangeNotifier {
   Future<void> retryText(ChatMessage failed);
   Future<void> sendFile(String peerHex,
       {required Uint8List bytes, required String name, required String mime});
+
+  /// Preferred over [sendFile] whenever a path exists: the file is hashed
+  /// and chunked straight from disk, so a large transfer never pins the whole
+  /// payload in RAM (jetsam bait on iOS).
+  Future<void> sendFilePath(String peerHex,
+      {required String path, required String name, required String mime});
   Future<void> cancelFile(ChatMessage msg);
   Future<void> retryFile(ChatMessage failed);
   Future<void> deleteMessage(ChatMessage msg);

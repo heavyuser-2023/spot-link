@@ -8,6 +8,11 @@ void main() {
   // Receive port for messages from the foreground-service (headless mesh)
   // isolate — must exist before any ping/handoff can reach us.
   FlutterForegroundTask.initCommunicationPort();
+  // Flutter's defaults (1000 images / 100MB) are sized for image-heavy apps;
+  // a chat shows a handful of thumbnails. A small cache keeps our suspended
+  // footprint low — every retained MB is jetsam bait on iOS.
+  PaintingBinding.instance.imageCache.maximumSize = 50;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 32 << 20; // 32MB
   runApp(const SpotLinkApp());
 }
 

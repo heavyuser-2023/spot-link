@@ -69,7 +69,7 @@ void main() {
 
     final got = await waitFor<FileReceived>(b, (e) => true);
     expect(got.meta.name, 'photo.jpg');
-    expect(got.bytes, fileBytes); // exact bytes over real TCP
+    expect(File(got.path).readAsBytesSync(), fileBytes); // exact bytes over real TCP
     expect(got.from, idA.peerId);
 
     // Sender flips to delivered via the reused BLE completion ACK.
@@ -113,7 +113,7 @@ void main() {
 
     final got = await waitFor<FileReceived>(b, (e) => true,
         timeout: const Duration(seconds: 30));
-    expect(got.bytes, fileBytes); // delivered over BLE fallback
+    expect(File(got.path).readAsBytesSync(), fileBytes); // delivered over BLE fallback
 
     await a.node.dispose();
     await b.node.dispose();

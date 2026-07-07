@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'ble/mesh_transport.dart';
@@ -76,11 +77,14 @@ class FileFailed extends NodeEvent {
   FileFailed(this.transferIdHex, this.name, {required this.incoming});
 }
 
+/// A file finished arriving. The payload stays ON DISK ([path], the
+/// receiver's part file, hash-verified) — the app layer moves it into place.
+/// Handing bytes here used to spike RAM by 2× the file size at completion.
 class FileReceived extends NodeEvent {
   final PeerId from;
   final FileMeta meta;
-  final Uint8List bytes;
-  FileReceived(this.from, this.meta, this.bytes);
+  final String path;
+  FileReceived(this.from, this.meta, this.path);
 }
 
 class NodeError extends NodeEvent {
@@ -123,6 +127,12 @@ class MeshNode {
   final Map<String, FileSender> _senders = {};
   final Map<String, FileReceiver> _receivers = {};
   final Map<String, PeerId> _receiverPeers = {};
+
+  /// Where an incoming transfer's partial file lives while chunks arrive.
+  /// The app layer points this at its documents dir; the default keeps tests
+  /// and headless use working without setup.
+  String Function(String tidHex) incomingPartPath = (tid) =>
+      '${Directory.systemTemp.path}/spotlink_incoming_$tid.part';
 
   /// Receiver-side recovery timers: while a transfer is incomplete they
   /// periodically re-ACK the missing seqs so a lost tail can't stall forever.
@@ -354,6 +364,14 @@ class MeshNode {
     }
     _fastAcceptWaiters.clear();
     _fastActive.clear();
+    for (final s in _senders.values) {
+      s.close();
+    }
+    _senders.clear();
+    for (final r in _receivers.values) {
+      r.discard();
+    }
+    _receivers.clear();
     await transport.stop();
   }
 
@@ -429,14 +447,47 @@ class MeshNode {
       mime: mime,
       chunkSize: chunkSize,
     );
+    return _startSend(sender, dst, kex);
+  }
+
+  /// Like [sendFile] but disk-backed: the file is hashed and chunked straight
+  /// from [path], so a large transfer never pins the whole file in RAM.
+  Future<String?> sendFilePath(
+    PeerId dst, {
+    required String path,
+    required String name,
+    required String mime,
+    int chunkSize = 4096,
+  }) async {
+    final kex = _knownKex[dst.hex];
+    if (kex == null) {
+      _events.add(NodeError('Unknown recipient key: ${dst.short}'));
+      return null;
+    }
+    final size = await File(path).length();
+    if (size > maxFileBytes) {
+      _events.add(NodeError('File too large ($size bytes, max $maxFileBytes)'));
+      return null;
+    }
+    final sender = await FileSender.forPath(
+      path: path,
+      name: name,
+      mime: mime,
+      chunkSize: chunkSize,
+    );
+    return _startSend(sender, dst, kex);
+  }
+
+  Future<String?> _startSend(FileSender sender, PeerId dst, Uint8List kex) async {
     final tid = sender.meta.transferIdHex;
     bleLogSink?.call(
-      'FT send start: $name ${bytes.length}B chunks=${sender.meta.totalChunks}',
+      'FT send start: ${sender.meta.name} ${sender.meta.fileSize}B '
+      'chunks=${sender.meta.totalChunks}',
     );
     _senders[tid] = sender;
     // Watchdog: if no completion ACK arrives, retire the sender so it can't
     // leak forever (e.g. recipient went away, or the final ACK was lost).
-    _armSenderWatchdog(tid, name);
+    _armSenderWatchdog(tid, sender.meta.name);
 
     // 1. Send META.
     final metaCipher = await crypto.encrypt(sender.meta.encode(), kex);
@@ -453,7 +504,7 @@ class MeshNode {
     // failure (no fast lane, no shared capability, connect/stream error) fall
     // back to BLE chunking. The caller gets the transferId immediately so the
     // UI shows the bubble + progress regardless of path.
-    unawaited(_deliverFile(sender, dst, kex, bytes));
+    unawaited(_deliverFile(sender, dst, kex));
     return tid;
   }
 
@@ -463,13 +514,12 @@ class MeshNode {
     FileSender sender,
     PeerId dst,
     Uint8List kex,
-    Uint8List bytes,
   ) async {
     final tid = sender.meta.transferIdHex;
     if (fastLane != null &&
         fastLane!.capabilities.isNotEmpty &&
-        bytes.length >= fastLaneMinBytes) {
-      final ok = await _trySendFast(sender, dst, kex, bytes);
+        sender.meta.fileSize >= fastLaneMinBytes) {
+      final ok = await _trySendFast(sender, dst, kex);
       if (ok) return; // fast lane carried it (delivery ACK arrives via BLE)
       if (!_senders.containsKey(tid)) return; // cancelled/retired meanwhile
       bleLogSink?.call(
@@ -486,7 +536,6 @@ class MeshNode {
     FileSender sender,
     PeerId dst,
     Uint8List kex,
-    Uint8List bytes,
   ) async {
     final tid = sender.meta.transferIdHex;
     final caps = fastLane!.capabilities;
@@ -534,8 +583,10 @@ class MeshNode {
       feeder = Timer.periodic(const Duration(seconds: 20),
           (_) => _armSenderWatchdog(tid, sender.meta.name));
       bleLogSink?.call('FT fast connected: ${accept.offer.kind.name}');
-      // Send the whole file as one encrypted, length-prefixed blob.
-      final cipher = await crypto.encrypt(bytes, kex);
+      // Send the whole file as one encrypted, length-prefixed blob. Whole-file
+      // GCM means the plaintext+ciphertext live in RAM for this call only —
+      // transient by design; the BLE path never loads the file at all.
+      final cipher = await crypto.encrypt(await sender.readAll(), kex);
       final header = ByteData(4)..setUint32(0, cipher.length, Endian.big);
       session.add(header.buffer.asUint8List());
       session.add(cipher);
@@ -551,10 +602,11 @@ class MeshNode {
         await Future.any([
           session.incoming.drain<void>(),
           _senderRetired(tid),
-        ]).timeout(Duration(seconds: 30 + bytes.length ~/ (512 * 1024)));
+        ]).timeout(
+            Duration(seconds: 30 + sender.meta.fileSize ~/ (512 * 1024)));
       } catch (_) {}
       bleLogSink?.call('FT fast send done: ${sender.meta.name} '
-          '(${bytes.length}B via ${accept.offer.kind.name})');
+          '(${sender.meta.fileSize}B via ${accept.offer.kind.name})');
       // Wait for the receiver's completion ACK (arrives over BLE) — the
       // watchdog already fails the transfer if it never comes.
       _events.add(FileProgress(tid, 1.0, true));
@@ -582,7 +634,9 @@ class MeshNode {
   void _armSenderWatchdog(String tid, String name) {
     _senderTimers[tid]?.cancel();
     _senderTimers[tid] = Timer(_transferIdleTimeout, () {
-      if (_senders.remove(tid) != null) {
+      final sender = _senders.remove(tid);
+      if (sender != null) {
+        sender.close();
         _senderTimers.remove(tid);
         _streaming.remove(tid);
         bleLogSink?.call('FT send timeout: $name');
@@ -594,7 +648,9 @@ class MeshNode {
 
   /// User-initiated cancel of an outgoing transfer (stops the chunk stream).
   void cancelSend(String transferIdHex) {
-    if (_senders.remove(transferIdHex) != null) {
+    final sender = _senders.remove(transferIdHex);
+    if (sender != null) {
+      sender.close();
       _senderTimers.remove(transferIdHex)?.cancel();
       _streaming.remove(transferIdHex);
       bleLogSink?.call('FT send cancelled: $transferIdHex');
@@ -881,7 +937,8 @@ class MeshNode {
         bleLogSink?.call(
           'FT recv meta: ${meta.name} chunks=${meta.totalChunks}',
         );
-        _receivers[meta.transferIdHex] = FileReceiver(meta);
+        _receivers[meta.transferIdHex] =
+            FileReceiver(meta, incomingPartPath(meta.transferIdHex));
         _receiverPeers[meta.transferIdHex] = frame.src;
         _startReceiverRecovery(meta.transferIdHex, frame.src);
         _events.add(FileOffered(frame.src, meta));
@@ -1054,7 +1111,7 @@ class MeshNode {
   }
 
   void _retireSender(String transferIdHex) {
-    _senders.remove(transferIdHex);
+    _senders.remove(transferIdHex)?.close();
     _senderTimers.remove(transferIdHex)?.cancel();
     _streaming.remove(transferIdHex);
   }
@@ -1171,12 +1228,13 @@ class MeshNode {
           final receiver = _receivers[tid];
           if (receiver == null) return;
           final bytes = await crypto.decrypt(cipher, kex);
-          // Verify the manifest hash and mark the receiver complete so the
-          // ACK below is a genuine complete (not a full missing-list).
+          // Write the plaintext to the part file and verify the manifest
+          // hash (finalize) so the ACK below is a genuine complete.
           receiver.seedAssembled(bytes);
+          final path = await receiver.finalize();
           bleLogSink?.call('FT fast recv complete: ${receiver.meta.name}');
           _events.add(FileProgress(tid, 1.0, false));
-          _events.add(FileReceived(from, receiver.meta, bytes));
+          _events.add(FileReceived(from, receiver.meta, path));
           _completeReceiver(tid);
           _rememberCompleted(tid);
           // Reuse the exact BLE completion path: a signed "complete" ACK
@@ -1241,9 +1299,9 @@ class MeshNode {
 
     if (receiver.isComplete) {
       try {
-        final bytes = receiver.assemble();
+        final path = await receiver.finalize();
         bleLogSink?.call('FT recv complete: ${receiver.meta.name}');
-        _events.add(FileReceived(from, receiver.meta, bytes));
+        _events.add(FileReceived(from, receiver.meta, path));
         _completeReceiver(tidHex);
         _rememberCompleted(tidHex);
         await _sendFileAck(from, receiver.buildAck());
@@ -1251,6 +1309,7 @@ class MeshNode {
         // All chunks present but the file hash mismatched. Per-chunk GCM makes
         // this near-impossible; treat as an unrecoverable failure rather than
         // falsely ACKing "complete" (which would stop the sender).
+        receiver.discard();
         _completeReceiver(tidHex);
         _events.add(NodeError('File integrity check failed; discarded'));
       }
@@ -1309,6 +1368,7 @@ class MeshNode {
       if (idle > _transferIdleTimeout) {
         t.cancel();
         bleLogSink?.call('FT recv timeout: ${receiver.meta.name}');
+        receiver.discard();
         _completeReceiver(tidHex);
         _events.add(FileFailed(tidHex, receiver.meta.name, incoming: true));
         _events.add(

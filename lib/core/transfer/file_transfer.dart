@@ -1,8 +1,16 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as classic;
+
+/// Streaming SHA-256 of a file on disk — never holds more than one 64KB
+/// read buffer, so hashing a 500MB video costs no meaningful memory.
+Future<Uint8List> sha256OfFile(String path) async {
+  final digest = await classic.sha256.bind(File(path).openRead()).first;
+  return Uint8List.fromList(digest.bytes);
+}
 
 /// File-transfer application payloads carried inside (encrypted) frames.
 ///
@@ -146,12 +154,21 @@ class FileAck {
   String get transferIdHex => _hex(transferId);
 }
 
-/// Splits file bytes into chunks and drives (re)transmission based on ACKs.
+/// Serves file chunks for (re)transmission based on ACKs.
+///
+/// Two backings: in-memory bytes (tests, tiny payloads) or a file on disk —
+/// the disk backing keeps a multi-minute BLE transfer of a large file from
+/// pinning the whole file in RAM (a prime jetsam target on iOS).
 class FileSender {
-  final Uint8List bytes;
+  final Uint8List? _bytes;
+  final RandomAccessFile? _raf;
+
+  /// Path of the disk backing, if any — lets the app resend after a failure
+  /// without re-copying.
+  final String? path;
   final FileMeta meta;
 
-  FileSender._(this.bytes, this.meta);
+  FileSender._(this._bytes, this._raf, this.path, this.meta);
 
   static final _rng = Random.secure();
 
@@ -180,14 +197,45 @@ class FileSender {
       name: name,
       mime: mime,
     );
-    return FileSender._(bytes, meta);
+    return FileSender._(bytes, null, null, meta);
+  }
+
+  /// Disk-backed sender: streams the hash up front, then reads each chunk
+  /// from the file on demand. RAM cost is one chunk (~4KB), not the file.
+  static Future<FileSender> forPath({
+    required String path,
+    required String name,
+    required String mime,
+    int chunkSize = 4096,
+  }) async {
+    final file = File(path);
+    final size = await file.length();
+    final sha = await sha256OfFile(path);
+    final total = max(1, (size + chunkSize - 1) ~/ chunkSize);
+    final meta = FileMeta(
+      transferId: newTransferId(),
+      fileSize: size,
+      chunkSize: chunkSize,
+      totalChunks: total,
+      sha256: sha,
+      name: name,
+      mime: mime,
+    );
+    return FileSender._(null, file.openSync(), path, meta);
   }
 
   FileChunk chunk(int seq) {
     final start = seq * meta.chunkSize;
-    final end = min(start + meta.chunkSize, bytes.length);
-    return FileChunk(
-        meta.transferId, seq, Uint8List.fromList(bytes.sublist(start, end)));
+    final end = min(start + meta.chunkSize, meta.fileSize);
+    final Uint8List data;
+    if (_bytes != null) {
+      data = Uint8List.fromList(_bytes.sublist(start, end));
+    } else {
+      final raf = _raf!;
+      raf.setPositionSync(start);
+      data = raf.readSync(end - start);
+    }
+    return FileChunk(meta.transferId, seq, data);
   }
 
   Iterable<FileChunk> allChunks() sync* {
@@ -199,32 +247,66 @@ class FileSender {
   /// Given an ACK, the chunks that still need to be (re)sent.
   List<FileChunk> chunksToResend(FileAck ack) =>
       ack.missing.map(chunk).toList();
+
+  /// The whole payload — used only by the fast lane, whose whole-file GCM
+  /// needs it in one piece (transiently).
+  Future<Uint8List> readAll() async =>
+      _bytes ?? await File(path!).readAsBytes();
+
+  /// Release the disk backing (transfer finished or cancelled).
+  void close() {
+    try {
+      _raf?.closeSync();
+    } catch (_) {}
+  }
 }
 
 /// Accumulates chunks for one incoming transfer and verifies integrity.
+///
+/// Chunks are written straight to a partial file on disk at their seq
+/// offset; memory holds only the set of received seqs. The old in-memory
+/// map held the ENTIRE file and then assemble() built a second full copy —
+/// a 2× fileSize RAM spike right when a big transfer completed, which is
+/// exactly when iOS jetsam went hunting.
 class FileReceiver {
   final FileMeta meta;
-  final Map<int, Uint8List> _chunks = {};
 
-  FileReceiver(this.meta);
+  /// Where the partial file is written. The caller owns naming/cleanup of
+  /// the final destination; [finalize] returns this path on success.
+  final String partPath;
+
+  final Set<int> _have = {};
+  RandomAccessFile? _raf;
+
+  FileReceiver(this.meta, this.partPath) {
+    final f = File(partPath);
+    f.parent.createSync(recursive: true);
+    _raf = f.openSync(mode: FileMode.write);
+    // Preallocate so out-of-order chunk writes land inside the file.
+    _raf!.truncateSync(meta.fileSize);
+  }
 
   /// Returns true if this chunk was new (not a duplicate).
   bool offer(FileChunk chunk) {
+    final raf = _raf;
+    if (raf == null) return false; // finalized/discarded
     if (chunk.seq >= meta.totalChunks) return false;
-    if (_chunks.containsKey(chunk.seq)) return false;
-    _chunks[chunk.seq] = chunk.data;
+    if (_have.contains(chunk.seq)) return false;
+    raf.setPositionSync(chunk.seq * meta.chunkSize);
+    raf.writeFromSync(chunk.data);
+    _have.add(chunk.seq);
     return true;
   }
 
-  int get receivedCount => _chunks.length;
+  int get receivedCount => _have.length;
   double get progress =>
       meta.totalChunks == 0 ? 1 : receivedCount / meta.totalChunks;
-  bool get isComplete => _chunks.length == meta.totalChunks;
+  bool get isComplete => _have.length == meta.totalChunks;
 
   List<int> missingSeqs() {
     final missing = <int>[];
     for (var i = 0; i < meta.totalChunks; i++) {
-      if (!_chunks.containsKey(i)) missing.add(i);
+      if (!_have.contains(i)) missing.add(i);
     }
     return missing;
   }
@@ -241,40 +323,57 @@ class FileReceiver {
   }
 
   /// Fast-lane path: accept the whole plaintext at once (arrived out-of-band,
-  /// already decrypted). Verifies the manifest hash, then marks every chunk
-  /// present so [buildAck] reports a genuine complete. Throws on mismatch so
-  /// the caller can fall back to BLE recovery.
+  /// already decrypted). Verifies the manifest hash BEFORE touching receiver
+  /// state — a mismatch must leave the chunk map empty so BLE recovery can
+  /// still re-pull the file — then writes it to the part file and marks every
+  /// chunk present so [buildAck] reports a genuine complete.
   void seedAssembled(Uint8List bytes) {
     if (bytes.length != meta.fileSize) {
-      throw StateError(
-          'size mismatch: ${bytes.length} != ${meta.fileSize}');
+      throw StateError('size mismatch: ${bytes.length} != ${meta.fileSize}');
     }
     final actual = classic.sha256.convert(bytes).bytes;
     if (!_bytesEqual(actual, meta.sha256)) {
       throw StateError('sha256 mismatch on fast-lane file');
     }
+    final raf = _raf;
+    if (raf == null) throw StateError('receiver already closed');
+    raf.setPositionSync(0);
+    raf.writeFromSync(bytes);
     for (var i = 0; i < meta.totalChunks; i++) {
-      final start = i * meta.chunkSize;
-      final end = min(start + meta.chunkSize, bytes.length);
-      _chunks[i] = Uint8List.sublistView(bytes, start, end);
+      _have.add(i);
     }
   }
 
-  /// Assemble the full file. Throws if incomplete or the hash mismatches.
-  Uint8List assemble() {
+  /// Complete the transfer: close the part file, verify its hash by
+  /// streaming, and return its path. Throws if incomplete or on mismatch
+  /// (the corrupt part file is deleted).
+  Future<String> finalize() async {
     if (!isComplete) {
-      throw StateError('transfer incomplete: $receivedCount/${meta.totalChunks}');
+      throw StateError(
+          'transfer incomplete: $receivedCount/${meta.totalChunks}');
     }
-    final builder = BytesBuilder();
-    for (var i = 0; i < meta.totalChunks; i++) {
-      builder.add(_chunks[i]!);
-    }
-    final out = builder.toBytes();
-    final actual = classic.sha256.convert(out).bytes;
+    _raf?.flushSync();
+    _raf?.closeSync();
+    _raf = null;
+    final actual = await sha256OfFile(partPath);
     if (!_bytesEqual(actual, meta.sha256)) {
+      try {
+        File(partPath).deleteSync();
+      } catch (_) {}
       throw StateError('sha256 mismatch on assembled file');
     }
-    return out;
+    return partPath;
+  }
+
+  /// Abort: close and delete the partial file.
+  void discard() {
+    try {
+      _raf?.closeSync();
+    } catch (_) {}
+    _raf = null;
+    try {
+      File(partPath).deleteSync();
+    } catch (_) {}
   }
 }
 

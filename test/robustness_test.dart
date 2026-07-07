@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -107,7 +108,7 @@ void main() {
 
       final got = await waitFor<FileReceived>(b, (e) => true,
           timeout: const Duration(seconds: 25));
-      expect(got.bytes, data);
+      expect(File(got.path).readAsBytesSync(), data);
     });
 
     test('tail loss does not stall: 23-chunk file (not a multiple of 16)',
@@ -134,7 +135,7 @@ void main() {
 
       final got = await waitFor<FileReceived>(b, (e) => true,
           timeout: const Duration(seconds: 25));
-      expect(got.bytes, data);
+      expect(File(got.path).readAsBytesSync(), data);
     });
   });
 

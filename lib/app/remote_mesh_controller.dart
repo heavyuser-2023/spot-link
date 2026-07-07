@@ -215,7 +215,7 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
   }
 
   Future<void> _reloadConversation(String peerHex) async {
-    final loaded = await db.messagesFor(peerHex);
+    final loaded = await db.messagesFor(peerHex, limit: 200);
     _conversations[peerHex] = loaded;
     notifyListeners();
   }
@@ -451,7 +451,7 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
       required String name,
       required String mime}) async {
     // Bytes never cross the isolate port: hand the service a temp file in
-    // the shared app container instead (it deletes the file once read).
+    // the shared app container instead (it cleans up outbox files once sent).
     final dir = await getApplicationDocumentsDirectory();
     final folder = Directory(p.join(dir.path, 'outbox'));
     if (!await folder.exists()) await folder.create(recursive: true);
@@ -459,6 +459,16 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
     final path = p.join(folder.path,
         '${DateTime.now().millisecondsSinceEpoch}_$safeName');
     await File(path).writeAsBytes(bytes);
+    await sendFilePath(peerHex, path: path, name: name, mime: mime);
+  }
+
+  @override
+  Future<void> sendFilePath(String peerHex,
+      {required String path,
+      required String name,
+      required String mime}) async {
+    // Same sandbox, so the service isolate reads the path directly; it makes
+    // its own durable copy under sent/ before streaming from disk.
     _send({
       'c': 'sendFile',
       'p': peerHex,
@@ -538,7 +548,19 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
     if (_foreground) {
       unawaited(BeaconWake.startTx());
       if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
+    } else if (state == AppLifecycleState.paused) {
+      // Backgrounded = jetsam candidacy: shed rebuildable state now.
+      _trimMemory();
     }
+  }
+
+  @override
+  void didHaveMemoryPressure() => _trimMemory();
+
+  void _trimMemory() {
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+    _conversations.removeWhere((hex, _) => hex != _openPeer);
   }
 
   void _teardownWiring() {

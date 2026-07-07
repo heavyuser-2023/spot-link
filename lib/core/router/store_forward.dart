@@ -35,7 +35,10 @@ class StoreForward {
   final Map<String, _Entry> _store = {};
 
   StoreForward({
-    this.maxEntries = 512,
+    // 256 × ~4KB chunk frames ≈ 1MB ceiling for the bulky expiring tier —
+    // relaying strangers' file chunks is best-effort and must never grow the
+    // suspended footprint (jetsam) of the phones doing the relaying.
+    this.maxEntries = 256,
     this.ttlMs = 24 * 60 * 60 * 1000, // 24h
     this.durableMaxEntries = 4096,
     required this.nowMs,

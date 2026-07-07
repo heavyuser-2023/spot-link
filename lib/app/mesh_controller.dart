@@ -229,6 +229,15 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
 
   Future<void> init() async {
     await _wireKnownPeersStore();
+    // Incoming transfers assemble on disk in our container (not systemTemp,
+    // which iOS may purge under pressure — mid-transfer that would corrupt
+    // the part file).
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      final incoming = Directory(p.join(docs.path, 'incoming'));
+      if (!await incoming.exists()) await incoming.create(recursive: true);
+      node.incomingPartPath = (tid) => p.join(incoming.path, '$tid.part');
+    } catch (_) {} // node falls back to systemTemp
     // Wake-beacon TX: Android transmits always (background OK); iOS only
     // while foregrounded — re-asserted on every resume. This is what revives
     // nearby swipe-killed iPhones (they monitor this beacon's region).
@@ -348,7 +357,23 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       // iOS kills beacon TX in the background — re-light the torch.
       unawaited(BeaconWake.startTx());
       if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
+    } else if (state == AppLifecycleState.paused) {
+      // Heading to the background = jetsam candidacy. Shed everything
+      // rebuildable NOW so our suspended footprint is as small as possible.
+      _trimMemory();
     }
+  }
+
+  @override
+  void didHaveMemoryPressure() => _trimMemory();
+
+  /// Drop rebuildable state: decoded images and cached conversations (they
+  /// reload from SQLite on open). Keeps the open conversation so the visible
+  /// chat doesn't blank out.
+  void _trimMemory() {
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+    _conversations.removeWhere((hex, _) => hex != _openPeer);
   }
 
   /// Fire a local notification for an incoming message when the app isn't in
@@ -472,8 +497,8 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       case FileProgress(:final transferId, :final progress):
         transferProgress[transferId] = progress;
         notifyListeners();
-      case FileReceived(:final from, :final meta, :final bytes):
-        await _onFileReceived(from, meta, bytes);
+      case FileReceived(:final from, :final meta, :final path):
+        await _onFileReceived(from, meta, path);
       case FileFailed(:final transferIdHex):
         transferProgress.remove(transferIdHex);
         await _applyStatus(transferIdHex, MsgStatus.failed);
@@ -659,7 +684,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       // with the DB snapshot without duplicating.
       final live = <ChatMessage>[];
       _conversations[peerHex] = live;
-      final loaded = await db.messagesFor(peerHex);
+      final loaded = await db.messagesFor(peerHex, limit: 200);
       final loadedIds = loaded.map((m) => m.id).whereType<int>().toSet();
       final extras =
           live.where((m) => m.id == null || !loadedIds.contains(m.id));
@@ -715,16 +740,40 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       {required Uint8List bytes,
       required String name,
       required String mime}) async {
+    // Land the bytes on disk once, then send disk-backed so the transfer
+    // never pins the payload in RAM. (Callers with a real path should use
+    // [sendFilePath] and skip the byte round-trip entirely.)
+    final path = await _saveLocalCopy(
+        'out-${DateTime.now().millisecondsSinceEpoch}', name, bytes);
+    if (path == null) {
+      _errors.add('파일을 저장할 수 없어 보낼 수 없습니다');
+      return;
+    }
+    await sendFilePath(peerHex, path: path, name: name, mime: mime);
+  }
+
+  @override
+  Future<void> sendFilePath(String peerHex,
+      {required String path,
+      required String name,
+      required String mime}) async {
     final peer = PeerId.fromHex(peerHex);
     final now = DateTime.now().millisecondsSinceEpoch;
+    // Picker/outbox paths live in OS-cleanable caches — keep a durable copy
+    // (native File.copy: streamed, no RAM cost) and send from that, so the
+    // bubble stays openable and a failed transfer stays retryable. Skip when
+    // the source is already our own sent/ copy (the sendFile byte path).
+    if (!path.contains('${Platform.pathSeparator}sent${Platform.pathSeparator}')) {
+      final copy = await _copyToSent(now.toString(), name, path);
+      if (copy != null) path = copy;
+    }
+    final size = await File(path).length();
     // Returns as soon as the META frame is out; the chunks stream in the
     // background and report back via FileProgress / DeliveryConfirmed /
     // FileFailed events. The bubble must appear immediately.
-    final tid = await node.sendFile(peer, bytes: bytes, name: name, mime: mime);
+    final tid =
+        await node.sendFilePath(peer, path: path, name: name, mime: mime);
     final msgId = tid ?? 'local-$now';
-    // Keep a local copy so our own bubble can be opened and a failed
-    // transfer retried later.
-    final path = await _saveLocalCopy(msgId, name, bytes);
     final msg = ChatMessage(
       peerHex: peerHex,
       msgId: msgId,
@@ -732,7 +781,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       kind: MsgKind.file,
       fileName: name,
       filePath: path,
-      fileSize: bytes.length,
+      fileSize: size,
       status: tid == null ? MsgStatus.failed : MsgStatus.sending,
       timestamp: now,
     );
@@ -754,6 +803,21 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     }
   }
 
+  /// Like [_saveLocalCopy] but from an existing file — native copy, no RAM.
+  Future<String?> _copyToSent(String tid, String name, String srcPath) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final folder = Directory(p.join(dir.path, 'sent'));
+      if (!await folder.exists()) await folder.create(recursive: true);
+      final safeName = name.replaceAll(RegExp(r'[/\\]'), '_');
+      final path = p.join(folder.path, '${tid}_$safeName');
+      await File(srcPath).copy(path);
+      return path;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Cancel an in-progress outgoing transfer (stops the chunk stream).
   @override
   Future<void> cancelFile(ChatMessage msg) async {
@@ -766,20 +830,14 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   @override
   Future<void> retryFile(ChatMessage failed) async {
     final path = failed.filePath;
-    Uint8List? bytes;
-    if (path != null) {
-      try {
-        bytes = await File(path).readAsBytes();
-      } catch (_) {}
-    }
-    if (bytes == null) {
+    if (path == null || !await File(path).exists()) {
       _errors.add('원본 파일이 없어 다시 보낼 수 없습니다');
       return;
     }
-    final name = failed.fileName ?? p.basename(path!);
-    final tid = await node.sendFile(
+    final name = failed.fileName ?? p.basename(path);
+    final tid = await node.sendFilePath(
       PeerId.fromHex(failed.peerHex),
-      bytes: bytes,
+      path: path,
       name: name,
       mime: lookupMimeType(name) ?? 'application/octet-stream',
     );
@@ -828,13 +886,23 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   }
 
   Future<void> _onFileReceived(
-      PeerId from, FileMeta meta, Uint8List bytes) async {
+      PeerId from, FileMeta meta, String partPath) async {
     final dir = await getApplicationDocumentsDirectory();
     final folder = Directory(p.join(dir.path, 'received'));
     if (!await folder.exists()) await folder.create(recursive: true);
     final safeName = meta.name.replaceAll(RegExp(r'[/\\]'), '_');
     final path = p.join(folder.path, '${meta.transferIdHex}_$safeName');
-    await File(path).writeAsBytes(bytes);
+    // The verified payload is already on disk (the receiver's part file) —
+    // move it into place instead of writing bytes (rename on the same
+    // volume; falls back to a native copy across volumes).
+    try {
+      await File(partPath).rename(path);
+    } on FileSystemException {
+      await File(partPath).copy(path);
+      try {
+        await File(partPath).delete();
+      } catch (_) {}
+    }
 
     transferProgress.remove(meta.transferIdHex);
     _notifyIncoming(from, '📎 ${meta.name}');
