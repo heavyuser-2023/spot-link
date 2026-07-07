@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
@@ -189,6 +190,9 @@ class MeTab extends StatelessWidget {
             ),
           ),
         ],
+        const SizedBox(height: 24),
+        const _VersionFooter(),
+        const SizedBox(height: 12),
       ],
     );
   }
@@ -335,6 +339,53 @@ class _BatteryExemptionCardState extends State<_BatteryExemptionCard>
                 child: const Text('허용'),
               )
             : null,
+      ),
+    );
+  }
+}
+
+/// App version footer, read from the installed package at runtime so it always
+/// matches the shipped build (no manual sync). Tapping copies it — handy when
+/// a user reports a bug and you need to know their exact version.
+class _VersionFooter extends StatefulWidget {
+  const _VersionFooter();
+
+  @override
+  State<_VersionFooter> createState() => _VersionFooterState();
+}
+
+class _VersionFooterState extends State<_VersionFooter> {
+  String? _label;
+
+  @override
+  void initState() {
+    super.initState();
+    PackageInfo.fromPlatform().then((info) {
+      if (mounted) {
+        setState(() => _label = 'SpotLink ${info.version} (${info.buildNumber})');
+      }
+    }).catchError((_) {
+      // No plugin (widget tests / unsupported platform) — keep the fallback.
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hint = Theme.of(context).textTheme.bodySmall?.color;
+    final label = _label ?? 'SpotLink';
+    return Center(
+      child: TextButton(
+        onPressed: () {
+          Clipboard.setData(ClipboardData(text: label));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('버전을 복사했습니다')),
+          );
+        },
+        child: Text(label,
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: hint)),
       ),
     );
   }
