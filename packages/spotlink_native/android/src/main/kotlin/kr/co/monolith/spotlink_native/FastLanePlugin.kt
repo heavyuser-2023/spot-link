@@ -1,4 +1,4 @@
-package kr.co.monolith.spot_link
+package kr.co.monolith.spotlink_native
 
 import android.content.Context
 import android.net.ConnectivityManager

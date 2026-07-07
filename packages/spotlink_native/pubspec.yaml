@@ -1,0 +1,23 @@
+name: spotlink_native
+description: >-
+  SpotLink app-local Android native plugins — Wi-Fi Direct fast lane and the
+  iBeacon wake torch. Packaged as a plugin (instead of MainActivity manual
+  registration) so Flutter auto-registers them in EVERY engine, including the
+  mesh-owning foreground-service engine.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.2
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: kr.co.monolith.spotlink_native
+        pluginClass: SpotlinkNativePlugin

@@ -835,6 +835,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.10.2"
+  spotlink_native:
+    dependency: "direct main"
+    description:
+      path: "packages/spotlink_native"
+      relative: true
+    source: path
+    version: "1.0.0"
   sqflite:
     dependency: "direct main"
     description:
