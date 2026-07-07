@@ -1005,13 +1005,19 @@ class MeshTransport implements MeshTransportInterface {
   Future<void> _establishLink(Peripheral peripheral, String key,
       {PeerId? remoteId, bool probe = false}) async {
     final linkId = 'C:$key';
+    var connected = false; // did _central.connect succeed?
+    var serviceMissing = false; // connected, but no SpotLink service
     try {
       await _central.connect(peripheral);
+      connected = true;
       final services = await _central.discoverGATT(peripheral);
-      final svc = services.firstWhere(
-        (s) => s.uuid == BleConstants.serviceUuid,
-        orElse: () => throw StateError('service not found'),
-      );
+      final hasSvc = services.any((s) => s.uuid == BleConstants.serviceUuid);
+      if (!hasSvc) {
+        serviceMissing = true;
+        throw StateError('service not found');
+      }
+      final svc =
+          services.firstWhere((s) => s.uuid == BleConstants.serviceUuid);
       GATTCharacteristic? tx, rx;
       for (final c in svc.characteristics) {
         if (c.uuid == BleConstants.txCharacteristicUuid) tx = c;
@@ -1066,10 +1072,18 @@ class MeshTransport implements MeshTransportInterface {
         await _central.disconnect(peripheral);
       } catch (_) {}
       if (probe) {
-        // Just a nearby Apple gadget (or an unreachable one) — remember the
-        // miss so we don't keep dialing it, and never schedule retries.
-        _probeMisses[key] = DateTime.now();
-        _log('BLE probe miss $key');
+        if (connected && serviceMissing) {
+          // Definitively NOT SpotLink (connected, no service) — block it for
+          // the full TTL so we stop dialing this Apple gadget.
+          _probeMisses[key] = DateTime.now();
+          _log('BLE probe miss $key (not SpotLink)');
+        } else {
+          // Connect itself failed — a real SpotLink iPhone hits transient
+          // timeouts constantly (CBError 6). Do NOT blocklist for 10 min;
+          // the 12s dial cooldown alone rate-limits the retry so re-discovery
+          // dials it again shortly.
+          _log('BLE probe connect failed $key: $err (will retry)');
+        }
       } else {
         _log('BLE connect failed $key: $err');
         // Transient failures happen (the peer republishing its GATT database,
