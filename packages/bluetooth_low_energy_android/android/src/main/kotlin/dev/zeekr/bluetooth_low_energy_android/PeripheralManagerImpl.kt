@@ -177,12 +177,6 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun addService(serviceArgs: MutableGATTServiceArgs, callback: (Result<Unit>) -> Unit) {
         try {
-            // SpotLink fork: removeAllServices() closes the GATT server (below)
-            // so a stopped mesh doesn't leak a lingering server; reopen it here
-            // when a transport starts again.
-            if (mServer == null) {
-                mServer = manager.openGattServer(context, mBluetoothGattServerCallback)
-            }
             val service = addServiceArgs(serviceArgs)
             val adding = server.addService(service)
             if (!adding) {
@@ -208,19 +202,12 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun removeAllServices() {
-        // SpotLink fork: fully CLOSE the GATT server, not just clear services.
-        // On Android the app runs the mesh in two isolates (UI + background
-        // foreground-service); when one stops (e.g. UI takes over from the
-        // headless survivor), clearServices() alone leaves that isolate's
-        // BluetoothGattServer registered. Two live servers advertising the
-        // same service make iOS centrals fail to connect. close()+null frees
-        // it; addService() reopens on next start.
-        if (mAdvertising) {
-            stopAdvertising()
-        }
-        mServer?.clearServices()
-        mServer?.close()
-        mServer = null
+        // Stock behaviour: clear services but keep the single GATT server open.
+        // (An earlier fork closed+reopened the server here; that raced with the
+        // manager's own initialize() and produced TWO servers in one process —
+        // the very dual-server bug it tried to prevent. With the mesh running
+        // in a single isolate now, one server is opened once and reused.)
+        server.clearServices()
         mServices.clear()
         mCharacteristics.clear()
         mDescriptors.clear()
