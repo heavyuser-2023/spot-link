@@ -1073,9 +1073,25 @@ class MeshTransport implements MeshTransportInterface {
       // connect() above intentionally stays unbounded on the non-probe
       // path — iOS pending reconnects resolve minutes later by design.
       final (tx, rx, maxPacket) = await () async {
-        final services = await _central.discoverGATT(peripheral);
-        final hasSvc =
-            services.any((s) => s.uuid == BleConstants.serviceUuid);
+        var services = await _central.discoverGATT(peripheral);
+        var hasSvc = services.any((s) => s.uuid == BleConstants.serviceUuid);
+        // A SpotLink advertiser with no SpotLink service is almost always an
+        // iOS app mid-relaunch: when iOS kills the app in the background,
+        // state restoration keeps ADVERTISING on its behalf, but the GATT
+        // service only returns once the relaunched app republishes it —
+        // seconds after our connect (which is the very event that wakes it).
+        // Hanging up instantly re-suspends the app and loops forever
+        // ("connect → service not found → disconnect" every 15s, observed
+        // for hours). Staying connected grants the app background runtime:
+        // wait and look again before giving up.
+        if (!hasSvc && !probe) {
+          for (var attempt = 0; attempt < 2 && !hasSvc; attempt++) {
+            await Future<void>.delayed(const Duration(seconds: 4));
+            services = await _central.discoverGATT(peripheral);
+            hasSvc = services.any((s) => s.uuid == BleConstants.serviceUuid);
+          }
+          if (hasSvc) _log('BLE service appeared after relaunch wait: $key');
+        }
         if (!hasSvc) {
           serviceMissing = true;
           throw StateError('service not found');
