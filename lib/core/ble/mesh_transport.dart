@@ -13,6 +13,12 @@ import 'framing.dart';
 /// `flutter build ios --release --dart-define=BLE_LOG=true`.
 const bool _logBle = kDebugMode || bool.fromEnvironment('BLE_LOG');
 
+/// Diagnostic: scan UNFILTERED on iOS too (foreground-only builds). Splits
+/// "scanner is dead" (sees nothing at all) from "peer's advertisement lacks
+/// our UUID" (sees the world, not the peer). Never ship enabled — iOS
+/// background scanning requires the service-UUID filter.
+const bool _diagUnfilteredScan = bool.fromEnvironment('DIAG_UNFILTERED');
+
 /// Optional extra sink for BLE diagnostics (e.g. a file logger wired up by the
 /// app layer). Release builds drop console output on iOS, so this is the only
 /// way to diagnose BLE behaviour on a real device without a debugger.
@@ -841,7 +847,9 @@ class MeshTransport implements MeshTransportInterface {
       // (see [_isSpotLink]); keep the filter on iOS, where it works and is
       // required for background scanning.
       await _central.startDiscovery(
-        serviceUUIDs: Platform.isAndroid ? null : [BleConstants.serviceUuid],
+        serviceUUIDs: Platform.isAndroid || _diagUnfilteredScan
+            ? null
+            : [BleConstants.serviceUuid],
       );
       _log('BLE scanning started');
     } catch (e) {
@@ -924,9 +932,11 @@ class MeshTransport implements MeshTransportInterface {
   bool _isSpotLink(Advertisement adv) {
     if (adv.serviceUUIDs.contains(BleConstants.serviceUuid)) return true;
     if (adv.name == BleConstants.advertisedName) return true;
-    for (final m in adv.manufacturerSpecificData) {
-      if (m.id == BleConstants.manufacturerId) return true;
-    }
+    // Deliberately NOT matching on manufacturer id: ours is 0xFFFF (the
+    // reserved/test id), which random gadgets also emit — a KT GiGA Genie
+    // speaker matched and got dialled as a "SpotLink peer" (observed). A real
+    // SpotLink advertisement always carries the service UUID and/or name;
+    // manufacturer data is only the shortId hint once already matched.
     return false;
   }
 
