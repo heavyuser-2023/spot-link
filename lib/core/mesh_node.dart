@@ -166,7 +166,7 @@ class MeshNode {
 
   /// How often we re-announce presence to neighbours so a peer that walks away
   /// can be aged out of "nearby". Also refreshes contact metadata.
-  static const Duration announceInterval = Duration(seconds: 15);
+  static const Duration announceInterval = Duration(seconds: 8);
 
   /// Presence floods this many hops so peers reachable via relays show up as
   /// "주변 · n홉". Deliberately smaller than [Router.defaultTtl]: presence is

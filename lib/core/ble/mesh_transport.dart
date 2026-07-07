@@ -374,7 +374,7 @@ class MeshTransport implements MeshTransportInterface {
     // used to leave the node running but mute. While we have no links at
     // all, periodically re-assert advertising + scanning — both calls are
     // idempotent ("already started" is harmless).
-    _selfHealTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+    _selfHealTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!_started) return;
       // Zombie peripheral links: no stack fires a reliable "central left"
       // callback everywhere, and a dead P-link both lies to the UI and can
@@ -400,7 +400,9 @@ class MeshTransport implements MeshTransportInterface {
       // service too. A wedged/stale server (engine handoff leftovers) makes
       // every incoming connect time out; removeAll+add gives the stack a
       // fresh one.
-      final deep = _linklessTicks % 4 == 0;
+      // Light heal (advertise/scan re-kick) every 15s tick; the heavier GATT
+      // republish only every ~2 min so it doesn't disrupt a peer mid-connect.
+      final deep = _linklessTicks % 8 == 0;
       if (deep && _pendingKeys.isNotEmpty) {
         // Linkless for minutes with standing pendings: they're likely aimed
         // at dead rotated addresses. Cancel them all — scan/probe will find
