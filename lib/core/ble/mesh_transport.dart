@@ -685,26 +685,35 @@ class MeshTransport implements MeshTransportInterface {
   }
 
   Future<void> _startAdvertising() async {
+    // (Re)start cleanly: starting over a live advertisement doesn't refresh
+    // it — Darwin rejects it ("Advertising has already started") and Android
+    // reports ALREADY_STARTED — so drop the old one first. The momentary gap
+    // is harmless, and it makes the self-heal re-assert a real restart.
+    try {
+      await _peripheral.stopAdvertising();
+    } catch (_) {}
     // The manufacturer data carries our short id so scanners can skip their
     // own advertisement and pre-learn the peer id. Darwin refuses to
     // advertise manufacturer data at all (CoreBluetooth supports only local
-    // name + service UUIDs), so fall back to a bare advertisement there —
-    // peers learn our id from the ANNOUNCE sent right after the link is up.
-    try {
-      await _peripheral.startAdvertising(Advertisement(
-        name: BleConstants.advertisedName,
-        serviceUUIDs: [BleConstants.serviceUuid],
-        manufacturerSpecificData: [
-          ManufacturerSpecificData(
-            id: BleConstants.manufacturerId,
-            data: myShortId.bytes,
-          ),
-        ],
-      ));
-      _log('BLE advertising started');
-      return;
-    } catch (e) {
-      _log('BLE startAdvertising with manufacturer data failed: $e');
+    // name + service UUIDs) — don't even attempt it there; peers learn our
+    // id from the ANNOUNCE sent right after the link is up.
+    if (!Platform.isIOS && !Platform.isMacOS) {
+      try {
+        await _peripheral.startAdvertising(Advertisement(
+          name: BleConstants.advertisedName,
+          serviceUUIDs: [BleConstants.serviceUuid],
+          manufacturerSpecificData: [
+            ManufacturerSpecificData(
+              id: BleConstants.manufacturerId,
+              data: myShortId.bytes,
+            ),
+          ],
+        ));
+        _log('BLE advertising started');
+        return;
+      } catch (e) {
+        _log('BLE startAdvertising with manufacturer data failed: $e');
+      }
     }
     try {
       await _peripheral.startAdvertising(Advertisement(
@@ -1111,10 +1120,24 @@ class MeshTransport implements MeshTransportInterface {
         }
       } else {
         _log('BLE connect failed $key: $err');
-        // Transient failures happen (the peer republishing its GATT database,
-        // radio contention). Keep trying with backoff — a SpotLink peer that
-        // stays silent is worth a standing reconnect on iOS.
-        _scheduleReconnect(peripheral, key);
+        if (_isUnknownIdentifier(err)) {
+          // Darwin threw illegalArgument: the identifier is not in the
+          // system's peripheral cache (rotated/forgotten address — typical
+          // for a restarted Android peer). No retry can ever succeed until a
+          // live scan rediscovers the peer, so drop the standing retry AND
+          // the persisted identifier that keeps resurrecting it at launch.
+          _reconnectAttempts.remove(key);
+          if (_knownPeers.remove(key)) {
+            knownPeersSave?.call(_knownPeers.toList());
+            _log('BLE forgetting dead peer identifier $key');
+          }
+        } else {
+          // Transient failures happen (the peer republishing its GATT
+          // database, radio contention). Keep trying with backoff — a
+          // SpotLink peer that stays silent is worth a standing reconnect
+          // on iOS.
+          _scheduleReconnect(peripheral, key);
+        }
       }
     } finally {
       _connecting.remove(key);
@@ -1128,6 +1151,13 @@ class MeshTransport implements MeshTransportInterface {
       }
     }
   }
+
+  /// Darwin's connect() throws `illegalArgument` when the peripheral
+  /// identifier is unknown to the system cache — a permanent failure for that
+  /// identifier, not a transient radio error. (Matched on the string to keep
+  /// this file free of a flutter/services dependency.)
+  bool _isUnknownIdentifier(Object err) =>
+      Platform.isIOS && err.toString().contains('illegalArgument');
 
   PeerId? _shortIdFromAdvertisement(Advertisement adv) {
     for (final m in adv.manufacturerSpecificData) {

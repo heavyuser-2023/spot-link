@@ -40,6 +40,17 @@ abstract class BluetoothLowEnergyManagerImpl(val context: Context) {
         mBinding.removeRequestPermissionsResultListener(mRequestPermissionsResultListener)
     }
 
+    /// SpotLink fork: called when the owning FlutterEngine is destroyed. No
+    /// Dart call can ever reach this instance again, so anything left open
+    /// here (receiver, scanner, GATT server) leaks for the life of the
+    /// process. Subclasses release their radio state, then call super.
+    open fun dispose() {
+        try {
+            context.unregisterReceiver(mBroadcastReceiver)
+        } catch (_: Exception) {
+        }
+    }
+
     abstract fun onReceive(context: Context, intent: Intent)
     abstract fun onRequestPermissionsResult(
         requestCode: Int,

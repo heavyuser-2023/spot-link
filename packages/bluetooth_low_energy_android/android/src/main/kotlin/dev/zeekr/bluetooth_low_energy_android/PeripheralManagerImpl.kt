@@ -97,6 +97,7 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
         }
 
         mServer?.close()
+        mServer = null
 
         mServicesArgs.clear()
         mCharacteristicsArgs.clear()
@@ -166,12 +167,34 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun openGATTServer() {
+        // Close any previous instance first: reassigning without close leaks
+        // a live server registration (a second serverIf) that keeps serving a
+        // stale copy of our GATT service — remote centrals then bind to the
+        // dead copy and their writes go nowhere.
+        mServer?.close()
         mServer = manager.openGattServer(context, mBluetoothGattServerCallback)
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun closeGATTServer() {
         server.close()
+    }
+
+    // SpotLink fork: engine destroyed — release the advertiser and the GATT
+    // server, or they survive as zombies for the life of the process and a
+    // re-entered app registers a duplicate serverIf next to them.
+    override fun dispose() {
+        try {
+            if (mAdvertising) stopAdvertising()
+        } catch (_: Exception) {
+        }
+        mAdvertising = false
+        try {
+            mServer?.close()
+        } catch (_: Exception) {
+        }
+        mServer = null
+        super.dispose()
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)

@@ -87,6 +87,10 @@ class CentralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) : B
 
         for (gatt in mGATTs.values) {
             gatt.disconnect()
+            // A gatt stuck mid-connect never reaches STATE_DISCONNECTED, so
+            // the close in onConnectionStateChange wouldn't run — release the
+            // client interface unconditionally.
+            gatt.close()
         }
 
         mDevices.clear()
@@ -168,6 +172,27 @@ class CentralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) : B
     override fun stopDiscovery() {
         scanner.stopScan(mScanCallback)
         mDiscovering = false
+    }
+
+    // SpotLink fork: engine destroyed (activity swiped away while the
+    // foreground service keeps the process alive). Without this the scanner
+    // stays registered against the dead callback — the "zombie scannerId"
+    // that keeps receiving results forever — and every open GATT client
+    // holds its slot until the process dies.
+    override fun dispose() {
+        try {
+            scanner.stopScan(mScanCallback)
+        } catch (_: Exception) {
+        }
+        mDiscovering = false
+        for (gatt in mGATTs.values) {
+            try {
+                gatt.close()
+            } catch (_: Exception) {
+            }
+        }
+        mGATTs.clear()
+        super.dispose()
     }
 
     override fun getPeripheral(addressArgs: String): PeripheralArgs {

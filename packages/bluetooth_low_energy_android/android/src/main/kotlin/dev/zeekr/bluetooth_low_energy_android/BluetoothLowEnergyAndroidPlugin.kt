@@ -24,6 +24,11 @@ class BluetoothLowEnergyAndroidPlugin : FlutterPlugin, ActivityAware {
         val binaryMessenger = binding.binaryMessenger
         CentralManagerHostApi.setUp(binaryMessenger, null)
         PeripheralManagerHostApi.setUp(binaryMessenger, null)
+        // SpotLink fork: the engine is gone — no Dart call will ever clean
+        // these up. Release the radio (scanner, GATT server/clients,
+        // advertiser) or they leak as zombies and duplicate on app re-entry.
+        this.mCentralManager?.dispose()
+        this.mPeripheralManager?.dispose()
         this.mCentralManager = null
         this.mPeripheralManager = null
     }

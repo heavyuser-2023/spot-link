@@ -374,6 +374,11 @@ final class PeripheralManagerImpl
     if (_state == state) {
       return;
     }
+    // Claim the transition BEFORE the async gap: two near-simultaneous
+    // poweredOn reports (initial _getState racing the native state event)
+    // would otherwise both pass the guard above and open TWO GATT servers,
+    // leaking the first one as a zombie serverIf.
+    _state = state;
     // Renew GATT server when bluetooth adapter state changed.
     switch (state) {
       case BluetoothLowEnergyState.poweredOn:
@@ -385,7 +390,6 @@ final class PeripheralManagerImpl
       default:
         break;
     }
-    _state = state;
     final eventArgs = BluetoothLowEnergyStateChangedEventArgs(state);
     _stateChangedController.add(eventArgs);
   }
