@@ -734,6 +734,7 @@ class MeshTransport implements MeshTransportInterface {
 
     _subs.add(_peripheral.characteristicNotifyStateChanged.listen((e) async {
       if (e.characteristic.uuid != BleConstants.rxCharacteristicUuid) return;
+      // Creates + emits link-up on first contact (see _peripheralLinkFor).
       final link = _peripheralLinkFor(e.central);
       link.centralSubscribed = e.state;
       if (e.state) {
@@ -749,7 +750,6 @@ class MeshTransport implements MeshTransportInterface {
         } catch (_) {
           link.maxPacketSize = BleConstants.targetMaxPacketSize;
         }
-        _emitUp(link);
       }
     }));
 
@@ -768,10 +768,18 @@ class MeshTransport implements MeshTransportInterface {
 
   MeshLink _peripheralLinkFor(Central central) {
     final id = _peripheralLinkId(central);
-    return _links.putIfAbsent(
-      id,
-      () => MeshLink(id: id, role: LinkRole.peripheral, central: central),
-    );
+    final existing = _links[id];
+    if (existing != null) return existing;
+    // First contact from this central (subscribe OR write). Emit link-up so
+    // the mesh sends its ANNOUNCE/HAVE back and — crucially — [_links] becomes
+    // non-empty, which stops the linkless self-heal from republishing the
+    // GATT service and tearing this very connection down (the "central is
+    // attached but we think we're linkless" loop that left iPhone↔Android
+    // one-directional).
+    final link = MeshLink(id: id, role: LinkRole.peripheral, central: central);
+    _links[id] = link;
+    _emitUp(link);
+    return link;
   }
 
   String _peripheralLinkId(Central central) => 'P:${central.uuid}';
