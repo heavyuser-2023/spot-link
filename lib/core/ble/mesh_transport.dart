@@ -356,7 +356,15 @@ class MeshTransport implements MeshTransportInterface {
     // stateChanged listener pick it up otherwise.
     if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
       await _setupPeripheral();
-      await _startAdvertising();
+      // Boot always REPLACES the advertisement. After iOS kills the app,
+      // state restoration keeps a degraded background-class advertisement
+      // alive on our behalf; a plain start then returns "already started"
+      // and we'd keep running on that ghost — which (iOS 27) other iPhones'
+      // filtered scans cannot see at all. Two phones in this state are
+      // mutually invisible until one reinstalls (observed for hours).
+      // On Android a fresh engine has no prior advertisement, so the extra
+      // stop is a no-op — no address-rotation concern at boot.
+      await _startAdvertising(restart: true);
     }
     await _startScanning();
     // iOS: also stand up pending connects to every peer we've linked before —
@@ -533,7 +541,9 @@ class MeshTransport implements MeshTransportInterface {
       if (!_started) return;
       if (e.state == BluetoothLowEnergyState.poweredOn) {
         await _setupPeripheral();
-        await _startAdvertising();
+        // Same ghost-replacement as in start(): this is the boot path when
+        // the peripheral manager powers on late (iOS state restoration).
+        await _startAdvertising(restart: true);
       } else {
         // Power-off wipes the published GATT database.
         _servicePublished = false;
