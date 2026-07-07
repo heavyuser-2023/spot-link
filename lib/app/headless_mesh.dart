@@ -1,138 +1,52 @@
 import 'dart:async';
-import 'dart:ui';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
-import '../data/app_database.dart';
-import '../data/identity_store.dart';
-import 'background_service.dart';
-import 'mesh_controller.dart';
-import 'notification_service.dart';
-
-/// Entry point the Android foreground service runs in ITS OWN isolate when
-/// the system (re)starts it without the app UI — after a reboot, an app
-/// update, a swipe-kill, or an OEM battery-manager kill. Runs the full mesh
-/// node headlessly (receive → notify → relay → store-and-forward), so the
-/// device stays a live mesh participant even though no screen ever opened.
+/// Entry point the Android foreground service runs in ITS OWN isolate.
+///
+/// STRUCTURAL NOTE (v1.3.6): this isolate no longer runs a mesh node.
+///
+/// Previously it ran a full headless MeshNode so the device kept relaying
+/// after a swipe-kill/reboot. But that meant the mesh existed in TWO isolates
+/// at once (this one + the UI's), each opening its own BLE GATT server. Two
+/// (or, with a coordination bug, up to seven) servers advertising the same
+/// service make iOS centrals fail to connect — the single most persistent
+/// connectivity bug in this app. Every attempt to *coordinate* the two
+/// isolates (ping/pong, file heartbeat, shared-prefs heartbeat, self-yield
+/// timer) proved fragile and one of them actively made it worse by spawning
+/// meshes in a race.
+///
+/// The robust fix is architectural: run the mesh in EXACTLY ONE place — the
+/// UI isolate. The foreground service still runs (its persistent notification
+/// keeps the process, and therefore the UI isolate's mesh, alive while the app
+/// is merely backgrounded), but it no longer creates a second BLE stack.
+///
+/// Tradeoff: after a full swipe-kill the OS may relaunch this service alone
+/// (no UI isolate); with no headless mesh, the device won't relay until the
+/// user opens the app again — same behaviour as iOS. Reliable connectivity
+/// while running beats flaky "always-on" that couldn't actually connect. If
+/// headless survival is wanted back, it must be a single-owner design (UI as a
+/// thin client of the service's mesh), not two coordinated meshes.
 @pragma('vm:entry-point')
 void headlessMeshMain() {
   FlutterForegroundTask.setTaskHandler(_HeadlessMeshHandler());
 }
 
 class _HeadlessMeshHandler extends TaskHandler {
-  MeshController? _controller;
-  bool _uiAlive = false;
-  bool _stopping = false;
-
-  /// Continuously yields the radio to the UI mesh. Message-passing takeover
-  /// (msgUiTakeover) proved unreliable across isolates — both meshes ended up
-  /// running, each with its own GATT server (→ iOS connects fail). This timer
-  /// is the timing-independent guarantee: while the UI's heartbeat file is
-  /// fresh, the headless mesh stays stopped; when the UI dies, it resumes.
-  Timer? _yieldTimer;
-
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    _yieldTimer ??= Timer.periodic(
-        const Duration(seconds: 5), (_) => _yieldToUiIfAlive());
-
-    // The UI started the service: the main isolate owns the mesh; we stay
-    // dormant and only exist to keep the process alive.
-    if (starter == TaskStarter.developer) return;
-
-    // System restart (boot / kill recovery). The process may have survived a
-    // swipe-kill with the UI mesh still running in the main isolate — ping it
-    // and only go headless when nobody answers.
-    _uiAlive = false;
-    FlutterForegroundTask.sendDataToMain(BackgroundService.msgPing);
-    await Future<void>.delayed(const Duration(seconds: 3));
-    if (_uiAlive) return;
-    // Timing-independent backstop: if the UI mesh touched its heartbeat file
-    // recently, it is alive even though the pong missed — do NOT start a
-    // second mesh (that would open a duplicate GATT server and break iOS
-    // connects). See BackgroundService.uiMeshHeartbeatFresh.
-    if (await BackgroundService.uiMeshHeartbeatFresh()) return;
-    await _startMesh();
-  }
-
-  /// Runs every 5s: if the UI mesh is alive, make sure ours is stopped; if the
-  /// UI is gone and we have no mesh, resume (background survival).
-  Future<void> _yieldToUiIfAlive() async {
-    if (_stopping) return;
-    final uiAlive = await BackgroundService.uiMeshHeartbeatFresh();
-    if (uiAlive && _controller != null) {
-      await _stopMesh();
-    } else if (!uiAlive && _controller == null) {
-      await _startMesh();
-    }
-  }
-
-  Future<void> _startMesh() async {
-    if (_controller != null) return;
-    try {
-      WidgetsFlutterBinding.ensureInitialized();
-      // The foreground-service background engine does NOT auto-register
-      // plugins. Without this, every plugin channel (BLE, sqflite, secure
-      // storage, notifications) throws MissingPluginException and the mesh
-      // can't even load its identity. This registers the Dart-side plugin
-      // implementations for this isolate.
-      DartPluginRegistrant.ensureInitialized();
-      await NotificationService.init();
-      final store = IdentityStore();
-      final name = await store.storedName();
-      // Onboarding never completed on this device: no identity to run.
-      if (name == null || name.trim().isEmpty) return;
-      final identity = await store.loadOrCreate();
-      final controller = MeshController(
-        identity: identity,
-        displayName: name,
-        db: AppDatabase(),
-        identityStore: store,
-        headless: true,
-      );
-      await controller.init();
-      _controller = controller;
-      await BackgroundService.updateStatus(controller.linkCount);
-    } catch (_) {
-      // Best-effort: a failed headless start must never crash the service —
-      // the next system restart tries again.
-    }
-  }
-
-  Future<void> _stopMesh() async {
-    final controller = _controller;
-    _controller = null;
-    if (controller == null) return;
-    try {
-      await controller.node.dispose();
-      controller.dispose();
-    } catch (_) {}
+    // Ensure the plugin bindings exist, then stay dormant: the UI isolate owns
+    // the one and only mesh. We exist solely to keep the process alive.
+    WidgetsFlutterBinding.ensureInitialized();
   }
 
   @override
-  void onReceiveData(Object data) {
-    if (data == BackgroundService.msgPong) {
-      _uiAlive = true;
-    } else if (data == BackgroundService.msgUiTakeover) {
-      // The user opened the app: hand the radio over to the UI mesh.
-      if (_stopping) return;
-      _stopping = true;
-      _stopMesh().whenComplete(() {
-        _stopping = false;
-        FlutterForegroundTask.sendDataToMain(
-            BackgroundService.msgHeadlessStopped);
-      });
-    }
-  }
+  void onReceiveData(Object data) {}
 
   @override
   void onRepeatEvent(DateTime timestamp) {}
 
   @override
-  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
-    _yieldTimer?.cancel();
-    _yieldTimer = null;
-    await _stopMesh();
-  }
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
 }

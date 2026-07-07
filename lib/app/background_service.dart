@@ -121,20 +121,10 @@ class BackgroundService {
   /// running in the service isolate, stop it and wait for the hand-off —
   /// two BLE stacks announcing the same identity would collide.
   static Future<void> claimMeshOwnership() async {
-    if (!_supported) return;
-    try {
-      if (!await FlutterForegroundTask.isRunningService) return;
-      _wirePort();
-      final done = _headlessStopped = Completer<void>();
-      FlutterForegroundTask.sendDataToTask(msgUiTakeover);
-      await done.future
-          .timeout(const Duration(seconds: 2), onTimeout: () {});
-    } catch (_) {
-      // Ownership negotiation is best-effort; worst case the headless side
-      // was not running anyway.
-    } finally {
-      _headlessStopped = null;
-    }
+    // No-op since v1.3.6: the headless isolate no longer runs a mesh (see
+    // headless_mesh.dart), so there is nothing to take over. Kept as a stub
+    // so callers don't change; avoids the old 2s handshake timeout on every
+    // UI start.
   }
 
   static Future<void> start() async {
