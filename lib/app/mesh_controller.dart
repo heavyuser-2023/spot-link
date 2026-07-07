@@ -378,9 +378,14 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   /// headless brain routes notifications exactly like a local one would
   /// (suppressed while the user is looking at the app).
   void setRemoteForeground(bool foreground) {
+    final wasForeground = _foreground;
     _foreground = foreground;
-    if (foreground && _openPeer != null) {
-      NotificationService.cancelFor(_openPeer!);
+    if (foreground && !wasForeground) {
+      // Same re-kick a local controller does on resume: re-assert
+      // advertising and restart discovery so presence recovers immediately
+      // instead of waiting for the next self-heal/duty cycle.
+      if (started) unawaited(node.wakeUp());
+      if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
     }
   }
 

@@ -421,7 +421,8 @@ class MeshTransport implements MeshTransportInterface {
           unawaited(_startAdvertising());
         } else {
           if (deep) _log('BLE self-heal: republishing GATT service');
-          unawaited(_setupPeripheral().then((_) => _startAdvertising()));
+          unawaited(_setupPeripheral()
+              .then((_) => _startAdvertising(restart: true)));
         }
       }
       if (_powerMode == PowerMode.active) {
@@ -450,9 +451,12 @@ class MeshTransport implements MeshTransportInterface {
     // only needs publishing once per peripheral power-on.
     if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
       if (_servicePublished) {
-        unawaited(_startAdvertising());
+        // Real restart: iOS advertising degrades while backgrounded and only
+        // a stop+start restores the full foreground advertisement.
+        unawaited(_startAdvertising(restart: true));
       } else {
-        unawaited(_setupPeripheral().then((_) => _startAdvertising()));
+        unawaited(
+            _setupPeripheral().then((_) => _startAdvertising(restart: true)));
       }
     }
     if (_powerMode == PowerMode.active) {
@@ -684,14 +688,29 @@ class MeshTransport implements MeshTransportInterface {
     }
   }
 
-  Future<void> _startAdvertising() async {
-    // (Re)start cleanly: starting over a live advertisement doesn't refresh
-    // it — Darwin rejects it ("Advertising has already started") and Android
-    // reports ALREADY_STARTED — so drop the old one first. The momentary gap
-    // is harmless, and it makes the self-heal re-assert a real restart.
-    try {
-      await _peripheral.stopAdvertising();
-    } catch (_) {}
+  /// "Already advertising" from either stack — the advertisement is alive,
+  /// which is exactly what a re-assert wants; treat as success.
+  /// (Darwin: "Advertising has already started"; Android: error code 3 =
+  /// ADVERTISE_FAILED_ALREADY_STARTED.)
+  static bool _isAlreadyAdvertising(Object e) {
+    final s = e.toString();
+    return s.contains('already started') || s.contains('error code: 3');
+  }
+
+  Future<void> _startAdvertising({bool restart = false}) async {
+    // Restart ONLY on explicit request (foreground wake, GATT republish).
+    // A stop+start is NOT a harmless refresh on Android: each start
+    // allocates a fresh random address (RPA), and the linkless self-heal
+    // re-asserts every 15s — restarting each time made this node hop
+    // addresses faster than a *backgrounded* iPhone can finish a dial
+    // (background discovery→connect loses the 15s race every time), so two
+    // idle phones could never re-link until one was foregrounded. The
+    // default path leaves a live advertisement untouched.
+    if (restart) {
+      try {
+        await _peripheral.stopAdvertising();
+      } catch (_) {}
+    }
     // The manufacturer data carries our short id so scanners can skip their
     // own advertisement and pre-learn the peer id. Darwin refuses to
     // advertise manufacturer data at all (CoreBluetooth supports only local
@@ -712,6 +731,7 @@ class MeshTransport implements MeshTransportInterface {
         _log('BLE advertising started');
         return;
       } catch (e) {
+        if (_isAlreadyAdvertising(e)) return;
         _log('BLE startAdvertising with manufacturer data failed: $e');
       }
     }
@@ -722,6 +742,7 @@ class MeshTransport implements MeshTransportInterface {
       ));
       _log('BLE advertising started (service uuid only)');
     } catch (e) {
+      if (_isAlreadyAdvertising(e)) return;
       _log('BLE startAdvertising failed: $e');
     }
   }
@@ -1044,38 +1065,50 @@ class MeshTransport implements MeshTransportInterface {
         await _central.connect(peripheral);
       }
       connected = true;
-      final services = await _central.discoverGATT(peripheral);
-      final hasSvc = services.any((s) => s.uuid == BleConstants.serviceUuid);
-      if (!hasSvc) {
-        serviceMissing = true;
-        throw StateError('service not found');
-      }
-      final svc =
-          services.firstWhere((s) => s.uuid == BleConstants.serviceUuid);
-      GATTCharacteristic? tx, rx;
-      for (final c in svc.characteristics) {
-        if (c.uuid == BleConstants.txCharacteristicUuid) tx = c;
-        if (c.uuid == BleConstants.rxCharacteristicUuid) rx = c;
-      }
-      if (tx == null || rx == null) {
-        throw StateError('characteristics not found');
-      }
+      // Everything after the OS-level connect is bounded: a single lost
+      // response frame (discovery response, CCCD ack) used to hang this
+      // await chain FOREVER — the _connecting slot stayed occupied, so the
+      // peer could never be redialed until an app restart (observed: two
+      // idle phones mutually wedged mid-establish for 20+ minutes). The
+      // connect() above intentionally stays unbounded on the non-probe
+      // path — iOS pending reconnects resolve minutes later by design.
+      final (tx, rx, maxPacket) = await () async {
+        final services = await _central.discoverGATT(peripheral);
+        final hasSvc =
+            services.any((s) => s.uuid == BleConstants.serviceUuid);
+        if (!hasSvc) {
+          serviceMissing = true;
+          throw StateError('service not found');
+        }
+        final svc =
+            services.firstWhere((s) => s.uuid == BleConstants.serviceUuid);
+        GATTCharacteristic? tx, rx;
+        for (final c in svc.characteristics) {
+          if (c.uuid == BleConstants.txCharacteristicUuid) tx = c;
+          if (c.uuid == BleConstants.rxCharacteristicUuid) rx = c;
+        }
+        if (tx == null || rx == null) {
+          throw StateError('characteristics not found');
+        }
 
-      var maxPacket = BleConstants.defaultMaxPacketSize;
-      try {
-        await _central.requestMTU(peripheral, mtu: 247);
-      } catch (_) {}
-      try {
-        maxPacket = await _central.getMaximumWriteLength(
-          peripheral,
-          type: GATTCharacteristicWriteType.withoutResponse,
-        );
-      } catch (_) {
-        maxPacket = BleConstants.targetMaxPacketSize;
-      }
+        var maxPacket = BleConstants.defaultMaxPacketSize;
+        try {
+          await _central.requestMTU(peripheral, mtu: 247);
+        } catch (_) {}
+        try {
+          maxPacket = await _central.getMaximumWriteLength(
+            peripheral,
+            type: GATTCharacteristicWriteType.withoutResponse,
+          );
+        } catch (_) {
+          maxPacket = BleConstants.targetMaxPacketSize;
+        }
 
-      await _central.setCharacteristicNotifyState(peripheral, rx,
-          state: true);
+        await _central.setCharacteristicNotifyState(peripheral, rx,
+            state: true);
+        return (tx, rx, maxPacket);
+      }()
+          .timeout(const Duration(seconds: 25));
 
       // We may have been stopped/disposed while awaiting the connection. Don't
       // resurrect _links or emit on a closed controller — just disconnect.
