@@ -28,7 +28,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   int _lastCount = 0;
-  MeshController? _controller;
+  MeshFrontend? _controller;
 
   /// True when a message arrived while the user was scrolled up reading
   /// history — shown as a floating "새 메시지" chip instead of yanking the
@@ -40,7 +40,7 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     _scroll.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<MeshController>().openConversation(widget.peerHex);
+      context.read<MeshFrontend>().openConversation(widget.peerHex);
       _jumpToBottom();
     });
   }
@@ -48,7 +48,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _controller = context.read<MeshController>();
+    _controller = context.read<MeshFrontend>();
   }
 
   @override
@@ -65,7 +65,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (text.isEmpty) return;
     _input.clear();
     try {
-      await context.read<MeshController>().sendText(widget.peerHex, text);
+      await context.read<MeshFrontend>().sendText(widget.peerHex, text);
       bleLogSink?.call('chat send ok (${text.length} chars)');
     } catch (e, st) {
       bleLogSink?.call('chat send failed: $e\n$st');
@@ -139,7 +139,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (result == null || result.files.isEmpty) return;
     if (!mounted) return;
-    final controller = context.read<MeshController>();
+    final controller = context.read<MeshFrontend>();
     for (final f in result.files) {
       final bytes = f.bytes ??
           (f.path != null ? await File(f.path!).readAsBytes() : null);
@@ -159,7 +159,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// bubble to install, so the app spreads with no store and no internet.
   Future<void> _sendApk() async {
     final messenger = ScaffoldMessenger.of(context);
-    final controller = context.read<MeshController>();
+    final controller = context.read<MeshFrontend>();
     final apk = await AppShare.apkFile();
     if (apk == null) {
       messenger.showSnackBar(
@@ -205,7 +205,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<MeshController>();
+    final c = context.watch<MeshFrontend>();
     final contact = c.contactByHex(widget.peerHex);
     // Fall back to the PEER's short id (not our own) when they aren't a contact.
     final name = contact?.displayName ?? PeerId.fromHex(widget.peerHex).short;
@@ -414,7 +414,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// Peer detail sheet from the app bar: identity at a glance (인증 여부,
   /// 메시 거리, ID 복사) without leaving the conversation.
-  void _showPeerSheet(BuildContext context, MeshController c, String name,
+  void _showPeerSheet(BuildContext context, MeshFrontend c, String name,
       String presence, bool nearby) {
     final contact = c.contactByHex(widget.peerHex);
     showModalBottomSheet(
@@ -533,7 +533,7 @@ class _DateChip extends StatelessWidget {
 
 class _Bubble extends StatelessWidget {
   final ChatMessage message;
-  final MeshController controller;
+  final MeshFrontend controller;
   const _Bubble({required this.message, required this.controller});
 
   bool get _isMe => message.direction == MsgDirection.outgoing;
@@ -875,7 +875,7 @@ class _EmptyChat extends StatelessWidget {
 /// Full-screen image viewer with pinch-zoom and quick save/share actions.
 class _ImageViewerPage extends StatelessWidget {
   final ChatMessage message;
-  final MeshController controller;
+  final MeshFrontend controller;
   const _ImageViewerPage({required this.message, required this.controller});
 
   @override

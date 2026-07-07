@@ -27,6 +27,16 @@ class AppDatabase {
     _db = await openDatabase(
       path,
       version: 2,
+      // WAL: the Android service isolate WRITES this file while the UI
+      // isolate READS it (two SQLite connections in one process). Rollback
+      // journal mode would make readers hit SQLITE_BUSY during writes; WAL
+      // allows one writer + concurrent readers. Persistent per-file, but
+      // asserted on every open for older installs.
+      onConfigure: (db) async {
+        try {
+          await db.rawQuery('PRAGMA journal_mode=WAL');
+        } catch (_) {} // e.g. in-memory test DBs — journal mode is moot there
+      },
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE contacts (

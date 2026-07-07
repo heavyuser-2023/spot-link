@@ -15,6 +15,7 @@ import 'background_service.dart';
 import 'mesh_controller.dart';
 import 'notification_service.dart';
 import 'permissions.dart';
+import 'remote_mesh_controller.dart';
 
 /// Runs one-time async startup behind a branded splash so the app never shows
 /// a blank launch screen, then routes to onboarding (first run) or home.
@@ -29,7 +30,7 @@ enum _Stage { loading, onboarding, ready }
 
 class _BootstrapState extends State<Bootstrap> {
   _Stage _stage = _Stage.loading;
-  MeshController? _controller;
+  MeshFrontend? _controller;
   final _identityStore = IdentityStore();
 
   /// Last boot failure, rendered on the splash — turns an opaque endless
@@ -125,22 +126,30 @@ class _BootstrapState extends State<Bootstrap> {
   Future<void> _launch(String name) async {
     final identity = await _identityStore.loadOrCreate();
     final db = AppDatabase();
-    final controller = MeshController(
-      identity: identity,
-      displayName: name,
-      db: db,
-      identityStore: _identityStore,
-    );
-    await controller.init();
+    final MeshFrontend controller;
+    if (Platform.isAndroid) {
+      // Single-owner architecture: the foreground service owns the one mesh;
+      // this isolate only mirrors it and must never open a BLE stack.
+      final remote = RemoteMeshController(
+        identity: identity,
+        displayName: name,
+        db: db,
+        identityStore: _identityStore,
+      );
+      await remote.init(); // starts the service, waits for its first snapshot
+      controller = remote;
+    } else {
+      final local = MeshController(
+        identity: identity,
+        displayName: name,
+        db: db,
+        identityStore: _identityStore,
+      );
+      await local.init();
+      controller = local;
+    }
     if (!mounted) {
       // Unmounted mid-launch: don't leak the controller's timers/subscriptions.
-      controller.dispose();
-      return;
-    }
-    if (controller.started) {
-      await BackgroundService.start();
-    }
-    if (!mounted) {
       controller.dispose();
       return;
     }

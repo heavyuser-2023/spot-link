@@ -27,7 +27,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.didChangeDependencies();
     if (_wired) return;
     _wired = true;
-    final c = context.read<MeshController>();
+    final c = context.read<MeshFrontend>();
     _errorSub = c.errorEvents.listen((msg) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
@@ -47,7 +47,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<MeshController>();
+    final c = context.watch<MeshFrontend>();
     final titles = ['채팅', '친구', '내 정보'];
     final tabs = [
       ChatsTab(onFindPeople: () => setState(() => _index = 1)),
@@ -109,7 +109,7 @@ class _HomeScreenState extends State<HomeScreen> {
 /// "꺼짐"). Tapping opens a status sheet with details and quick settings —
 /// one obvious place to answer "지금 연결돼 있나?".
 class _MeshStatusChip extends StatelessWidget {
-  final MeshController controller;
+  final MeshFrontend controller;
   const _MeshStatusChip({required this.controller});
 
   @override
@@ -191,7 +191,7 @@ class _StatusSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<MeshController>();
+    final c = context.watch<MeshFrontend>();
     final scheme = Theme.of(context).colorScheme;
     return SafeArea(
       child: Padding(

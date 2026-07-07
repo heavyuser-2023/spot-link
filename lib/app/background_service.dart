@@ -1,39 +1,29 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'headless_mesh.dart';
 
-/// Keeps the SpotLink mesh node alive while the app is backgrounded (Android).
+/// The Android foreground service that OWNS the one and only mesh node.
 ///
-/// On Android a foreground service with a persistent notification is required
-/// for continuous BLE scanning/advertising once the app leaves the foreground.
-/// The service also survives the user swiping the app away and — with
-/// [headlessMeshMain] as its entry point — restarts the mesh HEADLESSLY after
-/// a reboot, an app update, or an OEM battery-manager kill, so this device
-/// keeps receiving and relaying messages with no UI at all.
+/// Single-owner architecture (v1.4.0): the mesh (BLE stacks, persistence,
+/// notifications) runs in the service's task isolate — ALWAYS, whether or not
+/// the UI is open. The UI isolate attaches as a thin client over the task
+/// message port ([RemoteMeshController]) and never touches BLE itself. This
+/// is what makes swipe-kill survival safe: the mesh's isolate never dies with
+/// the activity, so there is no ownership handoff and no window where two
+/// BLE stacks (→ duplicate GATT servers) can coexist. Every previous
+/// two-mesh coordination scheme (ping/pong, file/prefs heartbeats,
+/// self-yield) raced eventually — see headless_mesh.dart history.
 ///
-/// On iOS the OS manages `bluetooth-central`/`bluetooth-peripheral` background
-/// modes itself (declared in Info.plist) — there is no equivalent service, a
-/// user-terminated app cannot be revived (platform policy), and reachability
-/// is best-effort while backgrounded. See docs/ARCHITECTURE.md §11.
+/// On iOS there is no equivalent service: the UI isolate runs a local
+/// [MeshController] and the OS's bluetooth background modes keep it alive
+/// best-effort. A user-terminated app cannot be revived (platform policy).
 class BackgroundService {
   static bool get _supported => Platform.isAndroid;
 
-  // ---- messages exchanged with the headless isolate (headless_mesh.dart) --
-  static const msgPing = 'spotlink.ping';
-  static const msgPong = 'spotlink.pong';
-  static const msgUiTakeover = 'spotlink.uiTakeover';
-  static const msgHeadlessStopped = 'spotlink.headlessStopped';
-
-  static bool _uiMeshActive = false;
-  static bool _portWired = false;
-  static Completer<void>? _headlessStopped;
-
   static Future<void> init() async {
     if (!_supported) return;
-    _wirePort();
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: 'spotlink_mesh',
@@ -45,97 +35,22 @@ class BackgroundService {
       iosNotificationOptions: const IOSNotificationOptions(),
       foregroundTaskOptions: ForegroundTaskOptions(
         eventAction: ForegroundTaskEventAction.nothing(),
-        // 재부팅/앱 업데이트 후에도 서비스가 스스로 떠서 헤드리스 메시를
+        // 재부팅/앱 업데이트/스와이프킬 후에도 서비스가 스스로 떠서 메시를
         // 돌린다 — 화면을 한 번도 안 열어도 이 기기는 릴레이 노드로 산다.
         autoRunOnBoot: true,
         autoRunOnMyPackageReplaced: true,
-        // 스와이프 종료(onTaskRemoved) 후 서비스 자동 재시작.
         allowWakeLock: true,
         allowWifiLock: false,
       ),
     );
   }
 
-  /// Listen for messages from the headless isolate (main-isolate side).
-  static void _wirePort() {
-    if (_portWired) return;
-    _portWired = true;
-    FlutterForegroundTask.addTaskDataCallback(_onTaskData);
-  }
-
-  static void _onTaskData(Object data) {
-    if (data == msgPing) {
-      // The headless isolate asks "is a UI mesh alive?" before starting its
-      // own — answer only when ours is actually running.
-      if (_uiMeshActive) FlutterForegroundTask.sendDataToTask(msgPong);
-    } else if (data == msgHeadlessStopped) {
-      final c = _headlessStopped;
-      if (c != null && !c.isCompleted) c.complete();
-    }
-  }
-
-  /// Whether the UI-side mesh node is running (drives the pong above).
-  static void setUiMeshActive(bool active) {
-    if (_supported) _uiMeshActive = active;
-  }
-
-  // ---- UI-alive heartbeat (cross-isolate) ---------------------------------
-  // The 1-second ping/pong can miss (isolate port timing) and a plain file is
-  // unreliable across isolates (the background FlutterEngine can resolve a
-  // different support dir), which let the headless service run a SECOND mesh
-  // while the UI mesh was already up — two BLE stacks → two GATT servers →
-  // iOS connects fail. flutter_foreground_task's saveData/getData is
-  // SharedPreferences-backed and GUARANTEED shared between the main and task
-  // isolates, so it is the correct substrate for this handshake.
-  static const _hbKey = 'spotlink.ui_mesh_hb_ms';
-
-  /// UI writes this periodically while its mesh runs.
-  static Future<void> markUiMeshHeartbeat() async {
-    if (!_supported) return;
-    try {
-      await FlutterForegroundTask.saveData(
-          key: _hbKey, value: DateTime.now().millisecondsSinceEpoch);
-    } catch (_) {}
-  }
-
-  static Future<void> clearUiMeshHeartbeat() async {
-    if (!_supported) return;
-    try {
-      await FlutterForegroundTask.saveData(key: _hbKey, value: 0);
-    } catch (_) {}
-  }
-
-  /// Headless side: true if the UI mesh touched the heartbeat within [within].
-  static Future<bool> uiMeshHeartbeatFresh(
-      {Duration within = const Duration(seconds: 25)}) async {
-    if (!_supported) return false;
-    try {
-      final ts = await FlutterForegroundTask.getData<int>(key: _hbKey) ?? 0;
-      return DateTime.now().millisecondsSinceEpoch - ts < within.inMilliseconds;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Called by the UI before starting its own mesh: if a headless mesh is
-  /// running in the service isolate, stop it and wait for the hand-off —
-  /// two BLE stacks announcing the same identity would collide.
-  static Future<void> claimMeshOwnership() async {
-    // No-op since v1.3.6: the headless isolate no longer runs a mesh (see
-    // headless_mesh.dart), so there is nothing to take over. Kept as a stub
-    // so callers don't change; avoids the old 2s handshake timeout on every
-    // UI start.
-  }
-
   static Future<void> start() async {
     if (!_supported) return;
-    _wirePort();
     if (await FlutterForegroundTask.isRunningService) return;
     await FlutterForegroundTask.startService(
       notificationTitle: 'SpotLink is active',
       notificationText: 'Discovering people and relaying messages nearby.',
-      // System restarts (boot / swipe-kill / OEM kill) enter here and run
-      // the mesh headlessly; when the UI started us it stays dormant.
       callback: headlessMeshMain,
     );
   }
@@ -145,6 +60,17 @@ class BackgroundService {
     await FlutterForegroundTask.stopService();
   }
 
+  /// UI → service command (JSON string). Fire-and-forget: results come back
+  /// as state snapshots on the reverse port.
+  static void sendToService(String json) {
+    if (!_supported) return;
+    try {
+      FlutterForegroundTask.sendDataToTask(json);
+    } catch (_) {}
+  }
+
+  /// Called from the SERVICE isolate to reflect link count on the persistent
+  /// notification.
   static Future<void> updateStatus(int linkCount) async {
     if (!_supported) return;
     if (!await FlutterForegroundTask.isRunningService) return;

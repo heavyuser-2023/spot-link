@@ -26,39 +26,30 @@ import '../data/identity_store.dart';
 import '../data/models.dart';
 import 'background_service.dart';
 import 'beacon_wake.dart';
+import 'mesh_frontend.dart';
 import 'notification_service.dart';
 
-/// A row in the conversation (inbox) list.
-class ConversationSummary {
-  final String peerHex;
-  final String displayName;
-  final bool verified;
-  final bool nearby;
-  final ChatMessage? lastMessage;
-  final int unread;
-
-  ConversationSummary({
-    required this.peerHex,
-    required this.displayName,
-    required this.verified,
-    required this.nearby,
-    required this.lastMessage,
-    required this.unread,
-  });
-}
+export 'mesh_frontend.dart' show ConversationSummary, MeshFrontend;
 
 /// The application "brain": owns the [MeshNode], persists to [AppDatabase],
-/// and exposes observable state to the Flutter UI via [ChangeNotifier].
-class MeshController extends ChangeNotifier with WidgetsBindingObserver {
+/// and exposes observable state via [MeshFrontend]. Runs in the UI isolate on
+/// iOS, and in the Android foreground-service isolate (headless) where the
+/// UI attaches through [RemoteMeshController] instead.
+class MeshController extends MeshFrontend with WidgetsBindingObserver {
   final Identity identity;
+  @override
   String displayName;
   final AppDatabase db;
   final IdentityStore identityStore;
   final MeshNode node;
 
+  @override
   int linkCount = 0;
+  @override
   bool started = false;
+  @override
   bool powerSaver = false;
+  @override
   String? lastError;
 
   /// A peer is considered "nearby" if it has announced within this window.
@@ -76,6 +67,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, int> _unread = {}; // peerHex -> unread count
   final Map<String, List<ChatMessage>> _conversations = {};
   final Map<String, ChatMessage> _lastMessage = {}; // peerHex -> latest msg
+  @override
   final Map<String, double> transferProgress = {};
 
   /// Status events (delivered/failed) that arrived before the message row
@@ -134,14 +126,19 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
           conversationKey: key, title: title, body: body);
 
   /// Transient, user-facing errors (for snackbars).
+  @override
   Stream<String> get errorEvents => _errors.stream;
 
   /// Why the radio is unusable (drives the home-screen banner wording).
+  @override
   RadioStatus get radioStatus => node.transport.radioStatus;
 
+  @override
   List<Contact> get contacts => List.unmodifiable(_contacts);
+  @override
   PeerId get myId => identity.peerId;
 
+  @override
   bool isNearby(String peerHex) {
     final seen = _lastSeen[peerHex];
     if (seen == null) return false;
@@ -149,10 +146,12 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
         presenceTtl.inMilliseconds;
   }
 
+  @override
   int get nearbyCount =>
       _contacts.where((c) => isNearby(c.peerHex)).length;
 
   /// Mesh distance to a nearby peer: 1 = direct, 2 = one relay between us, …
+  @override
   int hopsTo(String peerHex) => _lastHops[peerHex] ?? 1;
 
   void _onRssi(RssiSample s) {
@@ -167,6 +166,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Smoothed RSSI (dBm) for a direct neighbour, or null when we have no
   /// fresh reading (multihop peers, or the radio went quiet).
+  @override
   int? rssiOf(String peerHex) {
     final at = _rssiAt[peerHex];
     if (at == null) return null;
@@ -177,24 +177,31 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Relay mailbox stats for the settings UI.
+  @override
   int get relayStoreCount => node.store.durableCount;
+  @override
   int get relayStoreBytes => node.store.durableBytes;
 
   /// User-initiated purge of messages we are carrying for others.
+  @override
   Future<void> clearRelayStore() async {
     node.store.clearDurable();
     await db.clearRelayStore();
     notifyListeners();
   }
 
+  @override
   List<ChatMessage> conversation(String peerHex) =>
       List.unmodifiable(_conversations[peerHex] ?? const []);
 
+  @override
   int unreadFor(String peerHex) => _unread[peerHex] ?? 0;
+  @override
   int get totalUnread => _unread.values.fold(0, (a, b) => a + b);
 
   /// The inbox: everyone we have a conversation with OR who is a contact,
   /// most-recent-message first, then nearby, then name.
+  @override
   List<ConversationSummary> conversations() {
     final hexes = <String>{..._lastMessage.keys, ..._contacts.map((c) => c.peerHex)};
     final list = hexes.map((hex) {
@@ -286,18 +293,9 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
       if (last != null) _lastMessage[hex] = last;
     }
 
-    // Android: if the foreground service is running a HEADLESS mesh (started
-    // at boot / after a swipe-kill), take ownership before starting our own
-    // node — two BLE stacks with the same identity collide.
-    if (!headless) await BackgroundService.claimMeshOwnership();
-
     _sub = node.events.listen(_onEvent);
     _rssiSub = node.rssiSamples.listen(_onRssi);
     started = await node.start();
-    if (started && !headless) {
-      BackgroundService.setUiMeshActive(true);
-      unawaited(BackgroundService.markUiMeshHeartbeat());
-    }
     if (!started) {
       lastError = 'Bluetooth unavailable';
       // On a fresh install the first start fails because the OS permission
@@ -307,14 +305,9 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
           node.transport.availabilityChanged.listen(_onTransportAvailable);
     }
 
-    // Refresh the UI periodically so "nearby" presence ages out, and (Android)
-    // keep the UI-alive heartbeat fresh so the headless service never starts a
-    // competing mesh (→ duplicate GATT servers) while we're running.
+    // Refresh listeners periodically so "nearby" presence ages out.
     _presenceTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       notifyListeners();
-      if (started && !headless) {
-        unawaited(BackgroundService.markUiMeshHeartbeat());
-      }
     });
     notifyListeners();
   }
@@ -336,10 +329,6 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
         lastError = null;
         await _availabilitySub?.cancel();
         _availabilitySub = null;
-        if (!headless) {
-          BackgroundService.setUiMeshActive(true);
-          await BackgroundService.start();
-        }
         notifyListeners();
       }
     } finally {
@@ -375,6 +364,82 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   /// Test hook: drive the app-foreground flag without a real lifecycle event.
   @visibleForTesting
   void setForegroundForTest(bool value) => _foreground = value;
+
+  // ---- cross-isolate bridge hooks (headless mode; see MeshHost) ----
+
+  /// Monotonic revision of the messages table. The remote UI reloads its open
+  /// conversation from the (shared) DB whenever this changes — cheaper and
+  /// simpler than serializing message lists over the isolate port.
+  int msgRev = 0;
+
+  void _bumpRev() => msgRev++;
+
+  /// The remote UI's app-lifecycle state, mirrored over the bridge so the
+  /// headless brain routes notifications exactly like a local one would
+  /// (suppressed while the user is looking at the app).
+  void setRemoteForeground(bool foreground) {
+    _foreground = foreground;
+    if (foreground && _openPeer != null) {
+      NotificationService.cancelFor(_openPeer!);
+    }
+  }
+
+  /// Serializable state snapshot for the cross-isolate UI mirror. Everything
+  /// here is JSON-safe (numbers/strings/bools/maps/lists only).
+  Map<String, Object?> snapshotForRemote() => {
+        'started': started,
+        'links': linkCount,
+        'err': lastError,
+        'radio': radioStatus.index,
+        'saver': powerSaver,
+        'relayN': relayStoreCount,
+        'relayB': relayStoreBytes,
+        'name': displayName,
+        'rev': msgRev,
+        'contacts': [for (final c in _contacts) c.toMap()],
+        'seen': _lastSeen,
+        'hops': _lastHops,
+        'rssi': {
+          for (final e in _rssi.entries)
+            e.key: [e.value, _rssiAt[e.key] ?? 0],
+        },
+        'unread': _unread,
+        'last': {
+          for (final e in _lastMessage.entries) e.key: e.value.toMap(),
+        },
+        'prog': transferProgress,
+      };
+
+  Future<ChatMessage?> _messageIn(String peerHex, String msgId) async {
+    for (final m in await db.messagesFor(peerHex)) {
+      if (m.msgId == msgId) return m;
+    }
+    return null;
+  }
+
+  /// Id-based command variants for the bridge: the remote UI holds plain
+  /// ChatMessage copies, so commands cross the port as (peerHex, msgId) and
+  /// are re-anchored to the authoritative DB row here.
+  Future<void> retryTextById(String peerHex, String msgId) async {
+    final m = await _messageIn(peerHex, msgId);
+    if (m != null) await retryText(m);
+  }
+
+  Future<void> retryFileById(String peerHex, String msgId) async {
+    final m = await _messageIn(peerHex, msgId);
+    if (m != null) await retryFile(m);
+  }
+
+  Future<void> deleteMessageById(String peerHex, String msgId) async {
+    final m = await _messageIn(peerHex, msgId);
+    if (m != null) await deleteMessage(m);
+  }
+
+  Future<void> cancelFileById(String msgId) async {
+    node.cancelSend(msgId);
+    transferProgress.remove(msgId);
+    await _applyStatus(msgId, MsgStatus.failed);
+  }
 
   Future<void> _onEvent(NodeEvent e) async {
     switch (e) {
@@ -421,6 +486,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     final updated = await db.updateStatusByMsgId(msgId, status);
     if (updated == 0) _pendingStatus[msgId] = status;
     _patchStatus(msgId, status);
+    _bumpRev();
     notifyListeners();
   }
 
@@ -461,6 +527,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     _contacts.add(c);
   }
 
+  @override
   Future<Contact> addContactFromBundle(Uint8List bundle,
       {String? name, bool verified = true}) async {
     final c = ContactIdentity.fromBundle(bundle, displayName: name);
@@ -483,6 +550,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   /// Delete a contact: keys, conversation history and any received/sent file
   /// copies. Not a block — a nearby peer re-appears on their next ANNOUNCE
   /// (as a fresh, unverified contact).
+  @override
   Future<void> deleteContact(String peerHex) async {
     // Best-effort cleanup of files referenced by this conversation.
     for (final m in await db.messagesFor(peerHex)) {
@@ -506,9 +574,11 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     _rssiAt.remove(peerHex);
     if (_openPeer == peerHex) _openPeer = null;
     node.removeContact(PeerId.fromHex(peerHex));
+    _bumpRev();
     notifyListeners();
   }
 
+  @override
   Future<void> renameContact(String peerHex, String name) async {
     final existing = contactByHex(peerHex);
     if (existing == null) return;
@@ -518,6 +588,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  @override
   Contact? contactByHex(String peerHex) {
     for (final c in _contacts) {
       if (c.peerHex == peerHex) return c;
@@ -527,6 +598,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   // ---- identity ----
 
+  @override
   Future<void> setDisplayName(String name) async {
     final trimmed = name.trim();
     if (trimmed.isEmpty) return;
@@ -536,6 +608,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  @override
   void setPowerSaver(bool saver) {
     powerSaver = saver;
     node.setPowerSaver(saver);
@@ -546,6 +619,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   static const _qrPrefix = 'SPOTLINK1:';
 
+  @override
   String get myQrPayload {
     final b = b64(identity.publicBundle);
     final n = b64(utf8.encode(displayName));
@@ -569,6 +643,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   // ---- messaging ----
 
+  @override
   Future<void> openConversation(String peerHex) async {
     _openPeer = peerHex;
     _unread.remove(peerHex);
@@ -590,10 +665,12 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  @override
   void closeConversation() {
     _openPeer = null;
   }
 
+  @override
   Future<void> sendText(String peerHex, String text) async {
     final peer = PeerId.fromHex(peerHex);
     final msgId = await node.sendText(peer, text);
@@ -610,6 +687,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     await _persistAndCache(msg);
   }
 
+  @override
   Future<void> retryText(ChatMessage failed) async {
     if (failed.text == null) return;
     final peer = PeerId.fromHex(failed.peerHex);
@@ -623,9 +701,11 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     }
     _patchMessage(failed.peerHex, failed.msgId,
         newMsgId: msgId, status: MsgStatus.sent);
+    _bumpRev();
     notifyListeners();
   }
 
+  @override
   Future<void> sendFile(String peerHex,
       {required Uint8List bytes,
       required String name,
@@ -670,6 +750,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Cancel an in-progress outgoing transfer (stops the chunk stream).
+  @override
   Future<void> cancelFile(ChatMessage msg) async {
     node.cancelSend(msg.msgId);
     transferProgress.remove(msg.msgId);
@@ -677,6 +758,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Re-send a failed file transfer from the local copy saved at send time.
+  @override
   Future<void> retryFile(ChatMessage failed) async {
     final path = failed.filePath;
     Uint8List? bytes;
@@ -705,6 +787,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     }
     _patchMessage(failed.peerHex, failed.msgId,
         newMsgId: tid, status: MsgStatus.sending);
+    _bumpRev();
     notifyListeners();
   }
 
@@ -757,6 +840,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
         meta.transferIdHex, path, MsgStatus.received);
     if (updated > 0) {
       _patchFile(meta.transferIdHex, path, MsgStatus.received);
+      _bumpRev();
       notifyListeners();
       return;
     }
@@ -788,6 +872,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     if (incoming && msg.peerHex != _openPeer) {
       _unread[msg.peerHex] = (_unread[msg.peerHex] ?? 0) + 1;
     }
+    _bumpRev();
     notifyListeners();
   }
 
@@ -795,6 +880,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// True when iOS beacon-region monitoring is on (always-location granted
   /// and the user enabled the toggle). Meaningless on Android.
+  @override
   bool beaconMonitoring = false;
 
   Future<void> _refreshBeaconStatus() async {
@@ -809,6 +895,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// Me-tab toggle: opt in/out of the "wake me via beacon" behaviour.
+  @override
   Future<void> setBeaconMonitoring(bool on) async {
     if (on) {
       await BeaconWake.requestAlways(); // one-time permission prompt
@@ -845,6 +932,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   // ---- files ----
 
+  @override
   Future<void> openFile(ChatMessage msg) async {
     if (msg.filePath == null) return;
     final result = await OpenFilex.open(msg.filePath!);
@@ -855,6 +943,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Save a received image/video into the device photo gallery.
   /// Returns false (and surfaces an error) when the file kind can't go there.
+  @override
   Future<bool> saveToGallery(ChatMessage msg) async {
     final path = msg.filePath;
     if (path == null) return false;
@@ -876,6 +965,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   /// System share sheet — covers "파일 앱에 저장", AirDrop, other apps.
+  @override
   Future<void> shareFile(ChatMessage msg) async {
     final path = msg.filePath;
     if (path == null) return;
@@ -885,6 +975,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   /// Delete one message bubble on this device (DB + memory), removing the
   /// stored file from disk for file messages. Purely local — the peer's copy
   /// is untouched.
+  @override
   Future<void> deleteMessage(ChatMessage msg) async {
     await db.deleteMessage(msg.msgId);
     final path = msg.filePath;
@@ -902,6 +993,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
         _lastMessage.remove(msg.peerHex);
       }
     }
+    _bumpRev();
     notifyListeners();
   }
 
@@ -962,8 +1054,6 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
   void dispose() {
     if (!headless) {
       WidgetsBinding.instance.removeObserver(this);
-      BackgroundService.setUiMeshActive(false);
-      unawaited(BackgroundService.clearUiMeshHeartbeat());
     }
     _presenceTimer?.cancel();
     _sub?.cancel();

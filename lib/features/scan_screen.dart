@@ -32,7 +32,7 @@ class _ScanScreenState extends State<ScanScreen> {
       if (parsed == null) continue;
       _handled = true;
       final (bundle, name) = parsed;
-      final controller = context.read<MeshController>();
+      final controller = context.read<MeshFrontend>();
       try {
         final contact = await controller.addContactFromBundle(
           bundle,

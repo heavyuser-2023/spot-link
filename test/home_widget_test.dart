@@ -56,7 +56,7 @@ void main() {
     });
 
     await tester.pumpWidget(MaterialApp(
-      home: ChangeNotifierProvider.value(
+      home: ChangeNotifierProvider<MeshFrontend>.value(
         value: controller,
         child: const HomeScreen(),
       ),
@@ -111,7 +111,7 @@ void main() {
     // Mirror the real app: the provider sits BELOW MaterialApp (in Bootstrap),
     // while pushed routes mount on the root navigator above it.
     await tester.pumpWidget(MaterialApp(
-      home: ChangeNotifierProvider.value(
+      home: ChangeNotifierProvider<MeshFrontend>.value(
         value: controller,
         child: const HomeScreen(),
       ),

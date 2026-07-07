@@ -4,11 +4,11 @@ import 'package:provider/provider.dart';
 
 import '../app/mesh_controller.dart';
 
-/// Push [screen] with the [MeshController] re-provided. Pushed routes mount
+/// Push [screen] with the [MeshFrontend] re-provided. Pushed routes mount
 /// on the root navigator — above the provider in Bootstrap — so without this
 /// the new screen cannot find the controller and dies with a blank page.
 Future<T?> pushWithController<T>(BuildContext context, Widget screen) {
-  final c = context.read<MeshController>();
+  final c = context.read<MeshFrontend>();
   return Navigator.of(context).push<T>(MaterialPageRoute(
     builder: (_) => ChangeNotifierProvider.value(value: c, child: screen),
   ));

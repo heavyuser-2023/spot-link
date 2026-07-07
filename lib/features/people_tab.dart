@@ -53,7 +53,7 @@ class _PeopleTabState extends State<PeopleTab> {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<MeshController>();
+    final c = context.watch<MeshFrontend>();
     int byName(Contact a, Contact b) =>
         a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
     // 주변(지금 연결 가능)과 나머지 연락처를 분리: "지금 대화 가능한 사람"이
@@ -241,7 +241,7 @@ class _ProximityRadar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<MeshController>();
+    final c = context.watch<MeshFrontend>();
     final scheme = Theme.of(context).colorScheme;
 
     return Card(
@@ -308,7 +308,7 @@ class _ProximityRadar extends StatelessWidget {
 
   Widget _radarAvatar(
     BuildContext context,
-    MeshController c,
+    MeshFrontend c,
     Contact peer,
     int index,
     Offset center,
@@ -474,7 +474,7 @@ class _PersonTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<MeshController>();
+    final c = context.watch<MeshFrontend>();
     final nearby = c.isNearby(contact.peerHex);
     final hops = c.hopsTo(contact.peerHex);
     return ListTile(
@@ -536,7 +536,7 @@ class _PersonTile extends StatelessWidget {
     );
   }
 
-  void _showActions(BuildContext context, MeshController c) {
+  void _showActions(BuildContext context, MeshFrontend c) {
     showModalBottomSheet(
       context: context,
       builder: (sheetContext) => SafeArea(
@@ -592,7 +592,7 @@ class _PersonTile extends StatelessWidget {
     );
   }
 
-  Future<void> _confirmDelete(BuildContext context, MeshController c) async {
+  Future<void> _confirmDelete(BuildContext context, MeshFrontend c) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -621,7 +621,7 @@ class _PersonTile extends StatelessWidget {
     if (ok == true) await c.deleteContact(contact.peerHex);
   }
 
-  Future<void> _rename(BuildContext context, MeshController c) async {
+  Future<void> _rename(BuildContext context, MeshFrontend c) async {
     final controller = TextEditingController(text: contact.displayName);
     try {
       final newName = await showDialog<String>(
@@ -661,7 +661,7 @@ class _EmptyPeople extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<MeshController>();
+    final c = context.watch<MeshFrontend>();
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),

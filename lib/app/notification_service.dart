@@ -36,8 +36,13 @@ class NotificationService {
       description: _channelDesc,
       importance: Importance.high,
     ));
-    // Ask for POST_NOTIFICATIONS on Android 13+ (no-op on older).
-    await android2?.requestNotificationsPermission();
+    // Ask for POST_NOTIFICATIONS on Android 13+ (no-op on older). Best-effort:
+    // in the foreground-service isolate there is no Activity and the plugin
+    // NPEs — the UI isolate has already asked, and showing notifications only
+    // needs the grant, not the request.
+    try {
+      await android2?.requestNotificationsPermission();
+    } catch (_) {}
     _ready = true;
   }
 

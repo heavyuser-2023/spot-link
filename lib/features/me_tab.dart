@@ -18,7 +18,7 @@ class MeTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<MeshController>();
+    final c = context.watch<MeshFrontend>();
     final hint = Theme.of(context).textTheme.bodySmall?.color;
 
     return ListView(
@@ -119,7 +119,7 @@ class MeTab extends StatelessWidget {
             title: const Text('배터리 절약'),
             subtitle: const Text('스캔 주기를 늘려 배터리를 아낍니다 (검색이 느려짐).'),
             value: c.powerSaver,
-            onChanged: (v) => context.read<MeshController>().setPowerSaver(v),
+            onChanged: (v) => context.read<MeshFrontend>().setPowerSaver(v),
           ),
         ),
         const SizedBox(height: 8),
@@ -174,7 +174,7 @@ class MeTab extends StatelessWidget {
               isThreeLine: true,
               value: c.beaconMonitoring,
               onChanged: (v) =>
-                  context.read<MeshController>().setBeaconMonitoring(v),
+                  context.read<MeshFrontend>().setBeaconMonitoring(v),
             ),
           ),
           const SizedBox(height: 8),
@@ -213,7 +213,7 @@ class MeTab extends StatelessWidget {
     ));
   }
 
-  Future<void> _confirmClearRelay(BuildContext context, MeshController c) async {
+  Future<void> _confirmClearRelay(BuildContext context, MeshFrontend c) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -235,7 +235,7 @@ class MeTab extends StatelessWidget {
     if (ok == true) await c.clearRelayStore();
   }
 
-  Future<void> _editName(BuildContext context, MeshController c) async {
+  Future<void> _editName(BuildContext context, MeshFrontend c) async {
     final controller = TextEditingController(text: c.displayName);
     try {
       final name = await showDialog<String>(

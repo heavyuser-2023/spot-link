@@ -15,7 +15,7 @@ class ChatsTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.watch<MeshController>();
+    final c = context.watch<MeshFrontend>();
     final convos = c.conversations();
 
     if (convos.isEmpty) {

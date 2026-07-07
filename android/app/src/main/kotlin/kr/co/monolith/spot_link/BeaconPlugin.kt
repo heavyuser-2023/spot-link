@@ -28,11 +28,18 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         // Must match BeaconPlugin.swift's beaconUUID.
         val BEACON_UUID: UUID = UUID.fromString("7A3B5C4D-1E2F-4A5B-8C9D-0E1F2A3B4C5D")
         private const val APPLE_MANUFACTURER_ID = 0x004C
+
+        // Process-wide advertiser state (deliberately NOT per-engine): the
+        // torch must keep burning after the UI engine dies (swipe-kill) —
+        // the foreground service keeps the process, and this beacon is what
+        // revives nearby swipe-killed iPhones. Static keeps startTx
+        // idempotent across engine re-attachments too (no duplicate
+        // advertise sets).
+        private var advertiser: BluetoothLeAdvertiser? = null
+        private var callback: AdvertiseCallback? = null
     }
 
     private lateinit var context: Context
-    private var advertiser: BluetoothLeAdvertiser? = null
-    private var callback: AdvertiseCallback? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         context = binding.applicationContext
@@ -41,7 +48,8 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        stopTx()
+        // Keep advertising: engine death (activity closed) is not process
+        // death, and the beacon belongs to the process.
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
