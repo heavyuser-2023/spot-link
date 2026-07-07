@@ -2,8 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import 'headless_mesh.dart';
 
@@ -81,39 +79,38 @@ class BackgroundService {
     if (_supported) _uiMeshActive = active;
   }
 
-  // ---- UI-alive heartbeat (cross-isolate, file-based) ---------------------
-  // The 1-second ping/pong can miss (isolate port timing), letting the
-  // headless service start a SECOND mesh while the UI mesh is already
-  // running — two BLE stacks → two GATT servers → iOS connects fail. A file
-  // the UI touches every few seconds is a timing-independent truth the
-  // headless isolate can read before deciding to run.
-  static Future<File> _heartbeatFile() async {
-    final dir = await getApplicationSupportDirectory();
-    return File(p.join(dir.path, 'ui_mesh_active.hb'));
-  }
+  // ---- UI-alive heartbeat (cross-isolate) ---------------------------------
+  // The 1-second ping/pong can miss (isolate port timing) and a plain file is
+  // unreliable across isolates (the background FlutterEngine can resolve a
+  // different support dir), which let the headless service run a SECOND mesh
+  // while the UI mesh was already up — two BLE stacks → two GATT servers →
+  // iOS connects fail. flutter_foreground_task's saveData/getData is
+  // SharedPreferences-backed and GUARANTEED shared between the main and task
+  // isolates, so it is the correct substrate for this handshake.
+  static const _hbKey = 'spotlink.ui_mesh_hb_ms';
 
   /// UI writes this periodically while its mesh runs.
   static Future<void> markUiMeshHeartbeat() async {
+    if (!_supported) return;
     try {
-      (await _heartbeatFile())
-          .writeAsStringSync(DateTime.now().millisecondsSinceEpoch.toString());
+      await FlutterForegroundTask.saveData(
+          key: _hbKey, value: DateTime.now().millisecondsSinceEpoch);
     } catch (_) {}
   }
 
   static Future<void> clearUiMeshHeartbeat() async {
+    if (!_supported) return;
     try {
-      final f = await _heartbeatFile();
-      if (f.existsSync()) f.deleteSync();
+      await FlutterForegroundTask.saveData(key: _hbKey, value: 0);
     } catch (_) {}
   }
 
   /// Headless side: true if the UI mesh touched the heartbeat within [within].
   static Future<bool> uiMeshHeartbeatFresh(
       {Duration within = const Duration(seconds: 25)}) async {
+    if (!_supported) return false;
     try {
-      final f = await _heartbeatFile();
-      if (!f.existsSync()) return false;
-      final ts = int.tryParse(f.readAsStringSync().trim()) ?? 0;
+      final ts = await FlutterForegroundTask.getData<int>(key: _hbKey) ?? 0;
       return DateTime.now().millisecondsSinceEpoch - ts < within.inMilliseconds;
     } catch (_) {
       return false;
