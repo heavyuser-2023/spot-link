@@ -25,8 +25,18 @@ class _HeadlessMeshHandler extends TaskHandler {
   bool _uiAlive = false;
   bool _stopping = false;
 
+  /// Continuously yields the radio to the UI mesh. Message-passing takeover
+  /// (msgUiTakeover) proved unreliable across isolates — both meshes ended up
+  /// running, each with its own GATT server (→ iOS connects fail). This timer
+  /// is the timing-independent guarantee: while the UI's heartbeat file is
+  /// fresh, the headless mesh stays stopped; when the UI dies, it resumes.
+  Timer? _yieldTimer;
+
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+    _yieldTimer ??= Timer.periodic(
+        const Duration(seconds: 5), (_) => _yieldToUiIfAlive());
+
     // The UI started the service: the main isolate owns the mesh; we stay
     // dormant and only exist to keep the process alive.
     if (starter == TaskStarter.developer) return;
@@ -44,6 +54,18 @@ class _HeadlessMeshHandler extends TaskHandler {
     // connects). See BackgroundService.uiMeshHeartbeatFresh.
     if (await BackgroundService.uiMeshHeartbeatFresh()) return;
     await _startMesh();
+  }
+
+  /// Runs every 5s: if the UI mesh is alive, make sure ours is stopped; if the
+  /// UI is gone and we have no mesh, resume (background survival).
+  Future<void> _yieldToUiIfAlive() async {
+    if (_stopping) return;
+    final uiAlive = await BackgroundService.uiMeshHeartbeatFresh();
+    if (uiAlive && _controller != null) {
+      await _stopMesh();
+    } else if (!uiAlive && _controller == null) {
+      await _startMesh();
+    }
   }
 
   Future<void> _startMesh() async {
@@ -109,6 +131,8 @@ class _HeadlessMeshHandler extends TaskHandler {
 
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
+    _yieldTimer?.cancel();
+    _yieldTimer = null;
     await _stopMesh();
   }
 }
