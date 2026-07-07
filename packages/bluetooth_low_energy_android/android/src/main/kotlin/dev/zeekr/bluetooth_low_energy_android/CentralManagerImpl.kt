@@ -210,7 +210,18 @@ class CentralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) : B
         try {
             val gatt = mGATTs[addressArgs] ?: throw IllegalArgumentException()
             gatt.disconnect()
-            mDisconnectCallbacks[addressArgs] = callback
+            // SpotLink fork: gatt.disconnect() is a NO-OP on a still-CONNECTING
+            // gatt (the common case when a probe/connect times out) — it never
+            // reaches STATE_DISCONNECTED, so onConnectionStateChange never runs
+            // and the BluetoothGatt client interface leaks. Android has a small
+            // (~30) global GATT client pool; once exhausted, ALL new connects
+            // fail. close() releases it unconditionally. We fire the callback
+            // now and drop the maps, since no state-change callback will come.
+            gatt.close()
+            mGATTs.remove(addressArgs)
+            mCharacteristics.remove(addressArgs)
+            mDescriptors.remove(addressArgs)
+            callback(Result.success(Unit))
         } catch (e: Throwable) {
             callback(Result.failure(e))
         }

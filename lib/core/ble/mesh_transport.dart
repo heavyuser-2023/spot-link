@@ -898,9 +898,17 @@ class MeshTransport implements MeshTransportInterface {
   static const Duration _probeMissTtl = Duration(minutes: 10);
   final Map<String, DateTime> _probeMisses = {};
 
+  /// Keys of probe dials currently in flight. Bounded so a room full of
+  /// Apple gadgets (TV, AirPods, other iPhones) can't fire a storm of
+  /// concurrent connectGatt calls that exhausts the Android GATT client pool
+  /// and starves the ONE real peer we're trying to reach.
+  final Set<String> _activeProbes = {};
+  static const int _maxConcurrentProbes = 1;
+
   bool _isIosProbeCandidate(DiscoveredEventArgs e) {
     if (!Platform.isAndroid) return false;
     if (e.rssi < -70) return false; // only close-by devices are worth a dial
+    if (_activeProbes.length >= _maxConcurrentProbes) return false;
     final missedAt = _probeMisses[e.peripheral.uuid.toString()];
     if (missedAt != null &&
         DateTime.now().difference(missedAt) < _probeMissTtl) {
@@ -1015,8 +1023,15 @@ class MeshTransport implements MeshTransportInterface {
     final linkId = 'C:$key';
     var connected = false; // did _central.connect succeed?
     var serviceMissing = false; // connected, but no SpotLink service
+    if (probe) _activeProbes.add(key);
     try {
-      await _central.connect(peripheral);
+      // Probe dials to random Apple devices must not hang for Android's full
+      // ~30s connectGatt timeout while holding a GATT client slot — bound them.
+      if (probe) {
+        await _central.connect(peripheral).timeout(const Duration(seconds: 8));
+      } else {
+        await _central.connect(peripheral);
+      }
       connected = true;
       final services = await _central.discoverGATT(peripheral);
       final hasSvc = services.any((s) => s.uuid == BleConstants.serviceUuid);
@@ -1103,6 +1118,12 @@ class MeshTransport implements MeshTransportInterface {
       _connecting.remove(key);
       _pendingKeys.remove(key);
       _pendingPeripherals.remove(key);
+      if (probe) {
+        _activeProbes.remove(key);
+        // A probe that timed out (not a clean disconnect) leaves a pending
+        // connectGatt — force-release it so the GATT client slot is freed.
+        unawaited(_central.disconnect(peripheral).then((_) {}, onError: (_) {}));
+      }
     }
   }
 
