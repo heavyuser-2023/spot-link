@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import 'headless_mesh.dart';
 
@@ -77,6 +79,45 @@ class BackgroundService {
   /// Whether the UI-side mesh node is running (drives the pong above).
   static void setUiMeshActive(bool active) {
     if (_supported) _uiMeshActive = active;
+  }
+
+  // ---- UI-alive heartbeat (cross-isolate, file-based) ---------------------
+  // The 1-second ping/pong can miss (isolate port timing), letting the
+  // headless service start a SECOND mesh while the UI mesh is already
+  // running — two BLE stacks → two GATT servers → iOS connects fail. A file
+  // the UI touches every few seconds is a timing-independent truth the
+  // headless isolate can read before deciding to run.
+  static Future<File> _heartbeatFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File(p.join(dir.path, 'ui_mesh_active.hb'));
+  }
+
+  /// UI writes this periodically while its mesh runs.
+  static Future<void> markUiMeshHeartbeat() async {
+    try {
+      (await _heartbeatFile())
+          .writeAsStringSync(DateTime.now().millisecondsSinceEpoch.toString());
+    } catch (_) {}
+  }
+
+  static Future<void> clearUiMeshHeartbeat() async {
+    try {
+      final f = await _heartbeatFile();
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
+  }
+
+  /// Headless side: true if the UI mesh touched the heartbeat within [within].
+  static Future<bool> uiMeshHeartbeatFresh(
+      {Duration within = const Duration(seconds: 25)}) async {
+    try {
+      final f = await _heartbeatFile();
+      if (!f.existsSync()) return false;
+      final ts = int.tryParse(f.readAsStringSync().trim()) ?? 0;
+      return DateTime.now().millisecondsSinceEpoch - ts < within.inMilliseconds;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Called by the UI before starting its own mesh: if a headless mesh is

@@ -36,8 +36,13 @@ class _HeadlessMeshHandler extends TaskHandler {
     // and only go headless when nobody answers.
     _uiAlive = false;
     FlutterForegroundTask.sendDataToMain(BackgroundService.msgPing);
-    await Future<void>.delayed(const Duration(seconds: 1));
+    await Future<void>.delayed(const Duration(seconds: 3));
     if (_uiAlive) return;
+    // Timing-independent backstop: if the UI mesh touched its heartbeat file
+    // recently, it is alive even though the pong missed — do NOT start a
+    // second mesh (that would open a duplicate GATT server and break iOS
+    // connects). See BackgroundService.uiMeshHeartbeatFresh.
+    if (await BackgroundService.uiMeshHeartbeatFresh()) return;
     await _startMesh();
   }
 

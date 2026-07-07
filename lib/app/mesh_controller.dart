@@ -294,7 +294,10 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     _sub = node.events.listen(_onEvent);
     _rssiSub = node.rssiSamples.listen(_onRssi);
     started = await node.start();
-    if (started && !headless) BackgroundService.setUiMeshActive(true);
+    if (started && !headless) {
+      BackgroundService.setUiMeshActive(true);
+      unawaited(BackgroundService.markUiMeshHeartbeat());
+    }
     if (!started) {
       lastError = 'Bluetooth unavailable';
       // On a fresh install the first start fails because the OS permission
@@ -304,9 +307,15 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
           node.transport.availabilityChanged.listen(_onTransportAvailable);
     }
 
-    // Refresh the UI periodically so "nearby" presence ages out.
-    _presenceTimer =
-        Timer.periodic(const Duration(seconds: 10), (_) => notifyListeners());
+    // Refresh the UI periodically so "nearby" presence ages out, and (Android)
+    // keep the UI-alive heartbeat fresh so the headless service never starts a
+    // competing mesh (→ duplicate GATT servers) while we're running.
+    _presenceTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      notifyListeners();
+      if (started && !headless) {
+        unawaited(BackgroundService.markUiMeshHeartbeat());
+      }
+    });
     notifyListeners();
   }
 
@@ -954,6 +963,7 @@ class MeshController extends ChangeNotifier with WidgetsBindingObserver {
     if (!headless) {
       WidgetsBinding.instance.removeObserver(this);
       BackgroundService.setUiMeshActive(false);
+      unawaited(BackgroundService.clearUiMeshHeartbeat());
     }
     _presenceTimer?.cancel();
     _sub?.cancel();
