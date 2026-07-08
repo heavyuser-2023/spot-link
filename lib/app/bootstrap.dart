@@ -180,15 +180,32 @@ class _BootstrapState extends State<Bootstrap> {
       // BLE state restoration, and record whether the always-location grant
       // (which the iBeacon relaunch depends on) still holds. Best-effort;
       // never blocks startup.
+      final loggedWakeEvents = <String>{};
       try {
         final now = DateTime.now().toIso8601String();
         final s = await BeaconWake.status();
         sink.writeln(
             '$now wake: beacon auth=${s['auth']} monitoring=${s['monitoring']}');
         for (final e in await BeaconWake.wakeEvents()) {
+          loggedWakeEvents.add(e);
           sink.writeln('$now wake-event: $e');
         }
       } catch (_) {}
+
+      // willRestoreState fires while the CoreBluetooth managers are created,
+      // which happens during mesh start — AFTER this early drain. Without a
+      // second pass, a restoration event only surfaces on the NEXT boot's
+      // drain. Re-read once the stack is up so ble-*-restore events land in
+      // the same session's log. Best-effort; deduped against the early drain.
+      Future<void>.delayed(const Duration(seconds: 8), () async {
+        try {
+          for (final e in await BeaconWake.wakeEvents()) {
+            if (loggedWakeEvents.add(e)) {
+              bleLogSink?.call('wake-event (late): $e');
+            }
+          }
+        } catch (_) {}
+      });
 
       // Route uncaught errors into the same file: a widget build exception in
       // release mode renders as a silent blank screen, so this is the only
