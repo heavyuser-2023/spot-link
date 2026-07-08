@@ -19,12 +19,36 @@ import FlutterMacOS
 class PeripheralManagerImpl: PeripheralManagerHostApi {
     private let mApi: PeripheralManagerFlutterApi
     
-    // SpotLink fork: restoration identifier so a system-killed app is
-    // relaunched when a central interacts with our published GATT service.
+    // SpotLink fork: NO restoration identifier — deliberately.
+    //
+    // We used to pass CBPeripheralManagerOptionRestoreIdentifierKey
+    // ("spotlink.peripheral") so a system-killed app kept advertising and was
+    // relaunched when a central touched our GATT service. On iOS 27 (beta
+    // 24A5380h) that restoration record is the root cause of "ghost
+    // advertising": at app termination bluetoothd persists a poisoned
+    // snapshot — `isAdvertising: True` with EMPTY advertisingServices — and
+    // on relaunch restores it into its broadcaster state machine, which then
+    // treats every subsequent startAdvertising as a no-op:
+    //
+    //   Received 'start advertising' … with advertised UUID(s) [7370746C-…]
+    //   updateAdvertisement not doing anything dataChanged:N state:2(Advertising)
+    //   Sending "CBMsgIdAdvertisingStarted"        ← success reported, radio silent
+    //
+    // (captured via device syslog, 2026-07-09 00:21). The app then believes
+    // it is advertising while nothing is on air; two phones in this state are
+    // mutually undiscoverable until REINSTALL (which deletes the record) or a
+    // phone reboot. In-app stop→start and even full relaunches do NOT clear
+    // it, because registration re-restores the poisoned record.
+    //
+    // Dropping the identifier means no record is ever persisted → every boot
+    // programs the radio cleanly. What we lose — post-mortem OS advertising
+    // and relaunch-on-GATT-access — was precisely the broken part (the ghost
+    // advertisement was empty/invisible anyway); dead-app revival still works
+    // via the central-side restoration (pending connects) and the iBeacon
+    // wake torch.
     private lazy var mPeripheralManager = CBPeripheralManager(
         delegate: self.mPeripheralManagerDelegate,
-        queue: nil,
-        options: [CBPeripheralManagerOptionRestoreIdentifierKey: "spotlink.peripheral"])
+        queue: nil)
     private lazy var mPeripheralManagerDelegate = CBPeripheralManagerDelegateImpl(self)
     
     private var mServicesArgs: [Int: MutableGATTServiceArgs]
