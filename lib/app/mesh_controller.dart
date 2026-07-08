@@ -320,7 +320,15 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     started = await node.start();
     // iOS scan mode follows the app's foreground state (a background
     // relaunch must use the filtered scan; a normal launch the wide one).
-    node.setForeground(_foreground);
+    // A normal launch passes through `inactive` on its way to `resumed`,
+    // and that transition can complete BEFORE our lifecycle observer is
+    // registered — reading it here as "background" left the scan filtered
+    // (blind to iPhones) with nothing ever correcting it. Only an explicit
+    // background state counts as background at boot.
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    node.setForeground(lifecycle != AppLifecycleState.paused &&
+        lifecycle != AppLifecycleState.detached &&
+        lifecycle != AppLifecycleState.hidden);
     if (!started) {
       lastError = 'Bluetooth unavailable';
       // On a fresh install the first start fails because the OS permission

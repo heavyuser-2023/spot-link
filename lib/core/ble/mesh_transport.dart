@@ -858,7 +858,7 @@ class MeshTransport implements MeshTransportInterface {
       await _central.startDiscovery(
         serviceUUIDs: unfiltered ? null : [BleConstants.serviceUuid],
       );
-      _log('BLE scanning started');
+      _log('BLE scanning started (${unfiltered ? 'unfiltered' : 'filtered'})');
     } catch (e) {
       // Leave the flag down so the next attempt actually retries — a wedged
       // "true" here after a failed start (e.g. the adapter was mid-handoff
