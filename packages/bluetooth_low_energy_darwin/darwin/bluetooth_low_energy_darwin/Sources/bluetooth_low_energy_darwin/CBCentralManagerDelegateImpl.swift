@@ -38,7 +38,9 @@ class CBCentralManagerDelegateImpl: NSObject, CBCentralManagerDelegate {
     // SpotLink fork: iOS hands back the pre-kill Bluetooth state (pending
     // connects, live connections, subscriptions) when it relaunches the app.
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
-        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+        let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral]
+        SpotLinkWakeLog.record("ble-central-restore n=\(peripherals?.count ?? 0)")
+        if let peripherals = peripherals {
             self.mCentralManager.didRestoreState(peripherals: peripherals)
         }
     }

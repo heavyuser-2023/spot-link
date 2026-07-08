@@ -96,27 +96,44 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
     }
     notifyListeners();
 
+    // Bring the owning service up. NEVER fatal: if the service can't start
+    // (e.g. Android 14+ blocks the connectedDevice foreground service until
+    // Bluetooth is granted) we still enter the app in a connecting/offline
+    // state and keep retrying in the background. Bricking the splash on a
+    // service hiccup — with a 30s hard timeout — was strictly worse: the user
+    // couldn't even reach the screens that fix it. (Seen on a fresh S23:
+    // "mesh service unreachable: TimeoutException after 0:00:30".)
     try {
       await BackgroundService.start();
-      _sayHello();
-      // The service may still be booting its mesh (identity load, GATT
-      // publish); nudge it periodically until the first snapshot lands.
-      _keepalive = Timer.periodic(const Duration(seconds: 3), (_) {
-        if (!(_firstSnap?.isCompleted ?? true)) _sayHello();
-      });
-      await _firstSnap!.future.timeout(const Duration(seconds: 30));
     } catch (e) {
-      _teardownWiring();
-      throw StateError('mesh service unreachable: $e');
-    } finally {
-      _keepalive?.cancel();
-      _keepalive = null;
+      _lastError = 'mesh service start failed: $e';
+    }
+    _sayHello();
+
+    // Give the happy path a short window to deliver the first snapshot, then
+    // proceed regardless. On S21 the snapshot lands in well under a second.
+    try {
+      await _firstSnap!.future.timeout(const Duration(seconds: 12));
+    } catch (_) {
+      _lastError ??= '메시 서비스 연결 중…';
+      notifyListeners();
     }
 
-    // Steady state: lifecycle keepalive (the service treats >35s of silence
-    // as "UI is gone" and resumes notifying), plus presence aging repaint.
-    _keepalive = Timer.periodic(const Duration(seconds: 10), (_) {
-      _send({'c': 'fg', 'v': _foreground});
+    // Persistent bridge keepalive + reconnect. While no snapshot has arrived
+    // it re-attempts startService (covers a service that never came up —
+    // permission just granted, OEM kill) and nudges a running-but-still-
+    // booting service (its onReceiveData re-kicks a stalled mesh boot). Once
+    // connected it settles into the plain foreground ping the service uses as
+    // its UI-alive heartbeat (>35s silence → service resumes notifying).
+    _keepalive = Timer.periodic(const Duration(seconds: 5), (_) async {
+      if (_firstSnap?.isCompleted ?? true) {
+        _send({'c': 'fg', 'v': _foreground});
+      } else {
+        try {
+          await BackgroundService.start();
+        } catch (_) {}
+        _sayHello();
+      }
       notifyListeners();
     });
     // The wake torch (iBeacon TX) is a UI-engine plugin; light it from here.

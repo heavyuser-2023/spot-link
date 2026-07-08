@@ -50,5 +50,7 @@ class CBPeripheralManagerDelegateImpl: NSObject, CBPeripheralManagerDelegate {
     // SpotLink fork: required to opt in to peripheral-manager restoration.
     // The app republishes its service on start, so adopting the restored
     // services here is unnecessary — the callback just needs to exist.
-    func peripheralManager(_ peripheral: CBPeripheralManager, willRestoreState dict: [String : Any]) {}
+    func peripheralManager(_ peripheral: CBPeripheralManager, willRestoreState dict: [String : Any]) {
+        SpotLinkWakeLog.record("ble-peripheral-restore")
+    }
 }

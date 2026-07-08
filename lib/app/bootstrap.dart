@@ -12,6 +12,7 @@ import '../data/identity_store.dart';
 import '../features/home_screen.dart';
 import '../features/onboarding_screen.dart';
 import 'background_service.dart';
+import 'beacon_wake.dart';
 import 'mesh_controller.dart';
 import 'notification_service.dart';
 import 'permissions.dart';
@@ -174,6 +175,20 @@ class _BootstrapState extends State<Bootstrap> {
       sink.writeln('=== app start ${DateTime.now().toIso8601String()} ===');
       bleLogSink = (line) =>
           sink.writeln('${DateTime.now().toIso8601String()} $line');
+
+      // Wake-cause diagnostics: attribute this boot to the iBeacon path vs
+      // BLE state restoration, and record whether the always-location grant
+      // (which the iBeacon relaunch depends on) still holds. Best-effort;
+      // never blocks startup.
+      try {
+        final now = DateTime.now().toIso8601String();
+        final s = await BeaconWake.status();
+        sink.writeln(
+            '$now wake: beacon auth=${s['auth']} monitoring=${s['monitoring']}');
+        for (final e in await BeaconWake.wakeEvents()) {
+          sink.writeln('$now wake-event: $e');
+        }
+      } catch (_) {}
 
       // Route uncaught errors into the same file: a widget build exception in
       // release mode renders as a silent blank screen, so this is the only

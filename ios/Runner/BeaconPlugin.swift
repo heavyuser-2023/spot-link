@@ -49,6 +49,19 @@ class BeaconPlugin: NSObject {
     }
   }
 
+  /// Diagnostics: record why the app came alive so a boot can be attributed
+  /// to the iBeacon path vs BLE state-restoration. Both native modules append
+  /// to the same shared UserDefaults key; Dart drains it into ble.log at boot.
+  /// Bounded so it can never grow unbounded across relaunches.
+  static func recordWake(_ reason: String) {
+    let key = "spotlink.wake.events"
+    let defaults = UserDefaults.standard
+    var events = defaults.stringArray(forKey: key) ?? []
+    events.append("\(reason) \(ISO8601DateFormatter().string(from: Date()))")
+    if events.count > 12 { events.removeFirst(events.count - 12) }
+    defaults.set(events, forKey: key)
+  }
+
   private func makeRegion() -> CLBeaconRegion {
     let region = CLBeaconRegion(
       uuid: Self.beaconUUID, identifier: "spotlink.wake")
@@ -86,6 +99,10 @@ class BeaconPlugin: NSObject {
         "auth": auth,
         "monitoring": UserDefaults.standard.bool(forKey: Self.monitorFlagKey),
       ])
+    case "wakeEvents":
+      // Read (do not clear) the shared wake-cause log; keeping it lets a late
+      // didEnterRegion for THIS launch still show up on the next boot's drain.
+      result(UserDefaults.standard.stringArray(forKey: "spotlink.wake.events") ?? [])
     case "startTx":
       txWanted = true
       if tx == nil {
@@ -116,6 +133,7 @@ extension BeaconPlugin: CLLocationManagerDelegate {
     // If we were relaunched just for this, the Flutter engine is already
     // booting and the mesh will start on its own; this nudge is best-effort
     // diagnostics for a live app.
+    Self.recordWake("beacon-enter[\(region.identifier)]")
     channel?.invokeMethod("regionEntered", arguments: region.identifier)
   }
 }

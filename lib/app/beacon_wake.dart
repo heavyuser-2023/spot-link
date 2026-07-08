@@ -56,4 +56,16 @@ class BeaconWake {
       return const {};
     }
   }
+
+  /// Diagnostics: recent wake-cause events recorded natively (iBeacon
+  /// region entry vs BLE state restoration), each `"<reason> <ISO8601>"`.
+  /// Bounded to the last 12 on the native side. iOS-only; empty elsewhere.
+  static Future<List<String>> wakeEvents() async {
+    try {
+      final list = await _channel.invokeMethod<List<Object?>>('wakeEvents');
+      return list?.cast<String>() ?? const [];
+    } catch (_) {
+      return const [];
+    }
+  }
 }
