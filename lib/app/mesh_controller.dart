@@ -76,6 +76,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   String? _openPeer; // conversation currently on screen (suppresses unread)
 
   Timer? _presenceTimer;
+  Timer? _bootFgRecheck;
   StreamSubscription? _sub;
   StreamSubscription? _rssiSub;
   StreamSubscription? _availabilitySub;
@@ -329,6 +330,21 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     node.setForeground(lifecycle != AppLifecycleState.paused &&
         lifecycle != AppLifecycleState.detached &&
         lifecycle != AppLifecycleState.hidden);
+    // The optimistic default above misreads a BACKGROUND relaunch (beacon
+    // wake / state restoration reports a null lifecycle at init, same as a
+    // normal launch). By +3s the state has settled: a background relaunch
+    // reads `paused` — flip to the filtered scan the OS requires there. A
+    // foreground launch reads `resumed` and this is a no-op.
+    if (!headless) {
+      _bootFgRecheck = Timer(const Duration(seconds: 3), () {
+        final s = WidgetsBinding.instance.lifecycleState;
+        if (s == AppLifecycleState.paused ||
+            s == AppLifecycleState.detached ||
+            s == AppLifecycleState.hidden) {
+          node.setForeground(false);
+        }
+      });
+    }
     if (!started) {
       lastError = 'Bluetooth unavailable';
       // On a fresh install the first start fails because the OS permission
@@ -1155,6 +1171,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       WidgetsBinding.instance.removeObserver(this);
     }
     _presenceTimer?.cancel();
+    _bootFgRecheck?.cancel();
     _sub?.cancel();
     _rssiSub?.cancel();
     _availabilitySub?.cancel();

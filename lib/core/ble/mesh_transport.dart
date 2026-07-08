@@ -171,6 +171,19 @@ class MeshTransport implements MeshTransportInterface {
   static const Duration _saverScanOn = Duration(seconds: 6);
   static const Duration _saverScanOff = Duration(seconds: 20);
 
+  /// iOS foreground scan-mode alternation. The unfiltered scan is the only
+  /// mode that finds a FOREGROUND iPhone on iOS 27 (see [_startScanning]),
+  /// but it cannot see a BACKGROUND iPhone at all — overflow-area
+  /// advertisements are only delivered to a scan filtered on the service
+  /// UUID. Neither mode covers both, so alternate: wide window for
+  /// foreground peers/Androids, short filtered window for backgrounded
+  /// iPhones (whose rotated address makes any standing pending-reconnect
+  /// stale after a relaunch — a fresh discovery is the only way back in).
+  Timer? _scanModeTimer;
+  bool _overflowPhase = false;
+  static const Duration _wideScanWindow = Duration(seconds: 12);
+  static const Duration _overflowScanWindow = Duration(seconds: 6);
+
   final CentralManager _central = CentralManager();
   final PeripheralManager _peripheral = PeripheralManager();
 
@@ -373,6 +386,7 @@ class MeshTransport implements MeshTransportInterface {
       await _startAdvertising(restart: true);
     }
     await _startScanning();
+    _beginScanModeCycle();
     // iOS: also stand up pending connects to every peer we've linked before —
     // a backgrounded iPhone is invisible to the scan but reachable by a
     // connect-by-identifier, and after a state-restoration relaunch this is
@@ -429,6 +443,13 @@ class MeshTransport implements MeshTransportInterface {
             unawaited(_central.disconnect(p).then((_) {}, onError: (_) {}));
           }
         }
+        // Re-arm from the persisted list once the cancels settle. Cancelling
+        // alone left the node with NO standing connects at all — if the peer
+        // came back on its old identifier (backgrounded, same session) there
+        // was nothing waiting for it anymore.
+        Timer(const Duration(seconds: 3), () {
+          if (_started && Platform.isIOS) unawaited(_reconnectKnownPeers());
+        });
       }
       if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
         if (_servicePublished && !deep) {
@@ -474,6 +495,7 @@ class MeshTransport implements MeshTransportInterface {
       }
     }
     if (_powerMode == PowerMode.active) {
+      _beginScanModeCycle(); // reset to the wide phase before (re)scanning
       unawaited(_startScanning());
     } else {
       _beginDutyCycle();
@@ -523,6 +545,7 @@ class MeshTransport implements MeshTransportInterface {
       if (!_started) return;
       if (e.state == BluetoothLowEnergyState.poweredOn) {
         if (_powerMode == PowerMode.active) {
+          _beginScanModeCycle();
           await _startScanning();
         } else {
           _beginDutyCycle();
@@ -532,6 +555,8 @@ class MeshTransport implements MeshTransportInterface {
         // _scanning and issuing doomed startDiscovery calls on a dead adapter.
         _dutyTimer?.cancel();
         _dutyTimer = null;
+        _scanModeTimer?.cancel();
+        _scanModeTimer = null;
         _scanning = false;
         for (final id in _links.keys.toList()) {
           _tearDown(id);
@@ -566,6 +591,9 @@ class MeshTransport implements MeshTransportInterface {
     _selfHealTimer = null;
     _dutyTimer?.cancel();
     _dutyTimer = null;
+    _scanModeTimer?.cancel();
+    _scanModeTimer = null;
+    _overflowPhase = false;
     _scanning = false;
     for (final s in _subs) {
       await s.cancel();
@@ -854,7 +882,7 @@ class MeshTransport implements MeshTransportInterface {
       //   the UUID filter is required — [setForeground] swaps modes.
       final unfiltered = Platform.isAndroid ||
           _diagUnfilteredScan ||
-          (Platform.isIOS && _foregroundScan);
+          (Platform.isIOS && _foregroundScan && !_overflowPhase);
       await _central.startDiscovery(
         serviceUUIDs: unfiltered ? null : [BleConstants.serviceUuid],
       );
@@ -889,8 +917,12 @@ class MeshTransport implements MeshTransportInterface {
     if (_foregroundScan == foreground) return;
     _foregroundScan = foreground;
     if (!_started || !Platform.isIOS) return;
+    _scanModeTimer?.cancel();
+    _scanModeTimer = null;
+    _overflowPhase = false;
     if (_powerMode == PowerMode.active) {
       unawaited(_stopScanning().then((_) => _startScanning()));
+      if (foreground) _beginScanModeCycle();
     }
   }
 
@@ -900,8 +932,12 @@ class MeshTransport implements MeshTransportInterface {
     _powerMode = mode;
     _dutyTimer?.cancel();
     _dutyTimer = null;
+    _scanModeTimer?.cancel();
+    _scanModeTimer = null;
+    _overflowPhase = false;
     if (!_started) return;
     if (mode == PowerMode.active) {
+      _beginScanModeCycle();
       _startScanning();
     } else {
       _beginDutyCycle();
@@ -922,6 +958,32 @@ class MeshTransport implements MeshTransportInterface {
     }
 
     onTick();
+  }
+
+  /// (Re)start the iOS foreground scan-mode alternation, beginning with the
+  /// wide window. See [_scanModeTimer]. No-op outside iOS/foreground/active
+  /// (the saver duty cycle and the background filtered scan cover the rest).
+  void _beginScanModeCycle() {
+    _scanModeTimer?.cancel();
+    _scanModeTimer = null;
+    _overflowPhase = false;
+    if (!Platform.isIOS || _diagUnfilteredScan) return;
+    if (!_started || !_foregroundScan || _powerMode != PowerMode.active) {
+      return;
+    }
+    void schedule() {
+      _scanModeTimer =
+          Timer(_overflowPhase ? _overflowScanWindow : _wideScanWindow, () {
+        if (!_started || !_foregroundScan || _powerMode != PowerMode.active) {
+          return;
+        }
+        _overflowPhase = !_overflowPhase;
+        unawaited(_stopScanning().then((_) => _startScanning()));
+        schedule();
+      });
+    }
+
+    schedule();
   }
 
   void _wireCentral() {
