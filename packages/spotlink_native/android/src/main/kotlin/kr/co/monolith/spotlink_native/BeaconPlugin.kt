@@ -6,6 +6,8 @@ import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -25,9 +27,17 @@ import java.util.UUID
 class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     companion object {
-        // Must match BeaconPlugin.swift's beaconUUID.
-        val BEACON_UUID: UUID = UUID.fromString("7A3B5C4D-1E2F-4A5B-8C9D-0E1F2A3B4C5D")
+        // Must match BeaconPlugin.swift's beaconUUIDs (index 0 = original).
+        // We rotate the transmitted UUID so an iPhone stuck "inside" one
+        // region still gets a fresh ENTER when we light a different one — see
+        // the long comment in BeaconPlugin.swift.
+        val BEACON_UUIDS: List<UUID> = listOf(
+            UUID.fromString("7A3B5C4D-1E2F-4A5B-8C9D-0E1F2A3B4C5D"),
+            UUID.fromString("7A3B5C4D-1E2F-4A5B-8C9D-0E1F2A3B4C5E"),
+            UUID.fromString("7A3B5C4D-1E2F-4A5B-8C9D-0E1F2A3B4C5F"),
+        )
         private const val APPLE_MANUFACTURER_ID = 0x004C
+        private const val ROTATE_MS = 18_000L
 
         // Process-wide advertiser state (deliberately NOT per-engine): the
         // torch must keep burning after the UI engine dies (swipe-kill) —
@@ -37,6 +47,9 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         // advertise sets).
         private var advertiser: BluetoothLeAdvertiser? = null
         private var callback: AdvertiseCallback? = null
+        private var txIndex = 0
+        private var rotateHandler: Handler? = null
+        private var rotateRunnable: Runnable? = null
     }
 
     private lateinit var context: Context
@@ -68,11 +81,11 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     /** iBeacon layout inside Apple's manufacturer data:
      *  type(0x02) len(0x15) uuid(16B) major(2B) minor(2B) txPower(1B). */
-    private fun beaconPayload(): ByteArray {
+    private fun beaconPayload(uuid: UUID): ByteArray {
         val buf = ByteBuffer.allocate(23)
         buf.put(0x02).put(0x15)
-        buf.putLong(BEACON_UUID.mostSignificantBits)
-        buf.putLong(BEACON_UUID.leastSignificantBits)
+        buf.putLong(uuid.mostSignificantBits)
+        buf.putLong(uuid.leastSignificantBits)
         buf.putShort(0) // major
         buf.putShort(0) // minor
         buf.put(0xC5.toByte()) // measured power at 1m (typical)
@@ -81,6 +94,26 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     @Suppress("MissingPermission")
     private fun startTx() {
+        startAdvertisingCurrent()
+        if (callback == null) return // start failed — don't arm rotation
+        // Rotate the transmitted region so a stuck iPhone gets fresh ENTERs.
+        if (BEACON_UUIDS.size > 1 && rotateRunnable == null) {
+            val h = Handler(Looper.getMainLooper())
+            rotateHandler = h
+            val r = object : Runnable {
+                override fun run() {
+                    txIndex = (txIndex + 1) % BEACON_UUIDS.size
+                    restartAdvertising()
+                    h.postDelayed(this, ROTATE_MS)
+                }
+            }
+            rotateRunnable = r
+            h.postDelayed(r, ROTATE_MS)
+        }
+    }
+
+    @Suppress("MissingPermission")
+    private fun startAdvertisingCurrent() {
         if (callback != null) return // already advertising
         val adapter =
             (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
@@ -93,7 +126,7 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             .setConnectable(false)
             .build()
         val data = AdvertiseData.Builder()
-            .addManufacturerData(APPLE_MANUFACTURER_ID, beaconPayload())
+            .addManufacturerData(APPLE_MANUFACTURER_ID, beaconPayload(BEACON_UUIDS[txIndex]))
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
             .build()
@@ -106,8 +139,22 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         }
     }
 
+    /** Swap the advertised region to BEACON_UUIDS[txIndex]. */
+    @Suppress("MissingPermission")
+    private fun restartAdvertising() {
+        val cb = callback
+        if (cb != null) {
+            callback = null
+            try { advertiser?.stopAdvertising(cb) } catch (_: Exception) {}
+        }
+        startAdvertisingCurrent()
+    }
+
     @Suppress("MissingPermission")
     private fun stopTx() {
+        rotateRunnable?.let { rotateHandler?.removeCallbacks(it) }
+        rotateRunnable = null
+        rotateHandler = null
         val cb = callback ?: return
         callback = null
         try { advertiser?.stopAdvertising(cb) } catch (_: Exception) {}

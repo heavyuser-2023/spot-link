@@ -77,6 +77,19 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
 
   Timer? _presenceTimer;
   Timer? _bootFgRecheck;
+
+  /// Linkless-watchdog beacon pulse (iOS foreground torch). When we hold NO
+  /// links for [_linklessPulseAfter], the wake torch may be stuck: a peer that
+  /// was swipe-killed while "inside" our beacon region never re-enters while
+  /// we keep transmitting, and the region rotation could be wedged. Since we
+  /// have no links, briefly dropping TX costs nothing — do it to force a
+  /// region EXIT+ENTER and re-light a possibly-stalled advertiser.
+  DateTime? _linklessSince;
+  bool _beaconPulsing = false;
+  Timer? _beaconPulseTimer;
+  static const Duration _linklessPulseAfter = Duration(minutes: 3);
+  // > iOS's ~30s region-exit debounce so a stuck peer actually EXITs.
+  static const Duration _beaconPulseGap = Duration(seconds: 40);
   StreamSubscription? _sub;
   StreamSubscription? _rssiSub;
   StreamSubscription? _availabilitySub;
@@ -356,9 +369,33 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
 
     // Refresh listeners periodically so "nearby" presence ages out.
     _presenceTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      _maybeBeaconPulse();
       notifyListeners();
     });
     notifyListeners();
+  }
+
+  /// See [_linklessSince]. iOS foreground only: pulse the wake torch when we
+  /// have held no links for [_linklessPulseAfter], to rescue a peer stuck
+  /// inside our beacon region and unwedge a stalled advertiser. Free of
+  /// downside precisely because we have no links to disrupt.
+  void _maybeBeaconPulse() {
+    if (!Platform.isIOS || headless || !_foreground || _beaconPulsing) return;
+    final since = _linklessSince;
+    if (since == null || linkCount > 0) return;
+    if (DateTime.now().difference(since) < _linklessPulseAfter) return;
+    _beaconPulsing = true;
+    bleLogSink?.call('${DateTime.now().toIso8601String()} '
+        'beacon wake pulse (linkless ${_linklessPulseAfter.inMinutes}m)');
+    unawaited(BeaconWake.stopTx().then((_) {
+      _beaconPulseTimer?.cancel();
+      _beaconPulseTimer = Timer(_beaconPulseGap, () {
+        unawaited(BeaconWake.startTx());
+        // Restart the linkless clock so we don't machine-gun pulses.
+        _linklessSince = linkCount == 0 ? DateTime.now() : null;
+        _beaconPulsing = false;
+      });
+    }));
   }
 
   /// Late start: the initial [MeshNode.start] failed and the adapter just
@@ -517,6 +554,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     switch (e) {
       case LinksChanged(:final count):
         linkCount = count;
+        _linklessSince = count == 0 ? (_linklessSince ?? DateTime.now()) : null;
         BackgroundService.updateStatus(count);
         notifyListeners();
       case PeerAnnounced(:final contact, :final hops):
@@ -1172,6 +1210,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     }
     _presenceTimer?.cancel();
     _bootFgRecheck?.cancel();
+    _beaconPulseTimer?.cancel();
     _sub?.cancel();
     _rssiSub?.cancel();
     _availabilitySub?.cancel();

@@ -19,13 +19,34 @@ import Foundation
 /// Channel `spotlink/beacon`: requestAlways / enableMonitoring /
 /// disableMonitoring / status / startTx / stopTx.
 class BeaconPlugin: NSObject {
-  /// Fixed SpotLink wake-beacon identity (major/minor unused).
-  static let beaconUUID = UUID(uuidString: "7A3B5C4D-1E2F-4A5B-8C9D-0E1F2A3B4C5D")!
+  /// Fixed SpotLink wake-beacon identities. Index 0 is the ORIGINAL region —
+  /// keep it first so a peer on an older build (which monitors only that one)
+  /// is still woken whenever the TX rotation lands back on it.
+  ///
+  /// Why a set instead of one region: CoreLocation only re-fires didEnterRegion
+  /// after a real EXIT (the beacon absent ~30s). If a peer was killed while
+  /// "inside" our single region, it never re-enters as long as we keep
+  /// transmitting the same UUID → it stays asleep. Rotating the transmitted
+  /// region across a set every [txRotateInterval] guarantees a region the peer
+  /// is currently OUTSIDE lights up soon, firing a fresh ENTER without waiting
+  /// on any exit. Each region also stays silent long enough between turns
+  /// (rotateInterval × (count-1) ≈ 36s > the ~30s exit debounce) that the
+  /// cycle keeps re-entering even a peer stuck inside one of them.
+  static let beaconUUIDs: [UUID] = [
+    UUID(uuidString: "7A3B5C4D-1E2F-4A5B-8C9D-0E1F2A3B4C5D")!,
+    UUID(uuidString: "7A3B5C4D-1E2F-4A5B-8C9D-0E1F2A3B4C5E")!,
+    UUID(uuidString: "7A3B5C4D-1E2F-4A5B-8C9D-0E1F2A3B4C5F")!,
+  ]
+  /// Legacy single-UUID accessor (index 0).
+  static var beaconUUID: UUID { beaconUUIDs[0] }
   private static let monitorFlagKey = "spotlink.beacon.monitor"
+  private static let txRotateInterval: TimeInterval = 18
 
   private let location = CLLocationManager()
   private var tx: CBPeripheralManager?
   private var txWanted = false
+  private var txIndex = 0
+  private var txTimer: Timer?
   private var channel: FlutterMethodChannel?
 
   static func register(with registrar: FlutterPluginRegistrar) {
@@ -62,16 +83,25 @@ class BeaconPlugin: NSObject {
     defaults.set(events, forKey: key)
   }
 
-  private func makeRegion() -> CLBeaconRegion {
+  private func makeRegion(_ index: Int) -> CLBeaconRegion {
     let region = CLBeaconRegion(
-      uuid: Self.beaconUUID, identifier: "spotlink.wake")
+      uuid: Self.beaconUUIDs[index], identifier: "spotlink.wake.\(index)")
     region.notifyOnEntry = true
     region.notifyOnExit = false
     return region
   }
 
   private func startMonitoring() {
-    location.startMonitoring(for: makeRegion())
+    // Monitor every rotation region (well under iOS's 20-region cap).
+    for i in Self.beaconUUIDs.indices {
+      location.startMonitoring(for: makeRegion(i))
+    }
+  }
+
+  private func stopMonitoring() {
+    for i in Self.beaconUUIDs.indices {
+      location.stopMonitoring(for: makeRegion(i))
+    }
   }
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -85,7 +115,7 @@ class BeaconPlugin: NSObject {
       result(true)
     case "disableMonitoring":
       UserDefaults.standard.set(false, forKey: Self.monitorFlagKey)
-      location.stopMonitoring(for: makeRegion())
+      stopMonitoring()
       result(nil)
     case "status":
       let auth: String
@@ -105,14 +135,18 @@ class BeaconPlugin: NSObject {
       result(UserDefaults.standard.stringArray(forKey: "spotlink.wake.events") ?? [])
     case "startTx":
       txWanted = true
+      txIndex = 0
       if tx == nil {
         tx = CBPeripheralManager(delegate: self, queue: nil)
       } else {
         startTxIfReady()
       }
+      startRotation()
       result(nil)
     case "stopTx":
       txWanted = false
+      txTimer?.invalidate()
+      txTimer = nil
       tx?.stopAdvertising()
       result(nil)
     default:
@@ -120,10 +154,24 @@ class BeaconPlugin: NSObject {
     }
   }
 
+  private func startRotation() {
+    txTimer?.invalidate()
+    guard Self.beaconUUIDs.count > 1 else { return }
+    txTimer = Timer.scheduledTimer(
+      withTimeInterval: Self.txRotateInterval, repeats: true
+    ) { [weak self] _ in
+      guard let self = self, self.txWanted else { return }
+      self.txIndex = (self.txIndex + 1) % Self.beaconUUIDs.count
+      // Re-advertise the next region: stop, then start on the new UUID.
+      self.tx?.stopAdvertising()
+      self.startTxIfReady()
+    }
+  }
+
   private func startTxIfReady() {
     guard txWanted, let tx = tx, tx.state == .poweredOn else { return }
     guard !tx.isAdvertising else { return }
-    let data = makeRegion().peripheralData(withMeasuredPower: nil)
+    let data = makeRegion(txIndex).peripheralData(withMeasuredPower: nil)
     tx.startAdvertising(((data as NSDictionary) as! [String: Any]))
   }
 }
