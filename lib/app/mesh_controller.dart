@@ -235,7 +235,20 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     try {
       final docs = await getApplicationDocumentsDirectory();
       final incoming = Directory(p.join(docs.path, 'incoming'));
-      if (!await incoming.exists()) await incoming.create(recursive: true);
+      if (!await incoming.exists()) {
+        await incoming.create(recursive: true);
+      } else {
+        // Sweep .part files left by transfers that were interrupted by a
+        // previous kill — no transfer is in flight yet at init, so any
+        // leftover is dead. (Disk hygiene; these never leaked memory.)
+        for (final f in incoming.listSync()) {
+          if (f is File && f.path.endsWith('.part')) {
+            try {
+              f.deleteSync();
+            } catch (_) {}
+          }
+        }
+      }
       node.incomingPartPath = (tid) => p.join(incoming.path, '$tid.part');
     } catch (_) {} // node falls back to systemTemp
     // Wake-beacon TX: Android transmits always (background OK); iOS only

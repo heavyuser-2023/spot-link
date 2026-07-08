@@ -145,6 +145,14 @@ class MeshNode {
   /// would otherwise strand the sender) is re-sent when a duplicate chunk lands.
   final Set<String> _completedTransfers = {};
 
+  /// Transfers whose completion (streaming hash verify + finalize) is in
+  /// flight. finalize() awaits disk I/O of up to [maxFileBytes], during which
+  /// the receiver is still in [_receivers]; a stray/duplicate chunk (BLE) or
+  /// the other path (fast lane) arriving in that window would otherwise
+  /// re-enter finalize and double-emit FileReceived / spuriously report an
+  /// integrity failure. Both completion sites gate on this.
+  final Set<String> _finalizing = {};
+
   /// Reasonable ceiling for a single file over BLE (see docs §8).
   static const int maxFileBytes = 100 * 1024 * 1024;
   static const Duration _fileAckInterval = Duration(milliseconds: 700);
@@ -934,6 +942,13 @@ class MeshNode {
             _completedTransfers.contains(meta.transferIdHex)) {
           break;
         }
+        // Trust nothing in a peer-supplied manifest: the sender caps at
+        // [maxFileBytes], so a larger fileSize is malformed/hostile. Reject
+        // before FileReceiver preallocates the part file to that size.
+        if (meta.fileSize < 0 || meta.fileSize > maxFileBytes) {
+          bleLogSink?.call('FT recv rejected oversize meta: ${meta.fileSize}');
+          break;
+        }
         bleLogSink?.call(
           'FT recv meta: ${meta.name} chunks=${meta.totalChunks}',
         );
@@ -1226,20 +1241,26 @@ class MeshNode {
           final all = buf.takeBytes();
           final cipher = Uint8List.sublistView(all, 4, total);
           final receiver = _receivers[tid];
-          if (receiver == null) return;
-          final bytes = await crypto.decrypt(cipher, kex);
-          // Write the plaintext to the part file and verify the manifest
-          // hash (finalize) so the ACK below is a genuine complete.
-          receiver.seedAssembled(bytes);
-          final path = await receiver.finalize();
-          bleLogSink?.call('FT fast recv complete: ${receiver.meta.name}');
-          _events.add(FileProgress(tid, 1.0, false));
-          _events.add(FileReceived(from, receiver.meta, path));
-          _completeReceiver(tid);
-          _rememberCompleted(tid);
-          // Reuse the exact BLE completion path: a signed "complete" ACK
-          // stops the sender and flips its bubble to delivered.
-          await _sendFileAck(from, receiver.buildAck());
+          // Skip if a BLE chunk already drove this transfer into finalize
+          // (shared guard with [_handleFileChunk]); avoids double-finalize.
+          if (receiver == null || !_finalizing.add(tid)) return;
+          try {
+            final bytes = await crypto.decrypt(cipher, kex);
+            // Write the plaintext to the part file and verify the manifest
+            // hash (finalize) so the ACK below is a genuine complete.
+            receiver.seedAssembled(bytes);
+            final path = await receiver.finalize();
+            bleLogSink?.call('FT fast recv complete: ${receiver.meta.name}');
+            _events.add(FileProgress(tid, 1.0, false));
+            _events.add(FileReceived(from, receiver.meta, path));
+            _completeReceiver(tid);
+            _rememberCompleted(tid);
+            // Reuse the exact BLE completion path: a signed "complete" ACK
+            // stops the sender and flips its bubble to delivered.
+            await _sendFileAck(from, receiver.buildAck());
+          } finally {
+            _finalizing.remove(tid);
+          }
           return;
         }
       }
@@ -1297,7 +1318,10 @@ class MeshNode {
       _events.add(FileProgress(tidHex, receiver.progress, false));
     }
 
-    if (receiver.isComplete) {
+    // `_finalizing.add` returns false if a finalize is already running for this
+    // transfer (a duplicate chunk raced into the finalize await window, or the
+    // fast lane is finishing it) — skip so we don't double-finalize.
+    if (receiver.isComplete && _finalizing.add(tidHex)) {
       try {
         final path = await receiver.finalize();
         bleLogSink?.call('FT recv complete: ${receiver.meta.name}');
@@ -1312,6 +1336,8 @@ class MeshNode {
         receiver.discard();
         _completeReceiver(tidHex);
         _events.add(NodeError('File integrity check failed; discarded'));
+      } finally {
+        _finalizing.remove(tidHex);
       }
     }
     // No in-band partial ACKs here: with a large file, ACKing every N chunks

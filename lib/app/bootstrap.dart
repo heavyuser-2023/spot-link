@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -37,6 +38,10 @@ class _BootstrapState extends State<Bootstrap> {
   /// Last boot failure, rendered on the splash — turns an opaque endless
   /// spinner into a readable diagnosis on any phone.
   String? _bootError;
+
+  /// Second wake-event drain, fired after the BLE stack is up (see
+  /// [_wireBleFileLog]). Held so it's cancelled if we dispose first.
+  Timer? _lateWakeDrain;
 
   @override
   void initState() {
@@ -197,7 +202,7 @@ class _BootstrapState extends State<Bootstrap> {
       // second pass, a restoration event only surfaces on the NEXT boot's
       // drain. Re-read once the stack is up so ble-*-restore events land in
       // the same session's log. Best-effort; deduped against the early drain.
-      Future<void>.delayed(const Duration(seconds: 8), () async {
+      _lateWakeDrain = Timer(const Duration(seconds: 8), () async {
         try {
           for (final e in await BeaconWake.wakeEvents()) {
             if (loggedWakeEvents.add(e)) {
@@ -225,6 +230,7 @@ class _BootstrapState extends State<Bootstrap> {
 
   @override
   void dispose() {
+    _lateWakeDrain?.cancel();
     _controller?.dispose();
     super.dispose();
   }
