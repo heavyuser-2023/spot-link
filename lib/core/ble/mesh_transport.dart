@@ -840,16 +840,23 @@ class MeshTransport implements MeshTransportInterface {
     if (_scanning) return;
     _scanning = true;
     try {
-      // iOS peripherals advertise their 128-bit service UUID in the BLE
-      // "overflow" area, which Android's hardware service-UUID scan filter
-      // usually can't match — so a filtered Android scan never sees an iPhone
-      // (Results=0). Scan UNFILTERED on Android and match SpotLink in software
-      // (see [_isSpotLink]); keep the filter on iOS, where it works and is
-      // required for background scanning.
+      // Scan UNFILTERED whenever the OS allows it, and match SpotLink in
+      // software (see [_isSpotLink]):
+      // - Android: its hardware service-UUID filter can't match an iPhone's
+      //   overflow-area advertisement at all (Results=0).
+      // - iOS FOREGROUND: on iOS 27 (beta 24A5380h) another iPhone's 128-bit
+      //   service UUID is neither matched by the filter nor surfaced in the
+      //   parsed advertisement (observed: unfiltered scan sees the peer as a
+      //   name-'SL'-only packet while the filtered scan logs "0
+      //   advertisements delivered" in bluetoothd). Name matching is what
+      //   actually finds iPhone peers there.
+      // - iOS BACKGROUND: an unfiltered scan delivers nothing (OS rule), so
+      //   the UUID filter is required — [setForeground] swaps modes.
+      final unfiltered = Platform.isAndroid ||
+          _diagUnfilteredScan ||
+          (Platform.isIOS && _foregroundScan);
       await _central.startDiscovery(
-        serviceUUIDs: Platform.isAndroid || _diagUnfilteredScan
-            ? null
-            : [BleConstants.serviceUuid],
+        serviceUUIDs: unfiltered ? null : [BleConstants.serviceUuid],
       );
       _log('BLE scanning started');
     } catch (e) {
@@ -867,6 +874,24 @@ class MeshTransport implements MeshTransportInterface {
     try {
       await _central.stopDiscovery();
     } catch (_) {}
+  }
+
+  /// Whether the app is foregrounded — gates the iOS unfiltered scan mode.
+  /// Defaults true (normal launches are foreground); a background relaunch
+  /// sets it false via [setForeground] right after start.
+  bool _foregroundScan = true;
+
+  /// iOS: swap between the wide foreground scan (unfiltered + software
+  /// match — the only mode that reliably finds another iPhone on iOS 27)
+  /// and the filtered background scan (required by the OS). No-op on
+  /// Android, which always scans unfiltered.
+  void setForeground(bool foreground) {
+    if (_foregroundScan == foreground) return;
+    _foregroundScan = foreground;
+    if (!_started || !Platform.isIOS) return;
+    if (_powerMode == PowerMode.active) {
+      unawaited(_stopScanning().then((_) => _startScanning()));
+    }
   }
 
   /// Switch power profile at runtime (e.g. user toggles "battery saver").

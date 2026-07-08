@@ -391,6 +391,14 @@ class MeshNode {
     }
   }
 
+  /// iOS: swaps the scan between the wide foreground mode (the only mode
+  /// that reliably finds another iPhone on iOS 27) and the filtered
+  /// background mode. No-op elsewhere.
+  void setForeground(bool foreground) {
+    final t = transport;
+    if (t is MeshTransport) t.setForeground(foreground);
+  }
+
   /// Rename this node and re-announce to current neighbours so their contact
   /// list updates without waiting for a reconnect.
   Future<void> updateDisplayName(String name) async {

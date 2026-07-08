@@ -318,6 +318,9 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     _sub = node.events.listen(_onEvent);
     _rssiSub = node.rssiSamples.listen(_onRssi);
     started = await node.start();
+    // iOS scan mode follows the app's foreground state (a background
+    // relaunch must use the filtered scan; a normal launch the wide one).
+    node.setForeground(_foreground);
     if (!started) {
       lastError = 'Bluetooth unavailable';
       // On a fresh install the first start fails because the OS permission
@@ -366,11 +369,13 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       // Returning to the foreground after iOS suspended us: immediately
       // re-announce presence and re-kick discovery so we (and peers) recover
       // online-status without waiting for the next 15s cycle.
+      node.setForeground(true); // wide scan first, then the wake re-kick
       if (started) unawaited(node.wakeUp());
       // iOS kills beacon TX in the background — re-light the torch.
       unawaited(BeaconWake.startTx());
       if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
     } else if (state == AppLifecycleState.paused) {
+      node.setForeground(false); // back to the OS-required filtered scan
       // Heading to the background = jetsam candidacy. Shed everything
       // rebuildable NOW so our suspended footprint is as small as possible.
       _trimMemory();
