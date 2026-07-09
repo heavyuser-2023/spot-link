@@ -563,7 +563,15 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       // Same re-kick a local controller does on resume: re-assert
       // advertising and restart discovery so presence recovers immediately
       // instead of waiting for the next self-heal/duty cycle.
-      if (started) unawaited(node.wakeUp());
+      if (started) {
+        unawaited(node.wakeUp());
+      } else {
+        // Mesh never came up (e.g. BLE permission was missing at boot, so
+        // ensureReady failed). The UI just came to the foreground and may
+        // have granted it — re-attempt now instead of waiting on an adapter
+        // event that a permission grant doesn't always emit.
+        unawaited(_onTransportAvailable(true));
+      }
       if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
     }
   }

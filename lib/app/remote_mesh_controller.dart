@@ -22,6 +22,7 @@ import 'background_service.dart';
 import 'beacon_wake.dart';
 import 'mesh_frontend.dart';
 import 'notification_service.dart';
+import 'permissions.dart';
 
 /// Android UI-side [MeshFrontend]: a thin client of the mesh that the
 /// foreground service owns (see headless_mesh.dart). Holds NO BLE stack —
@@ -46,6 +47,14 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
   int _linkCount = 0;
   String? _lastError;
   RadioStatus _radio = RadioStatus.unknown;
+  // Android runtime BLE permission missing (checked in the UI isolate, which
+  // — unlike the service — has an Activity to prompt from). When true and the
+  // mesh isn't up, we surface the actionable "권한 없음" banner instead of the
+  // vague `unknown` default: without the permission, Android blocks the
+  // connectedDevice foreground service, so the service never boots and never
+  // sends a real radio status — the UI would otherwise sit on the ambiguous
+  // fallback with no hint that permission is the fix.
+  bool _blePermMissing = false;
   bool _powerSaver = false;
   int _relayCount = 0;
   int _relayBytes = 0;
@@ -138,11 +147,36 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
     });
     // The wake torch (iBeacon TX) is a UI-engine plugin; light it from here.
     unawaited(BeaconWake.startTx());
+    // Verify the BLE permission the service needs (it can't prompt itself).
+    unawaited(_ensureBlePermission());
   }
 
   void _sayHello() {
     _send({'c': 'hello'});
     _send({'c': 'fg', 'v': _foreground});
+  }
+
+  /// Re-check the runtime BLE permission and, if missing, re-request it (the
+  /// UI isolate has an Activity, so the OS prompt can appear — unlike the
+  /// headless service). Runs at init and whenever the app returns to the
+  /// foreground, so a permission that was denied or auto-revoked (Samsung
+  /// "unused-app" cleanup) can recover the moment the user reopens the app.
+  /// The `unauthorized` banner + its "설정 열기" button covers the
+  /// permanently-denied case where no prompt shows.
+  Future<void> _ensureBlePermission() async {
+    if (!Platform.isAndroid) return;
+    var granted = await Permissions.hasBleGranted();
+    if (!granted) {
+      granted = await Permissions.request();
+    }
+    final missing = !granted;
+    if (missing != _blePermMissing) {
+      _blePermMissing = missing;
+      notifyListeners();
+    }
+    // Newly granted: poke the service so it (re)starts now instead of waiting
+    // for the keepalive tick — the 'fg' command retries a down mesh.
+    if (granted) _send({'c': 'fg', 'v': _foreground});
   }
 
   void _send(Map<String, Object?> m) =>
@@ -270,7 +304,8 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
   @override
   String? get lastError => _lastError;
   @override
-  RadioStatus get radioStatus => _radio;
+  RadioStatus get radioStatus =>
+      (_blePermMissing && !_started) ? RadioStatus.unauthorized : _radio;
   @override
   bool get powerSaver => _powerSaver;
 
@@ -564,6 +599,10 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
     _send({'c': 'fg', 'v': _foreground});
     if (_foreground) {
       unawaited(BeaconWake.startTx());
+      // Re-verify the BLE permission on every return: it may have been granted
+      // in Settings (recovering a service Android blocked for missing it) or
+      // auto-revoked while away.
+      unawaited(_ensureBlePermission());
       if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
     } else if (state == AppLifecycleState.paused) {
       // Backgrounded = jetsam candidacy: shed rebuildable state now.
