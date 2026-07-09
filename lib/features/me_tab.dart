@@ -116,8 +116,10 @@ class MeTab extends StatelessWidget {
         Card(
           child: SwitchListTile(
             secondary: const Icon(Icons.battery_saver),
-            title: const Text('배터리 절약'),
-            subtitle: const Text('스캔 주기를 늘려 배터리를 아낍니다 (검색이 느려짐).'),
+            title: const Text('배터리 절약 (항상)'),
+            subtitle: const Text(
+                '평소엔 충전·배터리·연결 상태에 맞춰 자동 조절됩니다. '
+                '켜면 항상 최대 절전으로 고정합니다 (검색이 느려짐).'),
             value: c.powerSaver,
             onChanged: (v) => context.read<MeshFrontend>().setPowerSaver(v),
           ),

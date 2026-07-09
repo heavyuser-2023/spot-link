@@ -15,10 +15,25 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.ActivityOptionsCompat
 import androidx.core.content.ContextCompat
 import io.flutter.plugin.common.BinaryMessenger
+import io.flutter.plugin.common.MethodChannel
 
 class CentralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) : BluetoothLowEnergyManagerImpl(context),
     CentralManagerHostApi {
     private val mApi: CentralManagerFlutterApi
+    private val mScanPowerChannel: MethodChannel
+
+    companion object {
+        // SpotLink fork: runtime-selectable scan mode so the mesh can trade
+        // discovery latency for battery. LOW_LATENCY when actively hunting,
+        // BALANCED once the link set is stable. Volatile: set from the
+        // `spotlink/scan_power` channel (any isolate), read on the next
+        // startScan. Changing it takes effect when the transport restarts the
+        // scan (it always stop→starts on a power change), so no live re-scan
+        // is forced here.
+        @Volatile
+        @JvmStatic
+        var scanMode: Int = ScanSettings.SCAN_MODE_LOW_LATENCY
+    }
 
     private val mScanCallback: ScanCallback by lazy { ScanCallbackImpl(this) }
     private val mBluetoothGattCallback: BluetoothGattCallback by lazy { BluetoothGattCallbackImpl(this, executor) }
@@ -44,6 +59,22 @@ class CentralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) : B
 
     init {
         mApi = CentralManagerFlutterApi(binaryMessenger)
+        // SpotLink fork: accept a desired scan mode from Dart (0=LOW_POWER,
+        // 1=BALANCED, 2=LOW_LATENCY, matching ScanSettings constants).
+        mScanPowerChannel = MethodChannel(binaryMessenger, "spotlink/scan_power")
+        mScanPowerChannel.setMethodCallHandler { call, result ->
+            if (call.method == "setScanMode") {
+                val mode = (call.arguments as? Int) ?: ScanSettings.SCAN_MODE_LOW_LATENCY
+                scanMode = when (mode) {
+                    0 -> ScanSettings.SCAN_MODE_LOW_POWER
+                    1 -> ScanSettings.SCAN_MODE_BALANCED
+                    else -> ScanSettings.SCAN_MODE_LOW_LATENCY
+                }
+                result.success(null)
+            } else {
+                result.notImplemented()
+            }
+        }
 
         mDiscovering = false
 
@@ -154,7 +185,7 @@ class CentralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) : B
                 val filter = ScanFilter.Builder().setServiceUuid(serviceUUID).build()
                 filters.add(filter)
             }
-            val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+            val settings = ScanSettings.Builder().setScanMode(scanMode).build()
             // SpotLink fork: an EMPTY (non-null) filter list is not the same as
             // no filter — on many stacks (Samsung) it yields zero results. Pass
             // null for a true unfiltered scan so iOS peers, whose 128-bit

@@ -391,6 +391,18 @@ class MeshNode {
     }
   }
 
+  bool get powerSaver {
+    final t = transport;
+    return t is MeshTransport && t.powerMode == PowerMode.saver;
+  }
+
+  /// Android BLE scan mode (0=low-power, 1=balanced, 2=low-latency). No-op
+  /// elsewhere. See [MeshTransport.setScanMode].
+  Future<void> setScanMode(int code) async {
+    final t = transport;
+    if (t is MeshTransport) await t.setScanMode(code);
+  }
+
   /// iOS: swaps the scan between the wide foreground mode (the only mode
   /// that reliably finds another iPhone on iOS 27) and the filtered
   /// background mode. No-op elsewhere.

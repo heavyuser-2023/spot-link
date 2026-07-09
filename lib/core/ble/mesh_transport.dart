@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
 import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+import 'package:flutter/services.dart' show MethodChannel;
 
 import '../model/peer_id.dart';
 import 'ble_constants.dart';
@@ -945,6 +946,32 @@ class MeshTransport implements MeshTransportInterface {
   }
 
   PowerMode get powerMode => _powerMode;
+
+  /// Android scan mode: 0=LOW_POWER, 1=BALANCED, 2=LOW_LATENCY. LOW_LATENCY
+  /// (the vendor default) scans near-continuously and is the single biggest
+  /// battery drain; BALANCED still discovers within a few seconds at roughly
+  /// half the power. Adaptive power (see MeshController) picks the tier.
+  static const _scanPowerChannel = MethodChannel('spotlink/scan_power');
+  int _scanModeCode = 2;
+
+  /// Set the Android BLE scan mode and re-scan to apply it (no-op elsewhere).
+  Future<void> setScanMode(int code) async {
+    if (!Platform.isAndroid || _scanModeCode == code) return;
+    _scanModeCode = code;
+    try {
+      await _scanPowerChannel.invokeMethod('setScanMode', code);
+    } catch (_) {} // fork without the channel: keeps the vendor default
+    _log('BLE scan mode -> ${const {
+          0: 'low-power',
+          1: 'balanced',
+          2: 'low-latency'
+        }[code]}');
+    // The scanner reads the new mode on its next startScan, so bounce it.
+    if (_started && _scanning) {
+      await _stopScanning();
+      await _startScanning();
+    }
+  }
 
   void _beginDutyCycle() {
     _dutyTimer?.cancel();

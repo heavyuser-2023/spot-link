@@ -84,11 +84,11 @@ void main() {
 
     // Battery-saver toggle lives below the QR in a scrollable list.
     await tester.scrollUntilVisible(
-      find.text('배터리 절약'),
+      find.text('배터리 절약 (항상)'),
       300,
       scrollable: find.byType(Scrollable).last,
     );
-    expect(find.text('배터리 절약'), findsOneWidget);
+    expect(find.text('배터리 절약 (항상)'), findsOneWidget);
 
     // Tear down all timers/subscriptions on the real event loop so no pending
     // timer trips the test framework.

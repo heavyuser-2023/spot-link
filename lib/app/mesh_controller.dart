@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/widgets.dart';
 import 'package:gal/gal.dart';
 import 'package:mime/mime.dart';
@@ -87,6 +88,25 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   DateTime? _linklessSince;
   bool _beaconPulsing = false;
   Timer? _beaconPulseTimer;
+
+  /// Adaptive power (Android only — the 24/7 foreground-service drain). The
+  /// expensive part is continuous BLE *scanning* at LOW_LATENCY; advertising
+  /// and the beacon torch are cheap and others depend on them, so those stay
+  /// on and only scanning is throttled. Tiers, evaluated every
+  /// [_adaptiveInterval] and on every link change:
+  ///   charging                      → active  + low-latency (spend freely)
+  ///   battery ≤15% & unplugged      → saver   + low-power   (emergency thrift)
+  ///   recent topology change (<60s) → active  + low-latency (fast (re)join)
+  ///   unplugged, no links           → active  + balanced    (hunt at ½ power)
+  ///   unplugged, has links (stable) → saver   + balanced    (sip)
+  /// The manual "배터리 절약" toggle, when on, is a hard floor and disables
+  /// this (the user asked for minimum drain explicitly).
+  final Battery _battery = Battery();
+  Timer? _adaptiveTimer;
+  DateTime? _lastTopoChange;
+  int _appliedScanCode = 2;
+  bool? _appliedSaver;
+  static const Duration _adaptiveInterval = Duration(seconds: 30);
   static const Duration _linklessPulseAfter = Duration(minutes: 3);
   // > iOS's ~30s region-exit debounce so a stuck peer actually EXITs.
   static const Duration _beaconPulseGap = Duration(seconds: 40);
@@ -372,7 +392,62 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       _maybeBeaconPulse();
       notifyListeners();
     });
+    // Adaptive BLE power (Android only). Evaluate once now and on a slow tick.
+    if (Platform.isAndroid) {
+      unawaited(_evaluateAdaptivePower());
+      _adaptiveTimer = Timer.periodic(
+          _adaptiveInterval, (_) => unawaited(_evaluateAdaptivePower()));
+    }
     notifyListeners();
+  }
+
+  /// See [_battery]. Android-only; a no-op when the manual saver toggle is on.
+  Future<void> _evaluateAdaptivePower() async {
+    if (!Platform.isAndroid || powerSaver) return;
+    try {
+      final state = await _battery.batteryState;
+      final charging = state == BatteryState.charging ||
+          state == BatteryState.full;
+      final level = charging ? 100 : await _battery.batteryLevel;
+      final recentChange = _lastTopoChange != null &&
+          DateTime.now().difference(_lastTopoChange!) < const Duration(seconds: 60);
+
+      final bool saver;
+      final int scanCode; // 0=low-power, 1=balanced, 2=low-latency
+      if (charging) {
+        saver = false;
+        scanCode = 2;
+      } else if (level <= 15) {
+        saver = true;
+        scanCode = 0;
+      } else if (recentChange) {
+        saver = false;
+        scanCode = 2;
+      } else if (linkCount == 0) {
+        saver = false;
+        scanCode = 1;
+      } else {
+        saver = true;
+        scanCode = 1;
+      }
+
+      final changed = saver != _appliedSaver || scanCode != _appliedScanCode;
+      if (saver != _appliedSaver) {
+        _appliedSaver = saver;
+        node.setPowerSaver(saver); // drives transport only, not the UI flag
+      }
+      if (scanCode != _appliedScanCode) {
+        _appliedScanCode = scanCode;
+        await node.setScanMode(scanCode);
+      }
+      if (changed) {
+        final line = 'adaptive power: charging=$charging level=$level '
+            'links=$linkCount -> ${saver ? 'saver' : 'active'}+'
+            '${const {0: 'low-power', 1: 'balanced', 2: 'low-latency'}[scanCode]}';
+        bleLogSink?.call('${DateTime.now().toIso8601String()} $line');
+        debugPrint('SpotLink $line'); // surfaces in logcat for field diag
+      }
+    } catch (_) {} // battery plugin unavailable / transient — keep last tier
   }
 
   /// See [_linklessSince]. iOS foreground only: pulse the wake torch when we
@@ -555,6 +630,9 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       case LinksChanged(:final count):
         linkCount = count;
         _linklessSince = count == 0 ? (_linklessSince ?? DateTime.now()) : null;
+        // A topology change earns a brief low-latency burst for fast (re)join.
+        _lastTopoChange = DateTime.now();
+        if (Platform.isAndroid) unawaited(_evaluateAdaptivePower());
         BackgroundService.updateStatus(count);
         notifyListeners();
       case PeerAnnounced(:final contact, :final hops):
@@ -722,6 +800,17 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   void setPowerSaver(bool saver) {
     powerSaver = saver;
     node.setPowerSaver(saver);
+    if (saver) {
+      // Manual saver is a hard floor: also drop to the cheapest scan and let
+      // adaptive control stand down.
+      _appliedSaver = true;
+      _appliedScanCode = 0;
+      unawaited(node.setScanMode(0));
+    } else {
+      // Hand back to adaptive control (re-derives the right tier now).
+      _appliedSaver = null;
+      unawaited(_evaluateAdaptivePower());
+    }
     notifyListeners();
   }
 
@@ -1211,6 +1300,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     _presenceTimer?.cancel();
     _bootFgRecheck?.cancel();
     _beaconPulseTimer?.cancel();
+    _adaptiveTimer?.cancel();
     _sub?.cancel();
     _rssiSub?.cancel();
     _availabilitySub?.cancel();
