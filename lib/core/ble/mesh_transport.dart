@@ -169,6 +169,16 @@ class MeshTransport implements MeshTransportInterface {
   Timer? _dutyTimer;
   bool _scanning = false;
 
+  /// Android: scanning and connecting share one radio, and issuing
+  /// connectGatt WHILE a (LOW_LATENCY) scan runs is the classic cause of
+  /// `status 133` connect failures on Samsung — in a BLE-dense room every
+  /// dial failed and the mesh never linked. We pause the scan for the
+  /// duration of each connect handshake. [_connectDepth] refcounts concurrent
+  /// connects; [_scanPausedForConnect] makes [_startScanning] a no-op so the
+  /// self-heal / duty-cycle timers can't restart the scan mid-connect.
+  int _connectDepth = 0;
+  bool _scanPausedForConnect = false;
+
   static const Duration _saverScanOn = Duration(seconds: 6);
   static const Duration _saverScanOff = Duration(seconds: 20);
 
@@ -471,7 +481,10 @@ class MeshTransport implements MeshTransportInterface {
       }
       // Let a previously-missed Apple device be probed again sooner when we
       // have nothing at all.
-      if (_linklessTicks >= 4) _probeMisses.clear();
+      if (_linklessTicks >= 4) {
+        _probeMisses.clear();
+        _probeBackoff.clear();
+      }
     });
   }
 
@@ -756,36 +769,22 @@ class MeshTransport implements MeshTransportInterface {
         await _peripheral.stopAdvertising();
       } catch (_) {}
     }
-    // The manufacturer data carries our short id so scanners can skip their
-    // own advertisement and pre-learn the peer id. Darwin refuses to
-    // advertise manufacturer data at all (CoreBluetooth supports only local
-    // name + service UUIDs) — don't even attempt it there; peers learn our
-    // id from the ANNOUNCE sent right after the link is up.
-    if (!Platform.isIOS && !Platform.isMacOS) {
-      try {
-        await _peripheral.startAdvertising(Advertisement(
-          name: BleConstants.advertisedName,
-          serviceUUIDs: [BleConstants.serviceUuid],
-          manufacturerSpecificData: [
-            ManufacturerSpecificData(
-              id: BleConstants.manufacturerId,
-              data: myShortId.bytes,
-            ),
-          ],
-        ));
-        _log('BLE advertising started');
-        return;
-      } catch (e) {
-        if (_isAlreadyAdvertising(e)) return;
-        _log('BLE startAdvertising with manufacturer data failed: $e');
-      }
-    }
+    // Advertise NAME + service UUID only. We used to also pack our short id
+    // into manufacturer data, but a 128-bit service UUID (18B) + name (4B) +
+    // flags (3B) already nearly fill a legacy 31-byte advertisement, so the
+    // extra 12B of manufacturer data pushed Android over the limit and every
+    // startAdvertising failed with DATA_TOO_LARGE (error code 1) — the node
+    // then fell back to this exact packet anyway. Peers learn our short id
+    // from the ANNOUNCE sent the instant a link comes up, so nothing is lost;
+    // the service UUID stays because an iOS peer's BACKGROUND scan is filtered
+    // on it (its only way to discover us), and the name drives iOS foreground
+    // discovery. (Darwin never supported manufacturer-data advertising.)
     try {
       await _peripheral.startAdvertising(Advertisement(
         name: BleConstants.advertisedName,
         serviceUUIDs: [BleConstants.serviceUuid],
       ));
-      _log('BLE advertising started (service uuid only)');
+      _log('BLE advertising started (name + service uuid)');
     } catch (e) {
       if (_isAlreadyAdvertising(e)) return;
       _log('BLE startAdvertising failed: $e');
@@ -866,6 +865,9 @@ class MeshTransport implements MeshTransportInterface {
   // ---------------------------------------------------------------------------
 
   Future<void> _startScanning() async {
+    // Held off while a connect handshake is in flight (Android 133 fix) — the
+    // connect's finally-block resumes scanning.
+    if (_scanPausedForConnect) return;
     if (_scanning) return;
     _scanning = true;
     try {
@@ -903,6 +905,29 @@ class MeshTransport implements MeshTransportInterface {
     try {
       await _central.stopDiscovery();
     } catch (_) {}
+  }
+
+  /// Android: stop the scan for the duration of a connect handshake so the
+  /// radio isn't split between scanning and connecting (the `status 133`
+  /// cause). Refcounted so overlapping connects pause once and resume once.
+  Future<void> _pauseScanForConnect() async {
+    _connectDepth++;
+    if (_connectDepth == 1) {
+      _scanPausedForConnect = true;
+      await _stopScanning();
+    }
+  }
+
+  void _resumeScanForConnect() {
+    if (_connectDepth > 0) _connectDepth--;
+    if (_connectDepth > 0 || !_scanPausedForConnect) return;
+    _scanPausedForConnect = false;
+    if (!_started) return;
+    if (_powerMode == PowerMode.active) {
+      unawaited(_startScanning());
+    } else {
+      _beginDutyCycle();
+    }
   }
 
   /// Whether the app is foregrounded — gates the iOS unfiltered scan mode.
@@ -1064,6 +1089,15 @@ class MeshTransport implements MeshTransportInterface {
   static const Duration _probeMissTtl = Duration(minutes: 10);
   final Map<String, DateTime> _probeMisses = {};
 
+  /// Short cooldown after a probe dial FAILS to connect (status 133 etc.). A
+  /// dense room (office full of AirPods/Macs/iPhones) otherwise re-dials the
+  /// same failing gadget every 12s, and each doomed connectGatt starves the
+  /// real peer. Distinct from [_probeMisses] (10 min, "connected but not
+  /// SpotLink") — this is kept short so a genuinely-SpotLink iPhone that hit a
+  /// transient failure is retried soon.
+  static const Duration _probeFailBackoff = Duration(seconds: 90);
+  final Map<String, DateTime> _probeBackoff = {};
+
   /// Keys of probe dials currently in flight. Bounded so a room full of
   /// Apple gadgets (TV, AirPods, other iPhones) can't fire a storm of
   /// concurrent connectGatt calls that exhausts the Android GATT client pool
@@ -1075,9 +1109,15 @@ class MeshTransport implements MeshTransportInterface {
     if (!Platform.isAndroid) return false;
     if (e.rssi < -70) return false; // only close-by devices are worth a dial
     if (_activeProbes.length >= _maxConcurrentProbes) return false;
-    final missedAt = _probeMisses[e.peripheral.uuid.toString()];
+    final uuid = e.peripheral.uuid.toString();
+    final missedAt = _probeMisses[uuid];
     if (missedAt != null &&
         DateTime.now().difference(missedAt) < _probeMissTtl) {
+      return false;
+    }
+    final failedAt = _probeBackoff[uuid];
+    if (failedAt != null &&
+        DateTime.now().difference(failedAt) < _probeFailBackoff) {
       return false;
     }
     return e.advertisement.manufacturerSpecificData
@@ -1190,13 +1230,27 @@ class MeshTransport implements MeshTransportInterface {
     var connected = false; // did _central.connect succeed?
     var serviceMissing = false; // connected, but no SpotLink service
     if (probe) _activeProbes.add(key);
+    final pauseScan = Platform.isAndroid;
     try {
-      // Probe dials to random Apple devices must not hang for Android's full
-      // ~30s connectGatt timeout while holding a GATT client slot — bound them.
-      if (probe) {
-        await _central.connect(peripheral).timeout(const Duration(seconds: 8));
-      } else {
-        await _central.connect(peripheral);
+      // Android: pause scanning across the connect so the radio isn't split
+      // between scan + connect (status 133). iOS keeps scanning — its pending
+      // reconnects are long-lived by design and CoreBluetooth arbitrates.
+      if (pauseScan) await _pauseScanForConnect();
+      try {
+        // Probe dials to random Apple devices must not hang for Android's full
+        // ~30s connectGatt timeout while holding a GATT client slot — bound
+        // them. Android non-probe connects are also bounded so a wedged dial
+        // can't hold the scan paused forever; iOS non-probe connects stay
+        // unbounded (pending reconnects resolve minutes later by design).
+        if (probe) {
+          await _central.connect(peripheral).timeout(const Duration(seconds: 8));
+        } else if (Platform.isAndroid) {
+          await _central.connect(peripheral).timeout(const Duration(seconds: 20));
+        } else {
+          await _central.connect(peripheral);
+        }
+      } finally {
+        if (pauseScan) _resumeScanForConnect();
       }
       connected = true;
       // Everything after the OS-level connect is bounded: a single lost
@@ -1283,6 +1337,7 @@ class MeshTransport implements MeshTransportInterface {
       _reconnectAttempts.remove(key);
       _reconnectTimers.remove(key)?.cancel();
       _probeMisses.remove(key);
+      _probeBackoff.remove(key);
       _rememberPeer(key);
     } catch (err) {
       try {
@@ -1296,10 +1351,11 @@ class MeshTransport implements MeshTransportInterface {
           _log('BLE probe miss $key (not SpotLink)');
         } else {
           // Connect itself failed — a real SpotLink iPhone hits transient
-          // timeouts constantly (CBError 6). Do NOT blocklist for 10 min;
-          // the 12s dial cooldown alone rate-limits the retry so re-discovery
-          // dials it again shortly.
-          _log('BLE probe connect failed $key: $err (will retry)');
+          // timeouts constantly (CBError 6). Do NOT blocklist for 10 min, but
+          // apply a short backoff so a dense room can't re-dial this same
+          // gadget every 12s and starve the real peer with status-133 storms.
+          _probeBackoff[key] = DateTime.now();
+          _log('BLE probe connect failed $key: $err (backoff ${_probeFailBackoff.inSeconds}s)');
         }
       } else {
         _log('BLE connect failed $key: $err');
