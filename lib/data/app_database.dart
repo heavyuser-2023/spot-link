@@ -26,7 +26,7 @@ class AppDatabase {
     }
     _db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       // WAL: the Android service isolate WRITES this file while the UI
       // isolate READS it (two SQLite connections in one process). Rollback
       // journal mode would make readers hit SQLITE_BUSY during writes; WAL
@@ -68,9 +68,11 @@ class AppDatabase {
         await db
             .execute('CREATE INDEX idx_messages_msgid ON messages(msg_id)');
         await _createRelayStore(db);
+        await _createPendingDelivery(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) await _createRelayStore(db);
+        if (oldVersion < 3) await _createPendingDelivery(db);
       },
     );
     return _db!;
@@ -86,6 +88,35 @@ class AppDatabase {
         stored_at INTEGER NOT NULL
       )
     ''');
+  }
+
+  /// Ids of messages addressed to US that were seen but not yet delivered to
+  /// the app (decrypt failed / no key). Persisted so a restart before the
+  /// clean copy arrives doesn't re-strand them behind the routing seen-cache.
+  static Future<void> _createPendingDelivery(Database db) async {
+    await db.execute('''
+      CREATE TABLE pending_delivery (
+        msg_id TEXT PRIMARY KEY
+      )
+    ''');
+  }
+
+  Future<List<String>> loadPendingDeliveries() async {
+    final db = await _database;
+    final rows = await db.query('pending_delivery', columns: ['msg_id']);
+    return rows.map((r) => r['msg_id'] as String).toList();
+  }
+
+  Future<void> addPendingDelivery(String msgIdHex) async {
+    final db = await _database;
+    await db.insert('pending_delivery', {'msg_id': msgIdHex},
+        conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
+
+  Future<void> removePendingDelivery(String msgIdHex) async {
+    final db = await _database;
+    await db
+        .delete('pending_delivery', where: 'msg_id = ?', whereArgs: [msgIdHex]);
   }
 
   // ----- Contacts -----

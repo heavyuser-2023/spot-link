@@ -338,6 +338,14 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
         unawaited(db.upsertRelayFrame(msgIdHex, frame.encode()));
       }
     };
+    // Undelivered-to-me ids (seen but decrypt-failed / no-key): persist so a
+    // restart before the clean copy arrives still re-requests them.
+    node.seedPendingLocalDelivery(await db.loadPendingDeliveries());
+    node.onPendingLocalChanged = (msgIdHex, present) {
+      unawaited(present
+          ? db.addPendingDelivery(msgIdHex)
+          : db.removePendingDelivery(msgIdHex));
+    };
     // Re-apply persisted signed receipts: tombstones for already-delivered
     // texts survive the restart (contacts above provide the signing keys).
     await node.rebuildReceipts();
@@ -898,6 +906,9 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   Future<void> retryText(ChatMessage failed) async {
     if (failed.text == null) return;
     final peer = PeerId.fromHex(failed.peerHex);
+    // Cancel the old attempt so a late store-and-forward copy of it can't
+    // double-deliver alongside this fresh send (new msgId).
+    node.forgetText(failed.msgId);
     final msgId = await node.sendText(peer, failed.text!);
     if (msgId == null) {
       _errors.add('Still unable to send — no route yet');

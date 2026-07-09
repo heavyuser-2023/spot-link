@@ -549,6 +549,21 @@ class _Bubble extends StatelessWidget {
 
   bool get _isMe => message.direction == MsgDirection.outgoing;
 
+  /// An outgoing message that hasn't been confirmed delivered (✓✓) for a
+  /// while: still "sent" (handed to a link, no receipt back) or "queued" (no
+  /// route). Surfaced with a warning + one-tap resend so a message can never
+  /// silently fail to arrive without the user noticing.
+  static const _undeliveredAfterMs = 90 * 1000;
+  bool get _undeliveredWarn {
+    if (!_isMe) return false;
+    if (message.status != MsgStatus.sent &&
+        message.status != MsgStatus.queued) {
+      return false;
+    }
+    return DateTime.now().millisecondsSinceEpoch - message.timestamp >
+        _undeliveredAfterMs;
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -611,7 +626,28 @@ class _Bubble extends StatelessWidget {
                       style: TextStyle(
                           color: scheme.onErrorContainer, fontSize: 11)),
                 ),
-              if (message.status == MsgStatus.queued)
+              // Long-undelivered (no ✓✓): make it impossible to miss + offer a
+              // one-tap resend. Takes priority over the calmer "queued" note.
+              if (!failed && _undeliveredWarn)
+                Padding(
+                  padding: const EdgeInsets.only(top: 3),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.warning_amber_rounded,
+                          size: 13, color: scheme.error),
+                      const SizedBox(width: 3),
+                      Text('아직 전달 안 됨 · 탭하여 다시 보내기',
+                          style: TextStyle(
+                              color: scheme.error,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
+              if (!failed &&
+                  !_undeliveredWarn &&
+                  message.status == MsgStatus.queued)
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
                   child: Text('상대를 만나면 자동 전달',
@@ -626,7 +662,7 @@ class _Bubble extends StatelessWidget {
   }
 
   void _onTap(BuildContext context) {
-    if (message.status == MsgStatus.failed) {
+    if (message.status == MsgStatus.failed || _undeliveredWarn) {
       if (message.kind == MsgKind.text) {
         controller.retryText(message);
       } else if (message.direction == MsgDirection.outgoing) {

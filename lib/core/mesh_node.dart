@@ -230,6 +230,20 @@ class MeshNode {
   final _pendingLocalDelivery = <String>{};
   static const int _pendingLocalDeliveryCap = 512;
 
+  /// Persistence hook for [_pendingLocalDelivery] (app layer writes a tiny
+  /// table): `present` true = add, false = remove. Lets an undelivered
+  /// message survive a restart instead of being re-stranded behind the
+  /// in-memory routing seen-cache.
+  void Function(String msgIdHex, bool present)? onPendingLocalChanged;
+
+  /// Reload persisted pending-delivery ids at startup.
+  void seedPendingLocalDelivery(Iterable<String> ids) {
+    for (final id in ids) {
+      if (_deliveredIncoming.contains(id)) continue;
+      _pendingLocalDelivery.add(id);
+    }
+  }
+
   final _events = StreamController<NodeEvent>.broadcast();
   final List<StreamSubscription> _subs = [];
 
@@ -455,6 +469,15 @@ class MeshNode {
     _awaitingAck[frame.msgIdHex] = _PendingText(frame);
     await _dispatch(frame);
     return frame.msgIdHex;
+  }
+
+  /// Abandon a previously-sent text so a user-initiated resend (which mints a
+  /// NEW msgId) can't be double-delivered by a late store-and-forward copy of
+  /// the original. Drops it from the live retransmit set and the durable
+  /// store; the recipient never sees the stale id again.
+  void forgetText(String msgIdHex) {
+    _awaitingAck.remove(msgIdHex);
+    store.remove(msgIdHex);
   }
 
   /// Begin sending a file to [dst]. Returns the transferId.
@@ -977,7 +1000,7 @@ class MeshNode {
         }
         if (_deliveredIncoming.contains(frame.msgIdHex)) break;
         _rememberDelivered(frame.msgIdHex);
-        _pendingLocalDelivery.remove(frame.msgIdHex); // finally landed
+        _clearPendingLocalDelivery(frame.msgIdHex); // finally landed
         final text = utf8.decode(payload, allowMalformed: true);
         bleLogSink?.call('MSG recv ${frame.msgIdHex.substring(0, 8)} '
             '(${text.length} chars)');
@@ -1413,9 +1436,19 @@ class MeshNode {
   /// See [_pendingLocalDelivery]. Bounded.
   void _markPendingLocalDelivery(String msgIdHex) {
     if (_deliveredIncoming.contains(msgIdHex)) return;
-    _pendingLocalDelivery.add(msgIdHex);
+    if (_pendingLocalDelivery.add(msgIdHex)) {
+      onPendingLocalChanged?.call(msgIdHex, true);
+    }
     while (_pendingLocalDelivery.length > _pendingLocalDeliveryCap) {
-      _pendingLocalDelivery.remove(_pendingLocalDelivery.first);
+      final evicted = _pendingLocalDelivery.first;
+      _pendingLocalDelivery.remove(evicted);
+      onPendingLocalChanged?.call(evicted, false);
+    }
+  }
+
+  void _clearPendingLocalDelivery(String msgIdHex) {
+    if (_pendingLocalDelivery.remove(msgIdHex)) {
+      onPendingLocalChanged?.call(msgIdHex, false);
     }
   }
 

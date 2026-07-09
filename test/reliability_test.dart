@@ -224,4 +224,31 @@ void main() {
     await settle(120);
     expect(b.ofType<TextReceived>().length, 1); // no duplicate delivery
   });
+
+  test('resend after forgetText delivers exactly once (no stale duplicate)',
+      () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'A',
+        retransmit: const Duration(milliseconds: 30), maxAttempts: 2);
+    final b = await makeNode(radio, idB, 'B');
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+
+    // First send with no route → parked in A's store.
+    final firstId = await a.node.sendText(idB.peerId, '한 번만 도착');
+    await waitFor<TextDeliveryFailed>(a, (e) => e.msgId == firstId);
+
+    // User taps resend: cancel the original, then send a fresh copy.
+    a.node.forgetText(firstId!);
+    expect(a.node.store.contains(firstId), isFalse); // original abandoned
+    final secondId = await a.node.sendText(idB.peerId, '한 번만 도착');
+
+    // B appears: only the fresh copy is live, so exactly one delivery.
+    radio.connect(idA.peerId, idB.peerId);
+    await waitFor<TextReceived>(b, (e) => e.msgId == secondId);
+    await settle(150);
+    expect(b.ofType<TextReceived>().length, 1);
+  });
 }
