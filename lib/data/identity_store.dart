@@ -20,6 +20,14 @@ class IdentityStore {
   static const _iosOptions =
       IOSOptions(accessibility: KeychainAccessibility.first_unlock);
 
+  /// macOS: use the LEGACY (file-based) keychain, not the data-protection one.
+  /// The data-protection keychain requires a keychain-access-group entitlement
+  /// (i.e. team signing); an ad-hoc / unsigned local build has none, so every
+  /// SecItem call throws errSecMissingEntitlement (-34018) and the identity
+  /// can't be stored. macOS-only — iOS/Android options are untouched.
+  static const _macOptions =
+      MacOsOptions(usesDataProtectionKeychain: false);
+
   /// New-class storage. NOTE: with an accessibility option set, iOS reads
   /// and writes only match items of that class — legacy items written with
   /// the default when-unlocked class are invisible to it (and un-overwritable:
@@ -31,8 +39,10 @@ class IdentityStore {
   final FlutterSecureStorage _legacy;
 
   IdentityStore([FlutterSecureStorage? storage])
-      : _storage = storage ?? const FlutterSecureStorage(iOptions: _iosOptions),
-        _legacy = storage ?? const FlutterSecureStorage();
+      : _storage = storage ??
+            const FlutterSecureStorage(
+                iOptions: _iosOptions, mOptions: _macOptions),
+        _legacy = storage ?? const FlutterSecureStorage(mOptions: _macOptions);
 
   /// Move legacy (when-unlocked) items to the first_unlock class. A backup
   /// slot brackets the delete+rewrite so a crash in between can never lose

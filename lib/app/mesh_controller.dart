@@ -113,6 +113,14 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   StreamSubscription? _sub;
   StreamSubscription? _rssiSub;
   StreamSubscription? _availabilitySub;
+
+  /// Periodic fallback retry while the mesh hasn't started. [availabilityChanged]
+  /// fires when the BLE ADAPTER powers on, but NOT when the runtime BLE
+  /// PERMISSION is granted (no adapter-state change) — so a first-install user
+  /// who enables Bluetooth / grants the permission after launch would sit on a
+  /// stale "Bluetooth off" banner until an app restart. Re-attempting start on
+  /// a slow tick recovers both cases without a restart.
+  Timer? _startRetryTimer;
   bool _restarting = false;
 
   /// Whether the app is currently in the foreground. Incoming messages fire a
@@ -393,6 +401,11 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       // as the adapter becomes usable instead of requiring an app restart.
       _availabilitySub =
           node.transport.availabilityChanged.listen(_onTransportAvailable);
+      // Event-only recovery misses the runtime-permission-granted case (no
+      // adapter state change fires), leaving a stale banner until restart —
+      // so also poll. Both stop the moment start() succeeds.
+      _startRetryTimer = Timer.periodic(
+          const Duration(seconds: 3), (_) => _onTransportAvailable(true));
     }
 
     // Refresh listeners periodically so "nearby" presence ages out.
@@ -498,6 +511,11 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
         lastError = null;
         await _availabilitySub?.cancel();
         _availabilitySub = null;
+        _startRetryTimer?.cancel();
+        _startRetryTimer = null;
+        // iOS/macOS scan mode follows the app's current foreground state.
+        node.setForeground(_foreground);
+        if (Platform.isAndroid) unawaited(_evaluateAdaptivePower());
         notifyListeners();
       }
     } finally {
@@ -1319,6 +1337,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     _presenceTimer?.cancel();
     _bootFgRecheck?.cancel();
     _beaconPulseTimer?.cancel();
+    _startRetryTimer?.cancel();
     _adaptiveTimer?.cancel();
     _sub?.cancel();
     _rssiSub?.cancel();

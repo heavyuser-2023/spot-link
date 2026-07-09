@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Sandbox is OFF for this LOCAL build: the app is ad-hoc signed
+	     (no Apple developer team on this machine), and a sandboxed app needs
+	     a team-prefixed keychain-access-group for flutter_secure_storage —
+	     which ad-hoc signing can't provide (secure_storage failed with
+	     errSecMissingEntitlement -34018). Unsandboxed, Keychain + BLE +
+	     networking all work with ad-hoc signing. NOT for App Store
+	     distribution; re-enable the sandbox + sign with a team for that.
+	     The Bluetooth permission prompt (NSBluetoothAlwaysUsageDescription)
+	     still appears — it's a TCC prompt, independent of the sandbox. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>
