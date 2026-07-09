@@ -219,6 +219,17 @@ class MeshNode {
   final _deliveredIncoming = <String>{};
   static const int _deliveredIncomingCap = 2048;
 
+  /// Messages addressed to US that the router marked seen (loop prevention) but
+  /// that FAILED to reach the app — decryption threw (a corrupt payload from a
+  /// flaky link), or the sender's key wasn't known yet. Without this they were
+  /// lost forever: the seen-cache made [selectWanted] stop requesting them AND
+  /// made the router drop any resend as a "duplicate", so a single garbled
+  /// delivery could silently swallow a message (observed: 3 sent, middle one
+  /// never arrived). Tracked here so we keep WANTing a fresh copy and re-run
+  /// delivery when it (or a retransmit) arrives, until it actually lands.
+  final _pendingLocalDelivery = <String>{};
+  static const int _pendingLocalDeliveryCap = 512;
+
   final _events = StreamController<NodeEvent>.broadcast();
   final List<StreamSubscription> _subs = [];
 
@@ -831,6 +842,18 @@ class MeshNode {
 
       final decision = router.handleIncoming(frame);
       if (decision.duplicate) {
+        // Seen before by the router (loop prevention) — but "seen" ≠
+        // "delivered". If this frame is addressed to us and we saw it yet
+        // never got it to the app (decrypt failed / no key at the time), a
+        // resend/re-pull is our chance to deliver it: re-run delivery instead
+        // of dropping. This is what stops a single garbled copy from losing
+        // the message for good.
+        if (frame.dst == myId &&
+            !_deliveredIncoming.contains(frame.msgIdHex) &&
+            _pendingLocalDelivery.contains(frame.msgIdHex)) {
+          await _deliverLocal(frame);
+          return;
+        }
         // A retransmit of a text we already delivered: the sender's first ACK
         // was likely lost. Re-ACK so it can stop. (The seen-cache drops the
         // frame before _deliverLocal, so this is the only place to recover.)
@@ -868,7 +891,13 @@ class MeshNode {
         final remoteHave = MsgIdList.decode(frame.payload);
         final wanted = store.selectWanted(
           remoteHave,
-          alreadySeen: (hex) => seen.contains(hex) || _receipted.contains(hex),
+          // "Seen" prevents re-pulling relayed/delivered frames — EXCEPT a
+          // message addressed to us that we saw but never delivered (decrypt
+          // failed / no key). We must keep requesting a fresh copy of those,
+          // or one garbled delivery loses the message for good.
+          alreadySeen: (hex) =>
+              !_pendingLocalDelivery.contains(hex) &&
+              (seen.contains(hex) || _receipted.contains(hex)),
         );
         if (wanted.isNotEmpty) {
           final want = Frame.create(
@@ -904,12 +933,17 @@ class MeshNode {
           store.add(frame);
           _events.add(NodeError('No key to decrypt from ${frame.src.short}'));
         }
+        if (frame.dst == myId) _markPendingLocalDelivery(frame.msgIdHex);
         return;
       }
       try {
         payload = await crypto.decrypt(frame.payload, kex);
       } catch (_) {
         _events.add(NodeError('Decrypt failed from ${frame.src.short}'));
+        // A corrupt payload (e.g. a lost fragment on a flaky link): keep
+        // wanting a FRESH copy instead of dropping it forever. We hold no
+        // copy here (this one is bad), so [selectWanted] can re-request it.
+        if (frame.dst == myId) _markPendingLocalDelivery(frame.msgIdHex);
         return;
       }
     }
@@ -943,6 +977,7 @@ class MeshNode {
         }
         if (_deliveredIncoming.contains(frame.msgIdHex)) break;
         _rememberDelivered(frame.msgIdHex);
+        _pendingLocalDelivery.remove(frame.msgIdHex); // finally landed
         final text = utf8.decode(payload, allowMalformed: true);
         bleLogSink?.call('MSG recv ${frame.msgIdHex.substring(0, 8)} '
             '(${text.length} chars)');
@@ -1372,6 +1407,15 @@ class MeshNode {
     _deliveredIncoming.add(msgIdHex);
     while (_deliveredIncoming.length > _deliveredIncomingCap) {
       _deliveredIncoming.remove(_deliveredIncoming.first);
+    }
+  }
+
+  /// See [_pendingLocalDelivery]. Bounded.
+  void _markPendingLocalDelivery(String msgIdHex) {
+    if (_deliveredIncoming.contains(msgIdHex)) return;
+    _pendingLocalDelivery.add(msgIdHex);
+    while (_pendingLocalDelivery.length > _pendingLocalDeliveryCap) {
+      _pendingLocalDelivery.remove(_pendingLocalDelivery.first);
     }
   }
 
