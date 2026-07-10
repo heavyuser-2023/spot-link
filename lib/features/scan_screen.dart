@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../app/mesh_controller.dart';
 import '../core/ble/mesh_transport.dart' show bleLogSink;
+import '../core/model/qr_payload.dart';
 
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -26,7 +27,7 @@ class _ScanScreenState extends State<ScanScreen> {
     if (_handled) return;
     for (final barcode in capture.barcodes) {
       final raw = barcode.rawValue;
-      final parsed = raw == null ? null : MeshController.parseQr(raw);
+      final parsed = raw == null ? null : QrPayload.decode(raw);
       bleLogSink?.call('QR detect: rawLen=${raw?.length} '
           'parsed=${parsed != null}');
       if (parsed == null) continue;

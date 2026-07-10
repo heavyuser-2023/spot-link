@@ -26,7 +26,7 @@ class AppDatabase {
     }
     _db = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       // WAL: the Android service isolate WRITES this file while the UI
       // isolate READS it (two SQLite connections in one process). Rollback
       // journal mode would make readers hit SQLITE_BUSY during writes; WAL
@@ -45,6 +45,7 @@ class AppDatabase {
             kex_pub TEXT NOT NULL,
             display_name TEXT NOT NULL,
             verified INTEGER NOT NULL,
+            name_locked INTEGER NOT NULL DEFAULT 0,
             last_seen INTEGER NOT NULL
           )
         ''');
@@ -73,6 +74,10 @@ class AppDatabase {
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) await _createRelayStore(db);
         if (oldVersion < 3) await _createPendingDelivery(db);
+        if (oldVersion < 4) {
+          await db.execute('ALTER TABLE contacts '
+              'ADD COLUMN name_locked INTEGER NOT NULL DEFAULT 0');
+        }
       },
     );
     return _db!;

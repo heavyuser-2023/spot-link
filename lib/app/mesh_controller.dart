@@ -5,10 +5,7 @@ import 'dart:typed_data';
 
 import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/widgets.dart';
-import 'package:gal/gal.dart';
 import 'package:mime/mime.dart';
-import 'package:open_filex/open_filex.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -17,10 +14,11 @@ import '../core/ble/mesh_transport.dart'
 import '../core/crypto/identity.dart';
 import '../core/mesh_node.dart';
 import '../core/model/frame.dart';
+import '../core/model/peer_id.dart';
+import '../core/model/qr_payload.dart';
 import '../core/transfer/composite_fast_lane.dart';
 import '../core/transfer/lan_socket_fast_lane.dart';
 import '../core/transfer/platform_fast_lane.dart';
-import '../core/model/peer_id.dart';
 import '../core/transfer/file_transfer.dart';
 import '../data/app_database.dart';
 import '../data/identity_store.dart';
@@ -28,6 +26,7 @@ import '../data/models.dart';
 import 'background_service.dart';
 import 'beacon_wake.dart';
 import 'mesh_frontend.dart';
+import 'mesh_frontend_state.dart';
 import 'notification_service.dart';
 
 export 'mesh_frontend.dart' show ConversationSummary, MeshFrontend;
@@ -36,7 +35,11 @@ export 'mesh_frontend.dart' show ConversationSummary, MeshFrontend;
 /// and exposes observable state via [MeshFrontend]. Runs in the UI isolate on
 /// iOS, and in the Android foreground-service isolate (headless) where the
 /// UI attaches through [RemoteMeshController] instead.
-class MeshController extends MeshFrontend with WidgetsBindingObserver {
+///
+/// Presence / roster / inbox queries and local file actions live in the
+/// shared [MeshFrontendState] / [LocalFileActions] mixins.
+class MeshController extends MeshFrontend
+    with MeshFrontendState, LocalFileActions, WidgetsBindingObserver {
   final Identity identity;
   @override
   String displayName;
@@ -52,24 +55,6 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   bool powerSaver = false;
   @override
   String? lastError;
-
-  /// A peer is considered "nearby" if it has announced within this window.
-  static const Duration presenceTtl = Duration(seconds: 40);
-
-  final List<Contact> _contacts = [];
-  final Map<String, int> _lastSeen = {}; // peerHex -> epoch ms of last announce
-  final Map<String, int> _lastHops = {}; // peerHex -> mesh distance (1=direct)
-
-  /// Smoothed signal strength per peer. Raw BLE RSSI jitters wildly, so an
-  /// exponential moving average keeps the proximity UI from twitching.
-  final Map<String, double> _rssi = {};
-  final Map<String, int> _rssiAt = {}; // peerHex -> epoch ms of last sample
-  static const Duration _rssiTtl = Duration(seconds: 40);
-  final Map<String, int> _unread = {}; // peerHex -> unread count
-  final Map<String, List<ChatMessage>> _conversations = {};
-  final Map<String, ChatMessage> _lastMessage = {}; // peerHex -> latest msg
-  @override
-  final Map<String, double> transferProgress = {};
 
   /// Status events (delivered/failed) that arrived before the message row
   /// was persisted; applied by [_persistAndCache] on insert.
@@ -127,8 +112,6 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   /// local notification only when it is NOT (screen off / backgrounded).
   bool _foreground = true;
 
-  final _errors = StreamController<String>.broadcast();
-
   /// Dispatches a background notification. Injectable so tests can observe it
   /// without a platform channel.
   final void Function(String conversationKey, String title, String body)
@@ -167,55 +150,24 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       NotificationService.showMessage(
           conversationKey: key, title: title, body: body);
 
-  /// Transient, user-facing errors (for snackbars).
-  @override
-  Stream<String> get errorEvents => _errors.stream;
-
   /// Why the radio is unusable (drives the home-screen banner wording).
   @override
   RadioStatus get radioStatus => node.transport.radioStatus;
 
   @override
-  List<Contact> get contacts => List.unmodifiable(_contacts);
-  @override
   PeerId get myId => identity.peerId;
 
-  @override
-  bool isNearby(String peerHex) {
-    final seen = _lastSeen[peerHex];
-    if (seen == null) return false;
-    return DateTime.now().millisecondsSinceEpoch - seen <
-        presenceTtl.inMilliseconds;
-  }
-
-  @override
-  int get nearbyCount =>
-      _contacts.where((c) => isNearby(c.peerHex)).length;
-
-  /// Mesh distance to a nearby peer: 1 = direct, 2 = one relay between us, …
-  @override
-  int hopsTo(String peerHex) => _lastHops[peerHex] ?? 1;
-
+  /// Smoothed signal strength per peer: raw BLE RSSI jitters wildly, so an
+  /// exponential moving average keeps the proximity UI from twitching.
   void _onRssi(RssiSample s) {
     final peer = s.peer;
     if (peer == null) return; // unattributable reading
     final hex = peer.hex;
-    final old = _rssi[hex];
-    _rssi[hex] = old == null ? s.rssi.toDouble() : old * 0.6 + s.rssi * 0.4;
-    _rssiAt[hex] = DateTime.now().millisecondsSinceEpoch;
+    final old = rssiSmoothed[hex];
+    rssiSmoothed[hex] =
+        old == null ? s.rssi.toDouble() : old * 0.6 + s.rssi * 0.4;
+    rssiSeenAt[hex] = DateTime.now().millisecondsSinceEpoch;
     notifyListeners();
-  }
-
-  /// Smoothed RSSI (dBm) for a direct neighbour, or null when we have no
-  /// fresh reading (multihop peers, or the radio went quiet).
-  @override
-  int? rssiOf(String peerHex) {
-    final at = _rssiAt[peerHex];
-    if (at == null) return null;
-    if (DateTime.now().millisecondsSinceEpoch - at > _rssiTtl.inMilliseconds) {
-      return null;
-    }
-    return _rssi[peerHex]?.round();
   }
 
   /// Relay mailbox stats for the settings UI.
@@ -230,43 +182,6 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     node.store.clearDurable();
     await db.clearRelayStore();
     notifyListeners();
-  }
-
-  @override
-  List<ChatMessage> conversation(String peerHex) =>
-      List.unmodifiable(_conversations[peerHex] ?? const []);
-
-  @override
-  int unreadFor(String peerHex) => _unread[peerHex] ?? 0;
-  @override
-  int get totalUnread => _unread.values.fold(0, (a, b) => a + b);
-
-  /// The inbox: everyone we have a conversation with OR who is a contact,
-  /// most-recent-message first, then nearby, then name.
-  @override
-  List<ConversationSummary> conversations() {
-    final hexes = <String>{..._lastMessage.keys, ..._contacts.map((c) => c.peerHex)};
-    final list = hexes.map((hex) {
-      final contact = contactByHex(hex);
-      return ConversationSummary(
-        peerHex: hex,
-        displayName: contact?.displayName ?? PeerId.fromHex(hex).short,
-        verified: contact?.verified ?? false,
-        nearby: isNearby(hex),
-        lastMessage: _lastMessage[hex],
-        unread: unreadFor(hex),
-      );
-    }).toList();
-    list.sort((a, b) {
-      final at = a.lastMessage?.timestamp ?? 0;
-      final bt = b.lastMessage?.timestamp ?? 0;
-      if (at != bt) return bt - at; // most recent first
-      final an = a.nearby ? 0 : 1;
-      final bn = b.nearby ? 0 : 1;
-      if (an != bn) return an - bn;
-      return a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
-    });
-    return list;
   }
 
   Future<void> init() async {
@@ -313,10 +228,10 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
               AppLifecycleState.resumed ||
           WidgetsBinding.instance.lifecycleState == null;
     }
-    _contacts
+    contactList
       ..clear()
       ..addAll(await db.allContacts());
-    for (final c in _contacts) {
+    for (final c in contactList) {
       node.addContact(ContactIdentity(
         peerId: c.peerId,
         signingPublic: unb64(c.signingPublicB64),
@@ -362,7 +277,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     // Seed the inbox with the last message of each known conversation.
     for (final hex in await db.conversationPeers()) {
       final last = await db.lastMessageFor(hex);
-      if (last != null) _lastMessage[hex] = last;
+      if (last != null) lastMessages[hex] = last;
     }
 
     _sub = node.events.listen(_onEvent);
@@ -553,7 +468,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   void _trimMemory() {
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
-    _conversations.removeWhere((hex, _) => hex != _openPeer);
+    conversationCache.removeWhere((hex, _) => hex != _openPeer);
   }
 
   /// Fire a local notification for an incoming message when the app isn't in
@@ -614,16 +529,16 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
         'relayB': relayStoreBytes,
         'name': displayName,
         'rev': msgRev,
-        'contacts': [for (final c in _contacts) c.toMap()],
-        'seen': _lastSeen,
-        'hops': _lastHops,
+        'contacts': [for (final c in contactList) c.toMap()],
+        'seen': lastSeenAt,
+        'hops': lastHopCount,
         'rssi': {
-          for (final e in _rssi.entries)
-            e.key: [e.value, _rssiAt[e.key] ?? 0],
+          for (final e in rssiSmoothed.entries)
+            e.key: [e.value, rssiSeenAt[e.key] ?? 0],
         },
-        'unread': _unread,
+        'unread': unreadCounts,
         'last': {
-          for (final e in _lastMessage.entries) e.key: e.value.toMap(),
+          for (final e in lastMessages.entries) e.key: e.value.toMap(),
         },
         'prog': transferProgress,
       };
@@ -670,9 +585,9 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
         BackgroundService.updateStatus(count);
         notifyListeners();
       case PeerAnnounced(:final contact, :final hops):
-        _lastSeen[contact.peerId.hex] =
+        lastSeenAt[contact.peerId.hex] =
             DateTime.now().millisecondsSinceEpoch;
-        _lastHops[contact.peerId.hex] = hops;
+        lastHopCount[contact.peerId.hex] = hops;
         await _rememberAnnounced(contact);
         notifyListeners();
       case TextReceived(:final from, :final text, :final msgId):
@@ -696,7 +611,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
         await _applyStatus(transferIdHex, MsgStatus.failed);
       case NodeError(:final message):
         lastError = message;
-        _errors.add(message);
+        reportError(message);
         notifyListeners();
     }
   }
@@ -727,26 +642,23 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
         lastSeen: now,
       );
       await db.upsertContact(contact);
-      _contacts.removeWhere((x) => x.peerHex == contact.peerHex);
-      _contacts.add(contact);
+      replaceContact(contact);
     } else {
-      // Keep a user-set (verified) name; otherwise adopt the announced name.
+      // Keep a verified or user-renamed name; otherwise adopt the announced
+      // name. Without the nameLocked guard the peer's next ANNOUNCE (every
+      // ~15s) silently reverted a user rename of an unverified contact.
       if (!existing.verified &&
+          !existing.nameLocked &&
           c.displayName != null &&
           c.displayName!.isNotEmpty &&
           c.displayName != existing.displayName) {
         final updated = existing.copyWith(displayName: c.displayName, lastSeen: now);
         await db.upsertContact(updated);
-        _replaceContact(updated);
+        replaceContact(updated);
       } else {
         await db.touchContact(c.peerId.hex, now);
       }
     }
-  }
-
-  void _replaceContact(Contact c) {
-    _contacts.removeWhere((x) => x.peerHex == c.peerHex);
-    _contacts.add(c);
   }
 
   @override
@@ -755,16 +667,21 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     final c = ContactIdentity.fromBundle(bundle, displayName: name);
     node.addContact(c);
     final existing = await db.contact(c.peerId.hex);
+    // A user-renamed contact keeps its name across a QR re-scan.
+    final nameLocked = existing?.nameLocked ?? false;
     final contact = Contact(
       peerHex: c.peerId.hex,
       signingPublicB64: b64(c.signingPublic),
       kexPublicB64: b64(c.kexPublic),
-      displayName: name ?? existing?.displayName ?? c.peerId.short,
+      displayName: nameLocked
+          ? existing!.displayName
+          : name ?? existing?.displayName ?? c.peerId.short,
       verified: verified,
+      nameLocked: nameLocked,
       lastSeen: DateTime.now().millisecondsSinceEpoch,
     );
     await db.upsertContact(contact);
-    _replaceContact(contact);
+    replaceContact(contact);
     notifyListeners();
     return contact;
   }
@@ -786,14 +703,14 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     }
     await db.deleteMessagesFor(peerHex);
     await db.deleteContact(peerHex);
-    _contacts.removeWhere((c) => c.peerHex == peerHex);
-    _conversations.remove(peerHex);
-    _lastMessage.remove(peerHex);
-    _unread.remove(peerHex);
-    _lastSeen.remove(peerHex);
-    _lastHops.remove(peerHex);
-    _rssi.remove(peerHex);
-    _rssiAt.remove(peerHex);
+    contactList.removeWhere((c) => c.peerHex == peerHex);
+    conversationCache.remove(peerHex);
+    lastMessages.remove(peerHex);
+    unreadCounts.remove(peerHex);
+    lastSeenAt.remove(peerHex);
+    lastHopCount.remove(peerHex);
+    rssiSmoothed.remove(peerHex);
+    rssiSeenAt.remove(peerHex);
     if (_openPeer == peerHex) _openPeer = null;
     node.removeContact(PeerId.fromHex(peerHex));
     _bumpRev();
@@ -802,20 +719,15 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
 
   @override
   Future<void> renameContact(String peerHex, String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return;
     final existing = contactByHex(peerHex);
     if (existing == null) return;
-    final updated = existing.copyWith(displayName: name);
+    // nameLocked pins the user's choice against announce updates.
+    final updated = existing.copyWith(displayName: trimmed, nameLocked: true);
     await db.upsertContact(updated);
-    _replaceContact(updated);
+    replaceContact(updated);
     notifyListeners();
-  }
-
-  @override
-  Contact? contactByHex(String peerHex) {
-    for (final c in _contacts) {
-      if (c.peerHex == peerHex) return c;
-    }
-    return null;
   }
 
   // ---- identity ----
@@ -848,52 +760,34 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  // ---- QR payload ----
-
-  static const _qrPrefix = 'SPOTLINK1:';
+  // ---- QR payload (format lives in QrPayload) ----
 
   @override
-  String get myQrPayload {
-    final b = b64(identity.publicBundle);
-    final n = b64(utf8.encode(displayName));
-    return '$_qrPrefix$b:$n';
-  }
+  String get myQrPayload => QrPayload.encode(identity.publicBundle, displayName);
 
-  static (Uint8List, String)? parseQr(String payload) {
-    if (!payload.startsWith(_qrPrefix)) return null;
-    final body = payload.substring(_qrPrefix.length);
-    final parts = body.split(':');
-    if (parts.isEmpty) return null;
-    try {
-      final bundle = unb64(parts[0]);
-      final name = parts.length > 1 ? utf8.decode(unb64(parts[1])) : '';
-      if (bundle.length != 64) return null;
-      return (bundle, name);
-    } catch (_) {
-      return null;
-    }
-  }
+  static (Uint8List, String)? parseQr(String payload) =>
+      QrPayload.decode(payload);
 
   // ---- messaging ----
 
   @override
   Future<void> openConversation(String peerHex) async {
     _openPeer = peerHex;
-    _unread.remove(peerHex);
+    unreadCounts.remove(peerHex);
     NotificationService.cancelFor(peerHex);
-    if (!_conversations.containsKey(peerHex)) {
+    if (!conversationCache.containsKey(peerHex)) {
       // Install a placeholder list *before* the await so messages that arrive
       // during the DB load (via _persistAndCache) are captured, then merge them
       // with the DB snapshot without duplicating.
       final live = <ChatMessage>[];
-      _conversations[peerHex] = live;
+      conversationCache[peerHex] = live;
       final loaded = await db.messagesFor(peerHex, limit: 200);
       final loadedIds = loaded.map((m) => m.id).whereType<int>().toSet();
       final extras =
           live.where((m) => m.id == null || !loadedIds.contains(m.id));
       final merged = [...loaded, ...extras]
         ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
-      _conversations[peerHex] = merged;
+      conversationCache[peerHex] = merged;
     }
     notifyListeners();
   }
@@ -929,7 +823,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     node.forgetText(failed.msgId);
     final msgId = await node.sendText(peer, failed.text!);
     if (msgId == null) {
-      _errors.add('Still unable to send — no route yet');
+      reportError('Still unable to send — no route yet');
       return;
     }
     if (failed.id != null) {
@@ -952,7 +846,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     final path = await _saveLocalCopy(
         'out-${DateTime.now().millisecondsSinceEpoch}', name, bytes);
     if (path == null) {
-      _errors.add('파일을 저장할 수 없어 보낼 수 없습니다');
+      reportError('파일을 저장할 수 없어 보낼 수 없습니다');
       return;
     }
     await sendFilePath(peerHex, path: path, name: name, mime: mime);
@@ -994,29 +888,38 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     await _persistAndCache(msg);
   }
 
-  Future<String?> _saveLocalCopy(
-      String tid, String name, Uint8List bytes) async {
+  /// Destination path for a durable copy under sent/, or null when the
+  /// folder can't be prepared. The copy is best-effort everywhere: a null
+  /// simply means "send without a local copy".
+  Future<String?> _sentPathFor(String tid, String name) async {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final folder = Directory(p.join(dir.path, 'sent'));
       if (!await folder.exists()) await folder.create(recursive: true);
       final safeName = name.replaceAll(RegExp(r'[/\\]'), '_');
-      final path = p.join(folder.path, '${tid}_$safeName');
+      return p.join(folder.path, '${tid}_$safeName');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> _saveLocalCopy(
+      String tid, String name, Uint8List bytes) async {
+    final path = await _sentPathFor(tid, name);
+    if (path == null) return null;
+    try {
       await File(path).writeAsBytes(bytes);
       return path;
     } catch (_) {
-      return null; // the copy is best-effort; sending still works without it
+      return null;
     }
   }
 
   /// Like [_saveLocalCopy] but from an existing file — native copy, no RAM.
   Future<String?> _copyToSent(String tid, String name, String srcPath) async {
+    final path = await _sentPathFor(tid, name);
+    if (path == null) return null;
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final folder = Directory(p.join(dir.path, 'sent'));
-      if (!await folder.exists()) await folder.create(recursive: true);
-      final safeName = name.replaceAll(RegExp(r'[/\\]'), '_');
-      final path = p.join(folder.path, '${tid}_$safeName');
       await File(srcPath).copy(path);
       return path;
     } catch (_) {
@@ -1037,7 +940,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   Future<void> retryFile(ChatMessage failed) async {
     final path = failed.filePath;
     if (path == null || !await File(path).exists()) {
-      _errors.add('원본 파일이 없어 다시 보낼 수 없습니다');
+      reportError('원본 파일이 없어 다시 보낼 수 없습니다');
       return;
     }
     final name = failed.fileName ?? p.basename(path);
@@ -1048,7 +951,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
       mime: lookupMimeType(name) ?? 'application/octet-stream',
     );
     if (tid == null) {
-      _errors.add('Still unable to send — no route yet');
+      reportError('Still unable to send — no route yet');
       return;
     }
     if (failed.id != null) {
@@ -1146,10 +1049,10 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     if (pending != null) msg = msg.copyWith(status: pending);
     final id = await db.insertMessage(msg);
     final stored = msg.withId(id);
-    _conversations[msg.peerHex]?.add(stored);
-    _lastMessage[msg.peerHex] = stored;
+    conversationCache[msg.peerHex]?.add(stored);
+    lastMessages[msg.peerHex] = stored;
     if (incoming && msg.peerHex != _openPeer) {
-      _unread[msg.peerHex] = (_unread[msg.peerHex] ?? 0) + 1;
+      unreadCounts[msg.peerHex] = (unreadCounts[msg.peerHex] ?? 0) + 1;
     }
     _bumpRev();
     notifyListeners();
@@ -1209,47 +1112,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     } catch (_) {} // diagnostics-grade persistence — never block startup
   }
 
-  // ---- files ----
-
-  @override
-  Future<void> openFile(ChatMessage msg) async {
-    if (msg.filePath == null) return;
-    final result = await OpenFilex.open(msg.filePath!);
-    if (result.type != ResultType.done) {
-      _errors.add('Could not open file: ${result.message}');
-    }
-  }
-
-  /// Save a received image/video into the device photo gallery.
-  /// Returns false (and surfaces an error) when the file kind can't go there.
-  @override
-  Future<bool> saveToGallery(ChatMessage msg) async {
-    final path = msg.filePath;
-    if (path == null) return false;
-    final mime = lookupMimeType(msg.fileName ?? path) ?? '';
-    try {
-      if (mime.startsWith('image/')) {
-        await Gal.putImage(path);
-      } else if (mime.startsWith('video/')) {
-        await Gal.putVideo(path);
-      } else {
-        return false; // not a media file — use share/Files instead
-      }
-      return true;
-    } catch (e) {
-      _errors.add('갤러리 저장 실패: $e');
-      notifyListeners();
-      return false;
-    }
-  }
-
-  /// System share sheet — covers "파일 앱에 저장", AirDrop, other apps.
-  @override
-  Future<void> shareFile(ChatMessage msg) async {
-    final path = msg.filePath;
-    if (path == null) return;
-    await SharePlus.instance.share(ShareParams(files: [XFile(path)]));
-  }
+  // ---- files (openFile / saveToGallery / shareFile: see LocalFileActions) --
 
   /// Delete one message bubble on this device (DB + memory), removing the
   /// stored file from disk for file messages. Purely local — the peer's copy
@@ -1263,13 +1126,13 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
         await File(path).delete();
       } catch (_) {} // already gone — fine
     }
-    _conversations[msg.peerHex]?.removeWhere((m) => m.msgId == msg.msgId);
-    if (_lastMessage[msg.peerHex]?.msgId == msg.msgId) {
-      final rest = _conversations[msg.peerHex];
+    conversationCache[msg.peerHex]?.removeWhere((m) => m.msgId == msg.msgId);
+    if (lastMessages[msg.peerHex]?.msgId == msg.msgId) {
+      final rest = conversationCache[msg.peerHex];
       if (rest != null && rest.isNotEmpty) {
-        _lastMessage[msg.peerHex] = rest.last;
+        lastMessages[msg.peerHex] = rest.last;
       } else {
-        _lastMessage.remove(msg.peerHex);
+        lastMessages.remove(msg.peerHex);
       }
     }
     _bumpRev();
@@ -1281,39 +1144,39 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
   /// Like [_patchStatus] but also attaches the saved file path (an incoming
   /// transfer completing in place).
   void _patchFile(String msgId, String filePath, MsgStatus status) {
-    for (final list in _conversations.values) {
+    for (final list in conversationCache.values) {
       for (var i = 0; i < list.length; i++) {
         if (list[i].msgId == msgId) {
           list[i] = list[i].copyWith(filePath: filePath, status: status);
         }
       }
     }
-    for (final entry in _lastMessage.entries.toList()) {
+    for (final entry in lastMessages.entries.toList()) {
       if (entry.value.msgId == msgId) {
-        _lastMessage[entry.key] =
+        lastMessages[entry.key] =
             entry.value.copyWith(filePath: filePath, status: status);
       }
     }
   }
 
   void _patchStatus(String msgId, MsgStatus status) {
-    for (final list in _conversations.values) {
+    for (final list in conversationCache.values) {
       for (var i = 0; i < list.length; i++) {
         if (list[i].msgId == msgId) {
           list[i] = list[i].copyWith(status: status);
         }
       }
     }
-    for (final entry in _lastMessage.entries.toList()) {
+    for (final entry in lastMessages.entries.toList()) {
       if (entry.value.msgId == msgId) {
-        _lastMessage[entry.key] = entry.value.copyWith(status: status);
+        lastMessages[entry.key] = entry.value.copyWith(status: status);
       }
     }
   }
 
   void _patchMessage(String peerHex, String oldMsgId,
       {required String newMsgId, required MsgStatus status}) {
-    final list = _conversations[peerHex];
+    final list = conversationCache[peerHex];
     if (list != null) {
       for (var i = 0; i < list.length; i++) {
         if (list[i].msgId == oldMsgId) {
@@ -1321,11 +1184,11 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
         }
       }
     }
-    // Keep the inbox summary in sync (it reads _lastMessage), otherwise the
+    // Keep the inbox summary in sync (it reads lastMessages), otherwise the
     // row stays stuck on the old failed msgId forever.
-    final last = _lastMessage[peerHex];
+    final last = lastMessages[peerHex];
     if (last != null && last.msgId == oldMsgId) {
-      _lastMessage[peerHex] = last.copyWith(msgId: newMsgId, status: status);
+      lastMessages[peerHex] = last.copyWith(msgId: newMsgId, status: status);
     }
   }
 
@@ -1342,8 +1205,7 @@ class MeshController extends MeshFrontend with WidgetsBindingObserver {
     _sub?.cancel();
     _rssiSub?.cancel();
     _availabilitySub?.cancel();
-    _errors.close();
     node.dispose();
-    super.dispose();
+    super.dispose(); // MeshFrontendState closes the error stream
   }
 }

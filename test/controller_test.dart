@@ -308,9 +308,87 @@ void main() {
     // Reload from DB to confirm persistence.
     final reloaded = await c.db.contact(bob.peerId.hex);
     expect(reloaded!.displayName, 'Bobby');
+    expect(reloaded.nameLocked, isTrue);
 
     await c.node.dispose();
     c.dispose();
+  });
+
+  test('user rename is not reverted by the peer\'s next announce', () async {
+    // Regression: renaming an UNVERIFIED (auto-discovered) contact used to be
+    // undone by the peer's next ANNOUNCE (~15s cycle), because the announced
+    // name overwrote any non-verified contact's name.
+    final ida = await Identity.generate();
+    final idb = await Identity.generate();
+    final radio = FakeRadio();
+    MeshController make(Identity id, String name) => MeshController(
+          identity: id,
+          displayName: name,
+          db: AppDatabase(overridePath: p.join(tmp.path, 'c${counter++}.db')),
+          identityStore: IdentityStore(),
+          node: MeshNode(
+              identity: id, displayName: name, transport: radio.create(id.peerId)),
+        );
+    final ca = make(ida, 'A');
+    final cb = make(idb, 'Bob');
+    await ca.init();
+    await cb.init();
+    radio.connect(ida.peerId, idb.peerId);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    // Discovered via link-up announce: unverified, announced name adopted.
+    final bobHex = idb.peerId.hex;
+    expect(ca.contactByHex(bobHex)?.displayName, 'Bob');
+    expect(ca.contactByHex(bobHex)?.verified, isFalse);
+
+    // The user renames the contact; Bob then re-announces.
+    await ca.renameContact(bobHex, '단골 손님');
+    await cb.node.updateDisplayName('Robert');
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    // The user's choice sticks — in memory and on disk.
+    expect(ca.contactByHex(bobHex)?.displayName, '단골 손님');
+    final row = await ca.db.contact(bobHex);
+    expect(row?.displayName, '단골 손님');
+    expect(row?.nameLocked, isTrue);
+
+    await ca.node.dispose();
+    await cb.node.dispose();
+    ca.dispose();
+    cb.dispose();
+  });
+
+  test('peer self-rename still propagates when the user has not renamed',
+      () async {
+    // The nameLocked guard must not break the normal announce-name adoption
+    // for contacts the user never touched.
+    final ida = await Identity.generate();
+    final idb = await Identity.generate();
+    final radio = FakeRadio();
+    MeshController make(Identity id, String name) => MeshController(
+          identity: id,
+          displayName: name,
+          db: AppDatabase(overridePath: p.join(tmp.path, 'c${counter++}.db')),
+          identityStore: IdentityStore(),
+          node: MeshNode(
+              identity: id, displayName: name, transport: radio.create(id.peerId)),
+        );
+    final ca = make(ida, 'A');
+    final cb = make(idb, 'Bob');
+    await ca.init();
+    await cb.init();
+    radio.connect(ida.peerId, idb.peerId);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    await cb.node.updateDisplayName('Robert');
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    expect(ca.contactByHex(idb.peerId.hex)?.displayName, 'Robert');
+
+    await ca.node.dispose();
+    await cb.node.dispose();
+    ca.dispose();
+    cb.dispose();
   });
 
   test('QR round-trip through controller', () async {

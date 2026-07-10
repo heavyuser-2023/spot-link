@@ -111,6 +111,11 @@ class Contact {
   final String kexPublicB64;
   final String displayName;
   final bool verified;
+
+  /// True once the user renamed this contact themselves. A locked name is
+  /// never overwritten by the peer's self-announced name (see
+  /// MeshController._rememberAnnounced) or by a QR re-scan.
+  final bool nameLocked;
   final int lastSeen; // epoch ms, 0 if never
 
   Contact({
@@ -119,6 +124,7 @@ class Contact {
     required this.kexPublicB64,
     required this.displayName,
     required this.verified,
+    this.nameLocked = false,
     this.lastSeen = 0,
   });
 
@@ -130,6 +136,7 @@ class Contact {
         'kex_pub': kexPublicB64,
         'display_name': displayName,
         'verified': verified ? 1 : 0,
+        'name_locked': nameLocked ? 1 : 0,
         'last_seen': lastSeen,
       };
 
@@ -139,16 +146,22 @@ class Contact {
         kexPublicB64: m['kex_pub'] as String,
         displayName: m['display_name'] as String,
         verified: (m['verified'] as int) == 1,
+        nameLocked: (m['name_locked'] as int? ?? 0) == 1,
         lastSeen: (m['last_seen'] as int?) ?? 0,
       );
 
-  Contact copyWith({String? displayName, bool? verified, int? lastSeen}) =>
+  Contact copyWith(
+          {String? displayName,
+          bool? verified,
+          bool? nameLocked,
+          int? lastSeen}) =>
       Contact(
         peerHex: peerHex,
         signingPublicB64: signingPublicB64,
         kexPublicB64: kexPublicB64,
         displayName: displayName ?? this.displayName,
         verified: verified ?? this.verified,
+        nameLocked: nameLocked ?? this.nameLocked,
         lastSeen: lastSeen ?? this.lastSeen,
       );
 }

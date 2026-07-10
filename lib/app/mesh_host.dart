@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import '../core/ble/mesh_transport.dart' show bleLogSink;
+import 'bridge_protocol.dart';
 import 'mesh_controller.dart';
 
 /// Service-isolate side of the UI bridge: exposes the one true
@@ -34,7 +35,7 @@ class MeshHost {
   MeshHost(this.controller) {
     controller.addListener(_scheduleSnapshot);
     _errSub = controller.errorEvents.listen(
-        (m) => _send({'t': 'err', 'm': m}));
+        (m) => _send({'t': Bridge.typeError, 'm': m}));
     // The UI keepalive ticks every ~10s while it exists; 35s of silence
     // means the UI isolate is gone (or frozen) — resume notifying.
     _uiStaleTimer = Timer.periodic(const Duration(seconds: 15), (_) {
@@ -55,7 +56,7 @@ class MeshHost {
   void _scheduleSnapshot() {
     _throttle ??= Timer(const Duration(milliseconds: 250), () {
       _throttle = null;
-      _send({'t': 'snap', ...controller.snapshotForRemote()});
+      _send({'t': Bridge.typeSnapshot, ...controller.snapshotForRemote()});
     });
   }
 
@@ -77,46 +78,46 @@ class MeshHost {
     final c = controller;
     try {
       switch (m['c']) {
-        case 'hello':
+        case Bridge.cmdHello:
           _scheduleSnapshot();
-        case 'fg':
+        case Bridge.cmdForeground:
           _uiForeground = m['v'] == true;
           c.setRemoteForeground(_uiForeground);
-        case 'bye':
+        case Bridge.cmdBye:
           _uiForeground = false;
           c.setRemoteForeground(false);
           c.closeConversation();
-        case 'open':
+        case Bridge.cmdOpen:
           await c.openConversation(m['p'] as String);
-        case 'close':
+        case Bridge.cmdClose:
           c.closeConversation();
-        case 'send':
+        case Bridge.cmdSendText:
           await c.sendText(m['p'] as String, m['x'] as String);
-        case 'retryText':
+        case Bridge.cmdRetryText:
           await c.retryTextById(m['p'] as String, m['id'] as String);
-        case 'sendFile':
+        case Bridge.cmdSendFile:
           await _sendFile(m);
-        case 'retryFile':
+        case Bridge.cmdRetryFile:
           await c.retryFileById(m['p'] as String, m['id'] as String);
-        case 'cancelFile':
+        case Bridge.cmdCancelFile:
           await c.cancelFileById(m['id'] as String);
-        case 'delMsg':
+        case Bridge.cmdDeleteMessage:
           await c.deleteMessageById(m['p'] as String, m['id'] as String);
-        case 'addContact':
+        case Bridge.cmdAddContact:
           await c.addContactFromBundle(
             base64Decode(m['b'] as String),
             name: m['name'] as String?,
             verified: m['v'] != false,
           );
-        case 'delContact':
+        case Bridge.cmdDeleteContact:
           await c.deleteContact(m['p'] as String);
-        case 'renameContact':
+        case Bridge.cmdRenameContact:
           await c.renameContact(m['p'] as String, m['name'] as String);
-        case 'name':
+        case Bridge.cmdSetName:
           await c.setDisplayName(m['v'] as String);
-        case 'saver':
+        case Bridge.cmdSetSaver:
           c.setPowerSaver(m['v'] == true);
-        case 'clearRelay':
+        case Bridge.cmdClearRelay:
           await c.clearRelayStore();
       }
     } catch (e) {

@@ -53,6 +53,67 @@ void main() {
     expect(all.first.displayName, 'Kim');
   });
 
+  test('name_locked round-trips through upsert', () async {
+    final db = freshDb();
+    final c = Contact(
+      peerHex: '0011223344556677',
+      signingPublicB64: 'c2ln',
+      kexPublicB64: 'a2V4',
+      displayName: '별명',
+      verified: false,
+      nameLocked: true,
+    );
+    await db.upsertContact(c);
+    final read = await db.contact('0011223344556677');
+    expect(read!.nameLocked, isTrue);
+    expect(read.displayName, '별명');
+  });
+
+  test('v3 → v4 migration adds name_locked and keeps existing rows', () async {
+    final path = p.join(tmp.path, 'migrate_${counter++}.sqlite');
+    // Build a v3-schema database by hand (the schema shipped before v4).
+    final old = await databaseFactory.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 3,
+        onCreate: (db, _) async {
+          await db.execute('''
+            CREATE TABLE contacts (
+              peer_hex TEXT PRIMARY KEY,
+              signing_pub TEXT NOT NULL,
+              kex_pub TEXT NOT NULL,
+              display_name TEXT NOT NULL,
+              verified INTEGER NOT NULL,
+              last_seen INTEGER NOT NULL
+            )
+          ''');
+        },
+      ),
+    );
+    await old.insert('contacts', {
+      'peer_hex': 'aabbccddeeff0011',
+      'signing_pub': 'c2ln',
+      'kex_pub': 'a2V4',
+      'display_name': '김정훈',
+      'verified': 0,
+      'last_seen': 42,
+    });
+    await old.close();
+
+    // Reopening through AppDatabase runs the v4 migration.
+    final db = AppDatabase(overridePath: path);
+    final migrated = await db.contact('aabbccddeeff0011');
+    expect(migrated, isNotNull);
+    expect(migrated!.displayName, '김정훈');
+    expect(migrated.nameLocked, isFalse); // default for pre-v4 rows
+
+    await db.upsertContact(
+        migrated.copyWith(displayName: '별명', nameLocked: true));
+    final renamed = await db.contact('aabbccddeeff0011');
+    expect(renamed!.displayName, '별명');
+    expect(renamed.nameLocked, isTrue);
+  });
+
   test('messages persist, order, and status update by msgId', () async {
     final db = freshDb();
     const peer = 'deadbeef00112233';

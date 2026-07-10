@@ -5,22 +5,21 @@ import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'package:gal/gal.dart';
-import 'package:mime/mime.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../core/ble/mesh_transport.dart' show RadioStatus;
 import '../core/crypto/identity.dart';
 import '../core/model/peer_id.dart';
+import '../core/model/qr_payload.dart';
 import '../data/app_database.dart';
 import '../data/identity_store.dart';
 import '../data/models.dart';
 import 'background_service.dart';
 import 'beacon_wake.dart';
+import 'bridge_protocol.dart';
 import 'mesh_frontend.dart';
+import 'mesh_frontend_state.dart';
 import 'notification_service.dart';
 import 'permissions.dart';
 
@@ -29,7 +28,11 @@ import 'permissions.dart';
 /// state arrives as JSON snapshots over the task port, commands go back the
 /// same way, and chat history is read straight from the shared SQLite file
 /// (WAL) whenever the snapshot's `rev` counter moves.
-class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
+///
+/// Presence / roster / inbox queries and local file actions live in the
+/// shared [MeshFrontendState] / [LocalFileActions] mixins.
+class RemoteMeshController extends MeshFrontend
+    with MeshFrontendState, LocalFileActions, WidgetsBindingObserver {
   final Identity identity;
   final AppDatabase db;
   final IdentityStore identityStore;
@@ -60,28 +63,11 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
   int _relayBytes = 0;
   int _rev = -1;
 
-  final List<Contact> _contacts = [];
-  final Map<String, int> _lastSeen = {};
-  final Map<String, int> _lastHops = {};
-  final Map<String, double> _rssi = {};
-  final Map<String, int> _rssiAt = {};
-  final Map<String, int> _unread = {};
-  final Map<String, ChatMessage> _lastMessage = {};
-  final Map<String, List<ChatMessage>> _conversations = {};
-
-  @override
-  final Map<String, double> transferProgress = {};
-
   String? _openPeer;
   bool _foreground = true;
   Timer? _keepalive;
   Completer<void>? _firstSnap;
   bool _wired = false;
-
-  final _errors = StreamController<String>.broadcast();
-
-  static const Duration presenceTtl = Duration(seconds: 40);
-  static const Duration _rssiTtl = Duration(seconds: 40);
 
   /// Bring the bridge up: make sure the owning service runs, then wait for
   /// its first state snapshot. Throws on timeout so the caller's retry loop
@@ -96,12 +82,12 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
         WidgetsBinding.instance.lifecycleState == null;
 
     // Instant first paint from the shared DB while the service answers.
-    _contacts
+    contactList
       ..clear()
       ..addAll(await db.allContacts());
     for (final hex in await db.conversationPeers()) {
       final last = await db.lastMessageFor(hex);
-      if (last != null) _lastMessage[hex] = last;
+      if (last != null) lastMessages[hex] = last;
     }
     notifyListeners();
 
@@ -136,7 +122,7 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
     // its UI-alive heartbeat (>35s silence → service resumes notifying).
     _keepalive = Timer.periodic(const Duration(seconds: 5), (_) async {
       if (_firstSnap?.isCompleted ?? true) {
-        _send({'c': 'fg', 'v': _foreground});
+        _send({'c': Bridge.cmdForeground, 'v': _foreground});
       } else {
         try {
           await BackgroundService.start();
@@ -152,8 +138,8 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
   }
 
   void _sayHello() {
-    _send({'c': 'hello'});
-    _send({'c': 'fg', 'v': _foreground});
+    _send({'c': Bridge.cmdHello});
+    _send({'c': Bridge.cmdForeground, 'v': _foreground});
   }
 
   /// Re-check the runtime BLE permission and, if missing, re-request it (the
@@ -176,7 +162,7 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
     }
     // Newly granted: poke the service so it (re)starts now instead of waiting
     // for the keepalive tick — the 'fg' command retries a down mesh.
-    if (granted) _send({'c': 'fg', 'v': _foreground});
+    if (granted) _send({'c': Bridge.cmdForeground, 'v': _foreground});
   }
 
   void _send(Map<String, Object?> m) =>
@@ -191,12 +177,12 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
       return;
     }
     switch (m['t']) {
-      case 'snap':
+      case Bridge.typeSnapshot:
         _applySnapshot(m);
-      case 'err':
+      case Bridge.typeError:
         final msg = m['m'] as String? ?? 'unknown error';
         _lastError = msg;
-        _errors.add(msg);
+        reportError(msg);
         notifyListeners();
     }
   }
@@ -216,33 +202,33 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
     Map<String, Object?> asMap(Object? o) =>
         (o as Map?)?.cast<String, Object?>() ?? const {};
 
-    _contacts
+    contactList
       ..clear()
       ..addAll([
         for (final c in (m['contacts'] as List? ?? const []))
           Contact.fromMap((c as Map).cast<String, Object?>()),
       ]);
-    _lastSeen
+    lastSeenAt
       ..clear()
       ..addAll(asMap(m['seen']).map((k, v) => MapEntry(k, (v as num).toInt())));
-    _lastHops
+    lastHopCount
       ..clear()
       ..addAll(asMap(m['hops']).map((k, v) => MapEntry(k, (v as num).toInt())));
-    _rssi.clear();
-    _rssiAt.clear();
+    rssiSmoothed.clear();
+    rssiSeenAt.clear();
     asMap(m['rssi']).forEach((k, v) {
       final pair = v as List;
-      _rssi[k] = (pair[0] as num).toDouble();
-      _rssiAt[k] = (pair[1] as num).toInt();
+      rssiSmoothed[k] = (pair[0] as num).toDouble();
+      rssiSeenAt[k] = (pair[1] as num).toInt();
     });
-    _unread
+    unreadCounts
       ..clear()
       ..addAll(
           asMap(m['unread']).map((k, v) => MapEntry(k, (v as num).toInt())));
     // The UI suppresses its open conversation's unread locally too — the
     // 'open' command races the next snapshot otherwise.
-    if (_openPeer != null) _unread.remove(_openPeer);
-    _lastMessage
+    if (_openPeer != null) unreadCounts.remove(_openPeer);
+    lastMessages
       ..clear()
       ..addAll(asMap(m['last']).map((k, v) =>
           MapEntry(k, ChatMessage.fromMap((v as Map).cast<String, Object?>()))));
@@ -267,7 +253,7 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
 
   Future<void> _reloadConversation(String peerHex) async {
     final loaded = await db.messagesFor(peerHex, limit: 200);
-    _conversations[peerHex] = loaded;
+    conversationCache[peerHex] = loaded;
     notifyListeners();
   }
 
@@ -280,18 +266,14 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
   PeerId get myId => identity.peerId;
 
   @override
-  String get myQrPayload {
-    final b = b64(identity.publicBundle);
-    final n = b64(utf8.encode(_displayName));
-    return 'SPOTLINK1:$b:$n';
-  }
+  String get myQrPayload => QrPayload.encode(identity.publicBundle, _displayName);
 
   @override
   Future<void> setDisplayName(String name) async {
     final trimmed = name.trim();
     if (trimmed.isEmpty) return;
     _displayName = trimmed;
-    _send({'c': 'name', 'v': trimmed});
+    _send({'c': Bridge.cmdSetName, 'v': trimmed});
     notifyListeners();
   }
 
@@ -312,55 +294,17 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
   @override
   void setPowerSaver(bool saver) {
     _powerSaver = saver;
-    _send({'c': 'saver', 'v': saver});
+    _send({'c': Bridge.cmdSetSaver, 'v': saver});
     notifyListeners();
   }
 
-  @override
-  Stream<String> get errorEvents => _errors.stream;
-
   // ---- MeshFrontend: presence / contacts ----
-
-  @override
-  List<Contact> get contacts => List.unmodifiable(_contacts);
-
-  @override
-  Contact? contactByHex(String peerHex) {
-    for (final c in _contacts) {
-      if (c.peerHex == peerHex) return c;
-    }
-    return null;
-  }
-
-  @override
-  bool isNearby(String peerHex) {
-    final seen = _lastSeen[peerHex];
-    if (seen == null) return false;
-    return DateTime.now().millisecondsSinceEpoch - seen <
-        presenceTtl.inMilliseconds;
-  }
-
-  @override
-  int get nearbyCount => _contacts.where((c) => isNearby(c.peerHex)).length;
-
-  @override
-  int hopsTo(String peerHex) => _lastHops[peerHex] ?? 1;
-
-  @override
-  int? rssiOf(String peerHex) {
-    final at = _rssiAt[peerHex];
-    if (at == null) return null;
-    if (DateTime.now().millisecondsSinceEpoch - at > _rssiTtl.inMilliseconds) {
-      return null;
-    }
-    return _rssi[peerHex]?.round();
-  }
 
   @override
   Future<Contact> addContactFromBundle(Uint8List bundle,
       {String? name, bool verified = true}) async {
     _send({
-      'c': 'addContact',
+      'c': Bridge.cmdAddContact,
       'b': base64Encode(bundle),
       'name': name,
       'v': verified,
@@ -368,40 +312,43 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
     // Mirror immediately so the scan screen can confirm without waiting a
     // snapshot round-trip; the authoritative row arrives with the next snap.
     final ci = ContactIdentity.fromBundle(bundle, displayName: name);
+    final existing = contactByHex(ci.peerId.hex);
+    // Same rule as the service: a user-renamed contact keeps its name.
+    final nameLocked = existing?.nameLocked ?? false;
     final contact = Contact(
       peerHex: ci.peerId.hex,
       signingPublicB64: b64(ci.signingPublic),
       kexPublicB64: b64(ci.kexPublic),
-      displayName: name ?? contactByHex(ci.peerId.hex)?.displayName ??
-          ci.peerId.short,
+      displayName: nameLocked
+          ? existing!.displayName
+          : name ?? existing?.displayName ?? ci.peerId.short,
       verified: verified,
+      nameLocked: nameLocked,
       lastSeen: DateTime.now().millisecondsSinceEpoch,
     );
-    _contacts.removeWhere((x) => x.peerHex == contact.peerHex);
-    _contacts.add(contact);
+    replaceContact(contact);
     notifyListeners();
     return contact;
   }
 
   @override
   Future<void> deleteContact(String peerHex) async {
-    _send({'c': 'delContact', 'p': peerHex});
-    _contacts.removeWhere((c) => c.peerHex == peerHex);
-    _conversations.remove(peerHex);
-    _lastMessage.remove(peerHex);
-    _unread.remove(peerHex);
-    _lastSeen.remove(peerHex);
+    _send({'c': Bridge.cmdDeleteContact, 'p': peerHex});
+    contactList.removeWhere((c) => c.peerHex == peerHex);
+    conversationCache.remove(peerHex);
+    lastMessages.remove(peerHex);
+    unreadCounts.remove(peerHex);
+    lastSeenAt.remove(peerHex);
     if (_openPeer == peerHex) _openPeer = null;
     notifyListeners();
   }
 
   @override
   Future<void> renameContact(String peerHex, String name) async {
-    _send({'c': 'renameContact', 'p': peerHex, 'name': name});
+    _send({'c': Bridge.cmdRenameContact, 'p': peerHex, 'name': name});
     final existing = contactByHex(peerHex);
     if (existing != null) {
-      _contacts.removeWhere((x) => x.peerHex == peerHex);
-      _contacts.add(existing.copyWith(displayName: name));
+      replaceContact(existing.copyWith(displayName: name, nameLocked: true));
     }
     notifyListeners();
   }
@@ -415,7 +362,7 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
 
   @override
   Future<void> clearRelayStore() async {
-    _send({'c': 'clearRelay'});
+    _send({'c': Bridge.cmdClearRelay});
     _relayCount = 0;
     _relayBytes = 0;
     notifyListeners();
@@ -432,69 +379,30 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
   // ---- MeshFrontend: inbox / conversations ----
 
   @override
-  List<ConversationSummary> conversations() {
-    final hexes = <String>{
-      ..._lastMessage.keys,
-      ..._contacts.map((c) => c.peerHex),
-    };
-    final list = hexes.map((hex) {
-      final contact = contactByHex(hex);
-      return ConversationSummary(
-        peerHex: hex,
-        displayName: contact?.displayName ?? PeerId.fromHex(hex).short,
-        verified: contact?.verified ?? false,
-        nearby: isNearby(hex),
-        lastMessage: _lastMessage[hex],
-        unread: unreadFor(hex),
-      );
-    }).toList();
-    list.sort((a, b) {
-      final at = a.lastMessage?.timestamp ?? 0;
-      final bt = b.lastMessage?.timestamp ?? 0;
-      if (at != bt) return bt - at;
-      final an = a.nearby ? 0 : 1;
-      final bn = b.nearby ? 0 : 1;
-      if (an != bn) return an - bn;
-      return a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
-    });
-    return list;
-  }
-
-  @override
-  List<ChatMessage> conversation(String peerHex) =>
-      List.unmodifiable(_conversations[peerHex] ?? const []);
-
-  @override
-  int unreadFor(String peerHex) => _unread[peerHex] ?? 0;
-
-  @override
-  int get totalUnread => _unread.values.fold(0, (a, b) => a + b);
-
-  @override
   Future<void> openConversation(String peerHex) async {
     _openPeer = peerHex;
-    _unread.remove(peerHex);
+    unreadCounts.remove(peerHex);
     NotificationService.cancelFor(peerHex);
-    _send({'c': 'open', 'p': peerHex});
+    _send({'c': Bridge.cmdOpen, 'p': peerHex});
     await _reloadConversation(peerHex);
   }
 
   @override
   void closeConversation() {
     _openPeer = null;
-    _send({'c': 'close'});
+    _send({'c': Bridge.cmdClose});
   }
 
   // ---- MeshFrontend: messaging ----
 
   @override
   Future<void> sendText(String peerHex, String text) async {
-    _send({'c': 'send', 'p': peerHex, 'x': text});
+    _send({'c': Bridge.cmdSendText, 'p': peerHex, 'x': text});
   }
 
   @override
   Future<void> retryText(ChatMessage failed) async {
-    _send({'c': 'retryText', 'p': failed.peerHex, 'id': failed.msgId});
+    _send({'c': Bridge.cmdRetryText, 'p': failed.peerHex, 'id': failed.msgId});
   }
 
   @override
@@ -522,7 +430,7 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
     // Same sandbox, so the service isolate reads the path directly; it makes
     // its own durable copy under sent/ before streaming from disk.
     _send({
-      'c': 'sendFile',
+      'c': Bridge.cmdSendFile,
       'p': peerHex,
       'path': path,
       'name': name,
@@ -533,70 +441,33 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
   @override
   Future<void> cancelFile(ChatMessage msg) async {
     transferProgress.remove(msg.msgId);
-    _send({'c': 'cancelFile', 'id': msg.msgId});
+    _send({'c': Bridge.cmdCancelFile, 'id': msg.msgId});
     notifyListeners();
   }
 
   @override
   Future<void> retryFile(ChatMessage failed) async {
-    _send({'c': 'retryFile', 'p': failed.peerHex, 'id': failed.msgId});
+    _send({'c': Bridge.cmdRetryFile, 'p': failed.peerHex, 'id': failed.msgId});
   }
 
   @override
   Future<void> deleteMessage(ChatMessage msg) async {
-    _send({'c': 'delMsg', 'p': msg.peerHex, 'id': msg.msgId});
-    _conversations[msg.peerHex]?.removeWhere((m) => m.msgId == msg.msgId);
-    if (_lastMessage[msg.peerHex]?.msgId == msg.msgId) {
-      _lastMessage.remove(msg.peerHex);
+    _send({'c': Bridge.cmdDeleteMessage, 'p': msg.peerHex, 'id': msg.msgId});
+    conversationCache[msg.peerHex]?.removeWhere((m) => m.msgId == msg.msgId);
+    if (lastMessages[msg.peerHex]?.msgId == msg.msgId) {
+      lastMessages.remove(msg.peerHex);
     }
     notifyListeners();
   }
 
-  // ---- MeshFrontend: local file actions (no mesh involved) ----
-
-  @override
-  Future<void> openFile(ChatMessage msg) async {
-    if (msg.filePath == null) return;
-    final result = await OpenFilex.open(msg.filePath!);
-    if (result.type != ResultType.done) {
-      _errors.add('Could not open file: ${result.message}');
-    }
-  }
-
-  @override
-  Future<bool> saveToGallery(ChatMessage msg) async {
-    final path = msg.filePath;
-    if (path == null) return false;
-    final mime = lookupMimeType(msg.fileName ?? path) ?? '';
-    try {
-      if (mime.startsWith('image/')) {
-        await Gal.putImage(path);
-      } else if (mime.startsWith('video/')) {
-        await Gal.putVideo(path);
-      } else {
-        return false;
-      }
-      return true;
-    } catch (e) {
-      _errors.add('갤러리 저장 실패: $e');
-      notifyListeners();
-      return false;
-    }
-  }
-
-  @override
-  Future<void> shareFile(ChatMessage msg) async {
-    final path = msg.filePath;
-    if (path == null) return;
-    await SharePlus.instance.share(ShareParams(files: [XFile(path)]));
-  }
+  // ---- local file actions: see LocalFileActions ----
 
   // ---- lifecycle ----
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _foreground = state == AppLifecycleState.resumed;
-    _send({'c': 'fg', 'v': _foreground});
+    _send({'c': Bridge.cmdForeground, 'v': _foreground});
     if (_foreground) {
       unawaited(BeaconWake.startTx());
       // Re-verify the BLE permission on every return: it may have been granted
@@ -616,7 +487,7 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
   void _trimMemory() {
     PaintingBinding.instance.imageCache.clear();
     PaintingBinding.instance.imageCache.clearLiveImages();
-    _conversations.removeWhere((hex, _) => hex != _openPeer);
+    conversationCache.removeWhere((hex, _) => hex != _openPeer);
   }
 
   void _teardownWiring() {
@@ -631,9 +502,8 @@ class RemoteMeshController extends MeshFrontend with WidgetsBindingObserver {
 
   @override
   void dispose() {
-    _send({'c': 'bye'});
+    _send({'c': Bridge.cmdBye});
     _teardownWiring();
-    _errors.close();
-    super.dispose();
+    super.dispose(); // MeshFrontendState closes the error stream
   }
 }
