@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -177,7 +178,17 @@ class _BootstrapState extends State<Bootstrap> {
         file.deleteSync();
       }
       final sink = file.openWrite(mode: FileMode.append);
-      sink.writeln('=== app start ${DateTime.now().toIso8601String()} ===');
+      // Stamp the running BINARY's version: an installed update only takes
+      // effect on relaunch, and "which build actually sent/received this?"
+      // has burned us during field diagnosis before (stale process ran old
+      // wire-format code while the bundle on disk was already newer).
+      var ver = '';
+      try {
+        final info = await PackageInfo.fromPlatform();
+        ver = ' v${info.version}+${info.buildNumber}';
+      } catch (_) {}
+      sink.writeln(
+          '=== app start$ver ${DateTime.now().toIso8601String()} ===');
       bleLogSink = (line) =>
           sink.writeln('${DateTime.now().toIso8601String()} $line');
 

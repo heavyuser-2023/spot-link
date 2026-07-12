@@ -819,9 +819,12 @@ class MeshController extends MeshFrontend
     if (failed.text == null) return;
     final peer = PeerId.fromHex(failed.peerHex);
     // Cancel the old attempt so a late store-and-forward copy of it can't
-    // double-deliver alongside this fresh send (new msgId).
+    // double-deliver alongside this fresh send (new msgId). Keep the ORIGINAL
+    // compose time in the envelope — a resend is not a new message, and the
+    // receiver's "HH:mm 전송" must reflect when it was written.
     node.forgetText(failed.msgId);
-    final msgId = await node.sendText(peer, failed.text!);
+    final msgId = await node.sendText(peer, failed.text!,
+        sentAt: DateTime.fromMillisecondsSinceEpoch(failed.timestamp));
     if (msgId == null) {
       reportError('Still unable to send — no route yet');
       return;

@@ -492,14 +492,19 @@ class MeshNode {
 
   /// Send a text message to [dst]. Returns the msgId, or null if we don't know
   /// the recipient's key yet.
-  Future<String?> sendText(PeerId dst, String text) async {
+  /// [sentAt] defaults to now; a user-initiated RESEND passes the original
+  /// compose time so the receiver's "sent at" stays truthful (resending after
+  /// the undelivered warning is exactly the delayed-delivery case where the
+  /// stamp matters most).
+  Future<String?> sendText(PeerId dst, String text, {DateTime? sentAt}) async {
     final kex = _knownKex[dst.hex];
     if (kex == null) {
       _events.add(NodeError('Unknown recipient key: ${dst.short}'));
       return null;
     }
     final cipher = await crypto.encrypt(
-      TextEnvelope.encode(text), // carries sentAt for the receiver's UI
+      // Carries sentAt for the receiver's UI.
+      TextEnvelope.encode(text, sentAt: sentAt),
       kex,
     );
     final frame = router.originate(
@@ -1045,8 +1050,11 @@ class MeshNode {
         _rememberDelivered(frame.msgIdHex);
         _clearPendingLocalDelivery(frame.msgIdHex); // finally landed
         final envelope = TextEnvelope.decode(payload);
+        // sentAt=none marks a LEGACY sender (pre-v1.5.16 payload) — the
+        // field-diagnosis signature for "왜 전송 시각이 안 떠?".
         bleLogSink?.call('MSG recv ${frame.msgIdHex.substring(0, 8)} '
-            '(${envelope.text.length} chars)');
+            '(${envelope.text.length} chars, '
+            'sentAt=${envelope.sentAt?.toIso8601String() ?? 'none'})');
         _events.add(TextReceived(frame.src, envelope.text, frame.msgIdHex,
             sentAt: envelope.sentAt));
         // Tell the whole mesh this text arrived so relays can drop their

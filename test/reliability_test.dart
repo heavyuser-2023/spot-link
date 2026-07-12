@@ -249,6 +249,28 @@ void main() {
             DateTime.now().millisecondsSinceEpoch + 1000));
   });
 
+  test('an explicit sentAt (resend path) is delivered verbatim', () async {
+    // retryText passes the ORIGINAL compose time — the receiver must see
+    // that, not the resend moment (a resend is not a new message).
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'A');
+    final b = await makeNode(radio, idB, 'B');
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await settle();
+
+    final composedAt =
+        DateTime.now().subtract(const Duration(hours: 2, minutes: 3));
+    final msgId =
+        await a.node.sendText(idB.peerId, '두 시간 전에 쓴 글', sentAt: composedAt);
+    final rx = await waitFor<TextReceived>(b, (e) => e.msgId == msgId);
+    expect(rx.sentAt!.millisecondsSinceEpoch,
+        composedAt.millisecondsSinceEpoch);
+  });
+
   test('resend after forgetText delivers exactly once (no stale duplicate)',
       () async {
     final radio = FakeRadio();
