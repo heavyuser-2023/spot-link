@@ -50,7 +50,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final c = context.watch<MeshFrontend>();
     final titles = ['채팅', '친구', '내 정보'];
     final tabs = [
-      ChatsTab(onFindPeople: () => setState(() => _index = 1)),
+      ChatsTab(
+        onFindPeople: () => setState(() => _index = 1),
+        active: _index == 0,
+      ),
       PeopleTab(active: _index == 1),
       const MeTab(),
     ];
@@ -95,8 +98,8 @@ class _HomeScreenState extends State<HomeScreen> {
             label: '친구',
           ),
           const NavigationDestination(
-            icon: Icon(Icons.qr_code_outlined),
-            selectedIcon: Icon(Icons.qr_code),
+            icon: Icon(Icons.account_circle_outlined),
+            selectedIcon: Icon(Icons.account_circle),
             label: '내 정보',
           ),
         ],
