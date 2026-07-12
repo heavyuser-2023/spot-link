@@ -7,6 +7,7 @@ import '../app/mesh_controller.dart';
 import '../data/models.dart';
 import 'add_friend_fab.dart';
 import 'chat_screen.dart';
+import 'radar_screen.dart';
 import 'scan_screen.dart';
 import 'ui_utils.dart';
 
@@ -63,24 +64,27 @@ class _PeopleTabState extends State<PeopleTab> {
               : NotificationListener<ScrollNotification>(
                   onNotification: _onScroll,
                   child: ListView(
-                  padding: const EdgeInsets.only(top: 4, bottom: 96),
-                  children: [
-                    if (nearby.isNotEmpty) ...[
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                        child: _ProximityRadar(peers: nearby),
-                      ),
-                      _SectionHeader(
-                          label: '주변', count: nearby.length, live: true),
-                      ...nearby.map((x) => _PersonTile(contact: x)),
+                    padding: const EdgeInsets.only(top: 4, bottom: 96),
+                    children: [
+                      if (nearby.isNotEmpty) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                          child: _ProximityRadar(peers: nearby),
+                        ),
+                        _SectionHeader(
+                          label: '주변',
+                          count: nearby.length,
+                          live: true,
+                        ),
+                        ...nearby.map((x) => _PersonTile(contact: x)),
+                      ],
+                      if (offline.isNotEmpty) ...[
+                        _SectionHeader(label: '연락처', count: offline.length),
+                        ...offline.map((x) => _PersonTile(contact: x)),
+                      ],
                     ],
-                    if (offline.isNotEmpty) ...[
-                      _SectionHeader(label: '연락처', count: offline.length),
-                      ...offline.map((x) => _PersonTile(contact: x)),
-                    ],
-                  ],
+                  ),
                 ),
-              ),
         ),
         Positioned(
           right: 0,
@@ -137,65 +141,79 @@ class _ProximityRadarState extends State<_ProximityRadar>
 
     return Card(
       clipBehavior: Clip.antiAlias,
-      child: SizedBox(
-        height: _height,
-        child: LayoutBuilder(
-          builder: (context, box) {
-            final center = Offset(box.maxWidth / 2, _height / 2);
-            final maxR = math.min(box.maxWidth, _height) / 2 - 30;
+      // 사람이 많아지면 카드가 좁다: 탭하면 핀치 줌·이동이 되는 전체화면
+      // 레이더로 확장된다.
+      child: InkWell(
+        onTap: () => pushWithController(context, const RadarScreen()),
+        child: SizedBox(
+          height: _height,
+          child: LayoutBuilder(
+            builder: (context, box) {
+              final center = Offset(box.maxWidth / 2, _height / 2);
+              final maxR = math.min(box.maxWidth, _height) / 2 - 30;
 
-            return Stack(
-              children: [
-                Positioned.fill(
-                  child: AnimatedBuilder(
-                    animation: _sweep,
-                    builder: (context, _) => CustomPaint(
-                      painter: _RadarPainter(
-                        center: center,
-                        radii: [for (final f in _ringFractions) maxR * f],
-                        ringColor: scheme.outlineVariant,
-                        fillColor: scheme.primary,
-                        sweep: _sweep.value * 2 * math.pi,
+              return Stack(
+                children: [
+                  Positioned.fill(
+                    child: AnimatedBuilder(
+                      animation: _sweep,
+                      builder: (context, _) => CustomPaint(
+                        painter: RadarPainter(
+                          center: center,
+                          radii: [for (final f in _ringFractions) maxR * f],
+                          ringColor: scheme.outlineVariant,
+                          fillColor: scheme.primary,
+                          sweep: _sweep.value * 2 * math.pi,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                // 나 (중심)
-                Positioned(
-                  left: center.dx - 18,
-                  top: center.dy - 18,
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: scheme.primary,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: scheme.surface, width: 2.5),
+                  // 나 (중심)
+                  Positioned(
+                    left: center.dx - 18,
+                    top: center.dy - 18,
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: scheme.primary,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: scheme.surface, width: 2.5),
+                      ),
+                      child: Icon(
+                        Icons.person,
+                        size: 20,
+                        color: scheme.onPrimary,
+                      ),
                     ),
+                  ),
+                  for (var i = 0; i < peers.length; i++)
+                    _radarAvatar(context, c, peers[i], i, center, maxR),
+                  Positioned(
+                    top: 8,
+                    right: 8,
                     child: Icon(
-                      Icons.person,
-                      size: 20,
-                      color: scheme.onPrimary,
+                      Icons.open_in_full,
+                      size: 16,
+                      color: scheme.outline,
                     ),
                   ),
-                ),
-                for (var i = 0; i < peers.length; i++)
-                  _radarAvatar(context, c, peers[i], i, center, maxR),
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 6,
-                  child: Text(
-                    '가까울수록 중앙에 표시됩니다',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.labelSmall?.copyWith(color: scheme.outline),
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 6,
+                    child: Text(
+                      '가까울수록 중앙에 표시됩니다',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(
+                        context,
+                      ).textTheme.labelSmall?.copyWith(color: scheme.outline),
+                    ),
                   ),
-                ),
-              ],
-            );
-          },
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
@@ -265,96 +283,6 @@ class _ProximityRadarState extends State<_ProximityRadar>
       ),
     );
   }
-}
-
-class _RadarPainter extends CustomPainter {
-  final Offset center;
-  final List<double> radii;
-  final Color ringColor;
-  final Color fillColor;
-
-  /// Current sweep-beam angle (radians). Advances continuously for the
-  /// sonar-scan effect.
-  final double sweep;
-  _RadarPainter({
-    required this.center,
-    required this.radii,
-    required this.ringColor,
-    required this.fillColor,
-    this.sweep = 0,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // 은은한 중심 발광: "내 주변" 공간감.
-    canvas.drawCircle(
-      center,
-      radii.last,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            fillColor.withValues(alpha: 0.10),
-            fillColor.withValues(alpha: 0.0),
-          ],
-        ).createShader(Rect.fromCircle(center: center, radius: radii.last)),
-    );
-    // Sonar sweep beam: a ~50° trailing wedge that fades out behind the
-    // leading edge, squashed to the same 0.82 ellipse as the rings.
-    canvas.save();
-    canvas.translate(center.dx, center.dy);
-    canvas.scale(1, 0.82);
-    canvas.drawPath(
-      Path()
-        ..moveTo(0, 0)
-        ..arcTo(Rect.fromCircle(center: Offset.zero, radius: radii.last),
-            sweep - 0.9, 0.9, false)
-        ..close(),
-      Paint()
-        // Fixed 0→0.9rad fade rotated to the current angle (SweepGradient
-        // angles must stay inside [0, 2π]; the rotation transform doesn't).
-        ..shader = SweepGradient(
-          startAngle: 0,
-          endAngle: 0.9,
-          colors: [
-            fillColor.withValues(alpha: 0.0),
-            fillColor.withValues(alpha: 0.16),
-          ],
-          transform: GradientRotation(sweep - 0.9),
-        ).createShader(
-            Rect.fromCircle(center: Offset.zero, radius: radii.last)),
-    );
-    canvas.restore();
-
-    final stroke = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
-    for (var i = 0; i < radii.length; i++) {
-      stroke.color = ringColor.withValues(
-        alpha: i == radii.length - 1 ? 0.9 : 0.6,
-      );
-      final rect = Rect.fromCenter(
-        center: center,
-        width: radii[i] * 2,
-        height: radii[i] * 2 * 0.82,
-      );
-      if (i == radii.length - 1) {
-        // 최외곽(멀리/멀티홉)은 점선: 전파 너머의 영역임을 암시.
-        const dashes = 36;
-        for (var d = 0; d < dashes; d++) {
-          final a0 = d * 2 * math.pi / dashes;
-          canvas.drawArc(rect, a0, math.pi / dashes, false, stroke);
-        }
-      } else {
-        canvas.drawOval(rect, stroke);
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(_RadarPainter old) =>
-      old.center != center ||
-      old.radii.length != radii.length ||
-      old.sweep != sweep;
 }
 
 class _SectionHeader extends StatelessWidget {
