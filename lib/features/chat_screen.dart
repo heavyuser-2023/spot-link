@@ -607,7 +607,7 @@ class _Bubble extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(clockTime(message.timestamp),
+                  Text(_timeLabel(),
                       style: TextStyle(
                           color: (failed ? scheme.onErrorContainer : fg)
                               .withValues(alpha: 0.7),
@@ -659,6 +659,22 @@ class _Bubble extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Bubble time label. Incoming texts carry the SENDER's send time in the
+  /// envelope; when it meaningfully differs from the arrival time (>1 min —
+  /// i.e. the message rode store-and-forward for a while) show both so the
+  /// receiver can tell when it was written vs when it reached them.
+  String _timeLabel() {
+    final sent = message.sentTs;
+    if (_isMe || sent == null) return clockTime(message.timestamp);
+    // Sender's clock ahead of ours (skew): a "sent later than arrived" label
+    // reads as nonsense — fall back to the arrival time alone.
+    if (sent > message.timestamp) return clockTime(message.timestamp);
+    if (message.timestamp - sent < 60 * 1000) {
+      return clockTime(message.timestamp);
+    }
+    return '${clockTime(sent)} 전송 · ${clockTime(message.timestamp)} 도착';
   }
 
   void _onTap(BuildContext context) {

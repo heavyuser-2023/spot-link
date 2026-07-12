@@ -9,6 +9,7 @@ import 'crypto/session.dart';
 import 'model/announce.dart';
 import 'model/frame.dart';
 import 'model/peer_id.dart';
+import 'model/text_envelope.dart';
 import 'router/router.dart';
 import 'router/seen_cache.dart';
 import 'router/store_forward.dart';
@@ -41,7 +42,12 @@ class TextReceived extends NodeEvent {
   final PeerId from;
   final String text;
   final String msgId;
-  TextReceived(this.from, this.text, this.msgId);
+
+  /// Sender's send time (their clock), null for legacy peers. Lets the UI
+  /// show "sent at / arrived at" — meaningful for store-and-forward texts
+  /// that land long after they were written.
+  final DateTime? sentAt;
+  TextReceived(this.from, this.text, this.msgId, {this.sentAt});
 }
 
 /// A locally originated message was delivered end-to-end (ACK returned).
@@ -206,6 +212,16 @@ class MeshNode {
   final Map<String, _PendingText> _awaitingAck = {};
   Timer? _retransmitTimer;
   final Duration retransmitInterval;
+
+  /// Periodic HAVE re-sync on LIVE links. Link-up HAVE alone leaves a hole:
+  /// on A—R—B, if the R→B relay hop drops a frame, A's retransmits (same
+  /// msgId) are absorbed by R's seen-cache as duplicates and never re-relayed
+  /// — with all links stable, nothing ever re-offers R's stored copy to B, so
+  /// the text sits undelivered until some link happens to bounce. Re-sending
+  /// our store inventory on a timer lets a neighbour WANT anything it missed,
+  /// closing the loss window without waiting for a reconnect.
+  Timer? _haveTimer;
+  final Duration haveInterval;
   final int maxTextAttempts;
 
   /// Msg ids that have reached a terminal delivery state, so we never emit both
@@ -275,6 +291,7 @@ class MeshNode {
     MeshTransportInterface? transport,
     this.fastLane,
     this.retransmitInterval = const Duration(seconds: 4),
+    this.haveInterval = const Duration(seconds: 15),
     this.maxTextAttempts = 5,
   }) : seen = SeenCache(nowMs: clock ?? _wallClock),
        store = StoreForward(nowMs: clock ?? _wallClock) {
@@ -330,7 +347,31 @@ class MeshNode {
       retransmitInterval,
       (_) => _retransmitPending(),
     );
+    _haveTimer = Timer.periodic(haveInterval, (_) => _broadcastHave());
     return true;
+  }
+
+  /// See [_haveTimer]. One HAVE frame broadcast to every live link; each
+  /// neighbour WANTs whatever it lacks and we answer per-link. Skipped while
+  /// the store is empty or we're linkless (nothing to offer / no one to hear).
+  Future<void> _broadcastHave() async {
+    if (transport.linkCount == 0) return;
+    var inv = store.inventory();
+    if (inv.isEmpty) return;
+    // Bound the periodic offer: a big relay store (durable cap 4096 × 16B =
+    // 64KB) is too heavy to rebroadcast every tick. Newest entries are the
+    // likeliest to still need delivery (map iteration follows insertion
+    // order); the full inventory still goes out on every link-up.
+    const cap = 512;
+    if (inv.length > cap) inv = inv.sublist(inv.length - cap);
+    final frame = Frame.create(
+      type: FrameType.have,
+      ttl: 1,
+      src: myId,
+      dst: PeerId.broadcast,
+      payload: MsgIdList.encode(inv),
+    );
+    await transport.broadcast(frame.encode());
   }
 
   /// Re-broadcast unacked text frames (dropped L2 packets, or the recipient was
@@ -380,6 +421,8 @@ class MeshNode {
     _announceTimer = null;
     _retransmitTimer?.cancel();
     _retransmitTimer = null;
+    _haveTimer?.cancel();
+    _haveTimer = null;
     for (final s in _subs) {
       await s.cancel();
     }
@@ -456,7 +499,7 @@ class MeshNode {
       return null;
     }
     final cipher = await crypto.encrypt(
-      Uint8List.fromList(utf8.encode(text)),
+      TextEnvelope.encode(text), // carries sentAt for the receiver's UI
       kex,
     );
     final frame = router.originate(
@@ -1001,10 +1044,11 @@ class MeshNode {
         if (_deliveredIncoming.contains(frame.msgIdHex)) break;
         _rememberDelivered(frame.msgIdHex);
         _clearPendingLocalDelivery(frame.msgIdHex); // finally landed
-        final text = utf8.decode(payload, allowMalformed: true);
+        final envelope = TextEnvelope.decode(payload);
         bleLogSink?.call('MSG recv ${frame.msgIdHex.substring(0, 8)} '
-            '(${text.length} chars)');
-        _events.add(TextReceived(frame.src, text, frame.msgIdHex));
+            '(${envelope.text.length} chars)');
+        _events.add(TextReceived(frame.src, envelope.text, frame.msgIdHex,
+            sentAt: envelope.sentAt));
         // Tell the whole mesh this text arrived so relays can drop their
         // copies, and never accept it back ourselves.
         _tombstone(frame.msgIdHex);

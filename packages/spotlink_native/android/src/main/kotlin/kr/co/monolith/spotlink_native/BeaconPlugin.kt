@@ -95,8 +95,11 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     @Suppress("MissingPermission")
     private fun startTx() {
         startAdvertisingCurrent()
-        if (callback == null) return // start failed — don't arm rotation
-        // Rotate the transmitted region so a stuck iPhone gets fresh ENTERs.
+        // Arm the rotation EVEN IF the initial start failed (Bluetooth off /
+        // no advertiser yet): each 18s tick calls restartAdvertising →
+        // startAdvertisingCurrent, so the rotation doubles as the retry loop
+        // that relights the torch once the adapter comes back. (Previously a
+        // BT-off boot left the torch dark until a full app/service restart.)
         if (BEACON_UUIDS.size > 1 && rotateRunnable == null) {
             val h = Handler(Looper.getMainLooper())
             rotateHandler = h
@@ -120,9 +123,14 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 ?: return
         val adv = adapter.bluetoothLeAdvertiser ?: return
         advertiser = adv
+        // BALANCED (~250ms interval) + HIGH power: an iPhone's screen-off
+        // region monitoring needs to actually HEAR the beacon to fire the
+        // wake — LOW_POWER's ~1s interval at MEDIUM power made detection
+        // slow and short-ranged (observed: sluggish cross-platform wakes).
+        // This is the wake torch, reachability is its whole job.
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(false)
             .build()
         val data = AdvertiseData.Builder()
@@ -130,7 +138,15 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
             .build()
-        val cb = object : AdvertiseCallback() {}
+        // onStartFailure matters: an ASYNC failure (e.g. TOO_MANY_ADVERTISERS
+        // while the mesh advert set is up) used to leave `callback` set — we
+        // believed the torch was lit while nothing was on the air. Clearing it
+        // lets the next rotation tick's restartAdvertising retry cleanly.
+        val cb = object : AdvertiseCallback() {
+            override fun onStartFailure(errorCode: Int) {
+                if (callback === this) callback = null
+            }
+        }
         callback = cb
         try {
             adv.startAdvertising(settings, data, cb)

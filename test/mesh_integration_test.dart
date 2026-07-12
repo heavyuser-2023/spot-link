@@ -30,6 +30,8 @@ Future<TestNode> makeNode(
   Identity id,
   String name, {
   FastLaneInterface? fastLane,
+  Duration? retransmit,
+  Duration? haveEvery,
 }) async {
   final transport = radio.create(id.peerId);
   final node = MeshNode(
@@ -37,6 +39,8 @@ Future<TestNode> makeNode(
     displayName: name,
     transport: transport,
     fastLane: fastLane,
+    retransmitInterval: retransmit ?? const Duration(seconds: 4),
+    haveInterval: haveEvery ?? const Duration(seconds: 15),
   );
   final tn = TestNode(node);
   await node.start();
@@ -218,6 +222,123 @@ void main() {
       (e) => e.msgId == msgId,
       timeout: const Duration(seconds: 3),
     );
+  });
+
+  test('multi-hop is REAL-TIME: relayed on first dispatch, not a retry tick',
+      () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idR = await Identity.generate();
+    final idB = await Identity.generate();
+
+    // Retransmit interval far beyond the assertion window: if delivery relied
+    // on the retry timer (or HAVE/WANT sync) instead of the immediate relay
+    // broadcast, this test would time out.
+    final a = await makeNode(radio, idA, 'Alice',
+        retransmit: const Duration(seconds: 30));
+    await makeNode(radio, idR, 'Relay',
+        retransmit: const Duration(seconds: 30));
+    final b = await makeNode(radio, idB, 'Bob',
+        retransmit: const Duration(seconds: 30));
+
+    radio.connect(idA.peerId, idR.peerId);
+    radio.connect(idR.peerId, idB.peerId);
+    await settle();
+
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+
+    final sw = Stopwatch()..start();
+    final msgId = await a.node.sendText(idB.peerId, '지금 바로');
+    final rx = await waitFor<TextReceived>(b, (e) => e.msgId == msgId,
+        timeout: const Duration(seconds: 1));
+    expect(rx.text, '지금 바로');
+    // And the ACK returns promptly over the same 2 hops.
+    await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == msgId,
+        timeout: const Duration(seconds: 1));
+    sw.stop();
+    expect(sw.elapsedMilliseconds, lessThan(1000),
+        reason: '2홉 왕복(텍스트+ACK)이 재전송 틱 없이 즉시 이뤄져야 실시간');
+  });
+
+  test(
+      'lost relay hop recovers on a LIVE link via periodic HAVE '
+      '(seen-cache absorbs retransmits)', () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idR = await Identity.generate();
+    final idB = await Identity.generate();
+
+    // Retransmits are long on purpose: they CANNOT fix this scenario anyway —
+    // R already marked the msgId seen, so A's re-sends die at R as duplicates.
+    // Recovery must come from R's periodic HAVE re-offering its stored copy.
+    final a = await makeNode(radio, idA, 'Alice',
+        retransmit: const Duration(seconds: 30),
+        haveEvery: const Duration(milliseconds: 300));
+    final r = await makeNode(radio, idR, 'Relay',
+        retransmit: const Duration(seconds: 30),
+        haveEvery: const Duration(milliseconds: 300));
+    final b = await makeNode(radio, idB, 'Bob',
+        retransmit: const Duration(seconds: 30),
+        haveEvery: const Duration(milliseconds: 300));
+
+    radio.connect(idA.peerId, idR.peerId);
+    radio.connect(idR.peerId, idB.peerId);
+    await settle();
+
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+
+    // Drop R's FIRST outgoing text frame — the relay hop R→B is lost exactly
+    // once. (Later copies, e.g. the WANT answer, pass through.)
+    var droppedRelay = false;
+    radio.nodes[idR.peerId.hex]!.dropOutgoing = (bytes) {
+      final f = Frame.decode(bytes);
+      if (!droppedRelay && f.type == FrameType.text) {
+        droppedRelay = true;
+        return true;
+      }
+      return false;
+    };
+
+    final msgId = await a.node.sendText(idB.peerId, '유실돼도 온다');
+    // Without the periodic HAVE this never arrives (observed root cause):
+    // links all stay up, so no link-up HAVE ever fires again.
+    final rx = await waitFor<TextReceived>(b, (e) => e.msgId == msgId,
+        timeout: const Duration(seconds: 5));
+    expect(rx.text, '유실돼도 온다');
+    expect(droppedRelay, isTrue); // the loss actually happened
+    await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == msgId,
+        timeout: const Duration(seconds: 5));
+  });
+
+  test('2-hop with keys learned only from ANNOUNCE: text + ack round trip',
+      () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idR = await Identity.generate();
+    final idB = await Identity.generate();
+
+    final a = await makeNode(radio, idA, 'Alice');
+    await makeNode(radio, idR, 'Relay');
+    final b = await makeNode(radio, idB, 'Bob');
+
+    radio.connect(idA.peerId, idR.peerId);
+    radio.connect(idR.peerId, idB.peerId);
+
+    // No QR exchange: A must learn B's key from B's flooded ANNOUNCE
+    // (announceTtl=3 covers 2 hops) before it can even encrypt.
+    await waitFor<PeerAnnounced>(
+        a, (e) => e.contact.peerId == idB.peerId,
+        timeout: const Duration(seconds: 3));
+
+    final msgId = await a.node.sendText(idB.peerId, '공지로 배운 키');
+    expect(msgId, isNotNull);
+    final rx = await waitFor<TextReceived>(b, (e) => e.msgId == msgId,
+        timeout: const Duration(seconds: 3));
+    expect(rx.text, '공지로 배운 키');
+    await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == msgId,
+        timeout: const Duration(seconds: 3));
   });
 
   test('store-and-forward: B receives after connecting later', () async {

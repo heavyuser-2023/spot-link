@@ -167,9 +167,14 @@ final class PeripheralManagerImpl
         );
       }
     }
+    // SpotLink fork: advertise at full TX power. The unset default is
+    // TX_POWER_MEDIUM (≈ -7 dBm), which throws away roughly half the radio
+    // range — HIGH (≈ +1 dBm) is what long-distance (100 m-class, 2-hop)
+    // discovery needs, at a negligible battery cost for a single advert set.
     final settingsArgs = AdvertiseSettingsArgs(
       modeArgs: AdvertiseModeArgs.balanced,
       connectableArgs: true,
+      txPowerLevelArgs: TXPowerLevelArgs.high,
     );
     final advertiseDataArgs = advertisement.toAdvertiseDataArgs();
     final scanResponseArgs = advertisement.toScanResponseArgs();

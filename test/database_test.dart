@@ -69,7 +69,8 @@ void main() {
     expect(read.displayName, '별명');
   });
 
-  test('v3 → v4 migration adds name_locked and keeps existing rows', () async {
+  test('v3 → v5 migration adds name_locked + sent_ts and keeps rows',
+      () async {
     final path = p.join(tmp.path, 'migrate_${counter++}.sqlite');
     // Build a v3-schema database by hand (the schema shipped before v4).
     final old = await databaseFactory.openDatabase(
@@ -87,6 +88,22 @@ void main() {
               last_seen INTEGER NOT NULL
             )
           ''');
+          // v3-era messages table (no sent_ts) — v5 must ALTER it in place.
+          await db.execute('''
+            CREATE TABLE messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              peer_hex TEXT NOT NULL,
+              msg_id TEXT NOT NULL,
+              direction INTEGER NOT NULL,
+              kind INTEGER NOT NULL,
+              text TEXT,
+              file_name TEXT,
+              file_path TEXT,
+              file_size INTEGER,
+              status INTEGER NOT NULL,
+              timestamp INTEGER NOT NULL
+            )
+          ''');
         },
       ),
     );
@@ -98,9 +115,18 @@ void main() {
       'verified': 0,
       'last_seen': 42,
     });
+    await old.insert('messages', {
+      'peer_hex': 'aabbccddeeff0011',
+      'msg_id': 'm-old',
+      'direction': 1,
+      'kind': 0,
+      'text': '옛 메시지',
+      'status': 5,
+      'timestamp': 1000,
+    });
     await old.close();
 
-    // Reopening through AppDatabase runs the v4 migration.
+    // Reopening through AppDatabase runs the v4+v5 migrations.
     final db = AppDatabase(overridePath: path);
     final migrated = await db.contact('aabbccddeeff0011');
     expect(migrated, isNotNull);
@@ -112,6 +138,25 @@ void main() {
     final renamed = await db.contact('aabbccddeeff0011');
     expect(renamed!.displayName, '별명');
     expect(renamed.nameLocked, isTrue);
+
+    // v5: pre-existing message survives with a null sent_ts, and a new
+    // message can be stored with one.
+    final oldMsgs = await db.messagesFor('aabbccddeeff0011');
+    final oldMsg = oldMsgs.firstWhere((m) => m.msgId == 'm-old');
+    expect(oldMsg.text, '옛 메시지');
+    expect(oldMsg.sentTs, isNull);
+    await db.insertMessage(ChatMessage(
+      peerHex: 'aabbccddeeff0011',
+      msgId: 'm-new',
+      direction: MsgDirection.incoming,
+      kind: MsgKind.text,
+      text: '새 메시지',
+      status: MsgStatus.received,
+      timestamp: 2000,
+      sentTs: 1990,
+    ));
+    final newMsgs = await db.messagesFor('aabbccddeeff0011');
+    expect(newMsgs.firstWhere((m) => m.msgId == 'm-new').sentTs, 1990);
   });
 
   test('messages persist, order, and status update by msgId', () async {

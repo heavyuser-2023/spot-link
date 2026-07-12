@@ -225,6 +225,30 @@ void main() {
     expect(b.ofType<TextReceived>().length, 1); // no duplicate delivery
   });
 
+  test('received text carries the sender\'s send time (and legacy decodes)',
+      () async {
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = await makeNode(radio, idA, 'A');
+    final b = await makeNode(radio, idB, 'B');
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await settle();
+
+    final before = DateTime.now();
+    final msgId = await a.node.sendText(idB.peerId, '시간 실려오나');
+    final rx = await waitFor<TextReceived>(b, (e) => e.msgId == msgId);
+    expect(rx.text, '시간 실려오나');
+    expect(rx.sentAt, isNotNull);
+    // Sender's clock stamp lies within the send window.
+    expect(
+        rx.sentAt!.millisecondsSinceEpoch,
+        inInclusiveRange(before.millisecondsSinceEpoch - 1000,
+            DateTime.now().millisecondsSinceEpoch + 1000));
+  });
+
   test('resend after forgetText delivers exactly once (no stale duplicate)',
       () async {
     final radio = FakeRadio();

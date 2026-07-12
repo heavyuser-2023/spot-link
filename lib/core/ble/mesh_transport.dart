@@ -643,9 +643,11 @@ class MeshTransport implements MeshTransportInterface {
   @override
   Future<void> broadcast(Uint8List frameBytes, {String? exceptLinkId}) async {
     final targets = _links.values.where((l) => l.id != exceptLinkId).toList();
-    for (final link in targets) {
-      await _sendTo(link, frameBytes);
-    }
+    // Per-link sends run CONCURRENTLY: a marginal long-range link whose
+    // withResponse flushes crawl must not stall delivery to every other
+    // neighbour (serially, one slow hop delayed the whole relay fan-out).
+    // _sendTo never throws — failures tear down their own link.
+    await Future.wait(targets.map((link) => _sendTo(link, frameBytes)));
   }
 
   /// Send an encoded frame to a single link.

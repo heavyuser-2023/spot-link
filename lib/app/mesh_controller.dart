@@ -590,8 +590,8 @@ class MeshController extends MeshFrontend
         lastHopCount[contact.peerId.hex] = hops;
         await _rememberAnnounced(contact);
         notifyListeners();
-      case TextReceived(:final from, :final text, :final msgId):
-        await _onText(from, text, msgId);
+      case TextReceived(:final from, :final text, :final msgId, :final sentAt):
+        await _onText(from, text, msgId, sentAt: sentAt);
       case DeliveryConfirmed(:final msgId):
         await _applyStatus(msgId, MsgStatus.delivered);
       case TextDeliveryFailed(:final msgId):
@@ -963,7 +963,8 @@ class MeshController extends MeshFrontend
     notifyListeners();
   }
 
-  Future<void> _onText(PeerId from, String text, String msgId) async {
+  Future<void> _onText(PeerId from, String text, String msgId,
+      {DateTime? sentAt}) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     final msg = ChatMessage(
       peerHex: from.hex,
@@ -972,7 +973,8 @@ class MeshController extends MeshFrontend
       kind: MsgKind.text,
       text: text,
       status: MsgStatus.received,
-      timestamp: now,
+      timestamp: now, // arrival time (this device's clock)
+      sentTs: sentAt?.millisecondsSinceEpoch,
     );
     await _persistAndCache(msg, incoming: true);
     _notifyIncoming(from, text);
@@ -1070,7 +1072,15 @@ class MeshController extends MeshFrontend
     beaconMonitoring = s['monitoring'] == true;
     // Monitoring defaults to ON (see BeaconPlugin.swift) but only works with
     // the "always" location grant — ask once on the first run.
-    if (Platform.isIOS && beaconMonitoring && s['auth'] == 'notDetermined') {
+    // Beacon-wake RX (relaunching a terminated app on region entry) requires
+    // authorizedAlways. iOS often grants only When-In-Use on the first prompt
+    // — monitoring is then useless in the background, and the old code never
+    // asked again. Re-requesting from whenInUse shows the one-time "Change to
+    // Always Allow?" upgrade prompt; if the user declines, iOS ignores
+    // further calls, so this stays harmless to repeat.
+    if (Platform.isIOS &&
+        beaconMonitoring &&
+        (s['auth'] == 'notDetermined' || s['auth'] == 'whenInUse')) {
       await BeaconWake.requestAlways();
     }
     notifyListeners();

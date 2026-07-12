@@ -30,7 +30,12 @@ class ChatMessage {
   final String? filePath; // local path for received/sent files
   final int? fileSize;
   final MsgStatus status;
-  final int timestamp; // epoch ms
+  final int timestamp; // epoch ms — incoming: ARRIVAL time; outgoing: send time
+
+  /// Incoming only: the SENDER's send time (their clock, epoch ms), carried in
+  /// the text envelope. Null for legacy peers / non-text. Differs visibly from
+  /// [timestamp] when a store-and-forward text lands long after it was written.
+  final int? sentTs;
 
   ChatMessage({
     this.id,
@@ -44,6 +49,7 @@ class ChatMessage {
     this.fileSize,
     required this.status,
     required this.timestamp,
+    this.sentTs,
   });
 
   ChatMessage copyWith({String? msgId, MsgStatus? status, String? filePath}) =>
@@ -59,6 +65,7 @@ class ChatMessage {
         fileSize: fileSize,
         status: status ?? this.status,
         timestamp: timestamp,
+        sentTs: sentTs,
       );
 
   ChatMessage withId(int id) => ChatMessage(
@@ -73,6 +80,7 @@ class ChatMessage {
         fileSize: fileSize,
         status: status,
         timestamp: timestamp,
+        sentTs: sentTs,
       );
 
   Map<String, Object?> toMap() => {
@@ -87,6 +95,7 @@ class ChatMessage {
         'file_size': fileSize,
         'status': status.index,
         'timestamp': timestamp,
+        'sent_ts': sentTs,
       };
 
   static ChatMessage fromMap(Map<String, Object?> m) => ChatMessage(
@@ -101,6 +110,7 @@ class ChatMessage {
         fileSize: m['file_size'] as int?,
         status: MsgStatus.values[m['status'] as int],
         timestamp: m['timestamp'] as int,
+        sentTs: m['sent_ts'] as int?,
       );
 }
 

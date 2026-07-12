@@ -135,11 +135,17 @@ class BeaconPlugin: NSObject {
       result(UserDefaults.standard.stringArray(forKey: "spotlink.wake.events") ?? [])
     case "startTx":
       txWanted = true
-      txIndex = 0
-      if tx == nil {
-        tx = CBPeripheralManager(delegate: self, queue: nil)
-      } else {
+      // Do NOT reset txIndex here. startTx fires on every foreground resume,
+      // so resetting meant a phone opened briefly (< one 18s rotation turn)
+      // only ever transmitted region 0 — a peer stuck "inside" region 0
+      // (notifyOnExit=false) could then never be re-woken. Advancing instead
+      // makes even short foreground sessions cycle through the regions.
+      if tx != nil {
+        txIndex = (txIndex + 1) % Self.beaconUUIDs.count
+        tx?.stopAdvertising()
         startTxIfReady()
+      } else {
+        tx = CBPeripheralManager(delegate: self, queue: nil)
       }
       startRotation()
       result(nil)

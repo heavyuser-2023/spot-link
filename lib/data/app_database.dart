@@ -26,7 +26,7 @@ class AppDatabase {
     }
     _db = await openDatabase(
       path,
-      version: 4,
+      version: 5,
       // WAL: the Android service isolate WRITES this file while the UI
       // isolate READS it (two SQLite connections in one process). Rollback
       // journal mode would make readers hit SQLITE_BUSY during writes; WAL
@@ -61,7 +61,8 @@ class AppDatabase {
             file_path TEXT,
             file_size INTEGER,
             status INTEGER NOT NULL,
-            timestamp INTEGER NOT NULL
+            timestamp INTEGER NOT NULL,
+            sent_ts INTEGER
           )
         ''');
         await db.execute(
@@ -77,6 +78,10 @@ class AppDatabase {
         if (oldVersion < 4) {
           await db.execute('ALTER TABLE contacts '
               'ADD COLUMN name_locked INTEGER NOT NULL DEFAULT 0');
+        }
+        if (oldVersion < 5) {
+          // Sender's send time for incoming texts ("sent at / arrived at").
+          await db.execute('ALTER TABLE messages ADD COLUMN sent_ts INTEGER');
         }
       },
     );
