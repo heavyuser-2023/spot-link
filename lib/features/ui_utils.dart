@@ -101,3 +101,79 @@ String humanSize(int bytes) {
   if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
   return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
 }
+
+/// Presence dot with a soft breathing halo — "live" markers (nearby friends,
+/// searching state) share one motion language. The core dot stays put; only
+/// a translucent ring expands and fades, so it reads as a heartbeat, not a
+/// blink.
+class PulsingDot extends StatefulWidget {
+  final Color color;
+  final double size;
+
+  /// Ring drawn around the core dot (e.g. the avatar-badge white border).
+  final Color? borderColor;
+  const PulsingDot({
+    super.key,
+    required this.color,
+    this.size = 10,
+    this.borderColor,
+  });
+
+  @override
+  State<PulsingDot> createState() => _PulsingDotState();
+}
+
+class _PulsingDotState extends State<PulsingDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1800),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.size;
+    return SizedBox(
+      width: s,
+      height: s,
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (context, _) {
+          final t = Curves.easeOut.transform(_c.value);
+          return Stack(
+            clipBehavior: Clip.none,
+            alignment: Alignment.center,
+            children: [
+              // Expanding, fading halo.
+              Container(
+                width: s * (1 + 1.1 * t),
+                height: s * (1 + 1.1 * t),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: widget.color.withValues(alpha: 0.35 * (1 - t)),
+                ),
+              ),
+              Container(
+                width: s,
+                height: s,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: widget.color,
+                  border: widget.borderColor == null
+                      ? null
+                      : Border.all(color: widget.borderColor!, width: 2),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}

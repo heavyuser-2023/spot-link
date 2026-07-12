@@ -9,6 +9,7 @@ import '../core/ble/mesh_transport.dart' show RadioStatus;
 import 'chats_tab.dart';
 import 'me_tab.dart';
 import 'people_tab.dart';
+import 'ui_utils.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -143,29 +144,53 @@ class _MeshStatusChip extends StatelessWidget {
     return Semantics(
       label: connected ? '$count개 기기 연결됨' : (active ? '주변 검색 중' : '연결 없음'),
       button: true,
-      child: Material(
-        color: bg,
-        borderRadius: BorderRadius.circular(20),
-        child: InkWell(
+      // State changes GLIDE (color cross-fade) instead of snapping, and the
+      // dot breathes while actively searching — the chip feels alive.
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOut,
+        decoration: BoxDecoration(
+          color: bg,
           borderRadius: BorderRadius.circular(20),
-          onTap: () => _showStatusSheet(context),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
-                ),
-                const SizedBox(width: 6),
-                Text(label,
-                    style: TextStyle(
-                        color: fg,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600)),
-              ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: () => _showStatusSheet(context),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  active && !connected
+                      ? PulsingDot(color: dot, size: 8)
+                      : Container(
+                          width: 8,
+                          height: 8,
+                          decoration:
+                              BoxDecoration(color: dot, shape: BoxShape.circle),
+                        ),
+                  const SizedBox(width: 6),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 250),
+                    transitionBuilder: (child, anim) => FadeTransition(
+                      opacity: anim,
+                      child: SizeTransition(
+                          sizeFactor: anim,
+                          axis: Axis.horizontal,
+                          child: child),
+                    ),
+                    child: Text(label,
+                        key: ValueKey(label),
+                        style: TextStyle(
+                            color: fg,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

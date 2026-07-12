@@ -53,14 +53,11 @@ class _ConversationTile extends StatelessWidget {
             Positioned(
               right: -1,
               bottom: -1,
-              child: Container(
-                width: 14,
-                height: 14,
-                decoration: BoxDecoration(
-                  color: Colors.green,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: theme.colorScheme.surface, width: 2),
-                ),
+              // Pulsing: this friend is reachable RIGHT NOW.
+              child: PulsingDot(
+                color: Colors.green,
+                size: 14,
+                borderColor: theme.colorScheme.surface,
               ),
             ),
         ],

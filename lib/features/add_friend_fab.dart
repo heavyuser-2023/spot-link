@@ -10,8 +10,18 @@ class QrEdgeButton extends StatefulWidget {
   /// replays the entrance (tabs live in an IndexedStack, so they aren't
   /// rebuilt on every switch).
   final bool active;
+
+  /// True while the list is SCROLLING: the tab tucks itself into the edge
+  /// leaving only ~⅓ visible (content gets the room), then glides back out
+  /// the moment scrolling settles.
+  final bool retracted;
   final VoidCallback onPressed;
-  const QrEdgeButton({super.key, required this.active, required this.onPressed});
+  const QrEdgeButton({
+    super.key,
+    required this.active,
+    this.retracted = false,
+    required this.onPressed,
+  });
 
   @override
   State<QrEdgeButton> createState() => _QrEdgeButtonState();
@@ -28,13 +38,17 @@ class _QrEdgeButtonState extends State<QrEdgeButton>
   /// then settle — the same "나왔다가 자리잡는" feel as the reference.
   late final Animation<Offset> _slide = TweenSequence<Offset>([
     TweenSequenceItem(
-      tween: Tween(begin: const Offset(1.0, 0), end: const Offset(-0.12, 0))
-          .chain(CurveTween(curve: Curves.easeOutCubic)),
+      tween: Tween(
+        begin: const Offset(1.0, 0),
+        end: const Offset(-0.12, 0),
+      ).chain(CurveTween(curve: Curves.easeOutCubic)),
       weight: 55,
     ),
     TweenSequenceItem(
-      tween: Tween(begin: const Offset(-0.12, 0), end: Offset.zero)
-          .chain(CurveTween(curve: Curves.easeInOut)),
+      tween: Tween(
+        begin: const Offset(-0.12, 0),
+        end: Offset.zero,
+      ).chain(CurveTween(curve: Curves.easeInOut)),
       weight: 45,
     ),
   ]).animate(_entry);
@@ -66,30 +80,38 @@ class _QrEdgeButtonState extends State<QrEdgeButton>
     final scheme = Theme.of(context).colorScheme;
     return SlideTransition(
       position: _slide,
-      child: Material(
-        // Flat tonal surface like the reference — reads by tone, not shadow.
-        color: scheme.surfaceContainerHighest,
-        elevation: 0,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(26),
-          bottomLeft: Radius.circular(26),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: widget.onPressed,
-          child: SizedBox(
-            width: 58,
-            height: 64,
-            child: Center(
-              // Nudge toward the visible (left) side: the tab reads as if its
-              // right half continues off-screen.
-              child: Padding(
-                padding: const EdgeInsets.only(right: 4),
-                child: Icon(
-                  Icons.qr_code_scanner,
-                  size: 26,
-                  color: scheme.onSurfaceVariant,
-                  semanticLabel: 'QR로 친구 추가',
+      // Scroll retract: tuck 2/3 of the tab off-screen while the list moves,
+      // glide back when it settles. Fractional offset composes with the
+      // entrance slide above.
+      child: AnimatedSlide(
+        offset: Offset(widget.retracted ? 2 / 3 : 0, 0),
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+        child: Material(
+          // Flat tonal surface like the reference — reads by tone, not shadow.
+          color: scheme.surfaceContainerHighest,
+          elevation: 0,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(26),
+            bottomLeft: Radius.circular(26),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: widget.onPressed,
+            child: SizedBox(
+              width: 58,
+              height: 64,
+              child: Center(
+                // Nudge toward the visible (left) side: the tab reads as if its
+                // right half continues off-screen.
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: Icon(
+                    Icons.qr_code_scanner,
+                    size: 26,
+                    color: scheme.onSurfaceVariant,
+                    semanticLabel: 'QR로 친구 추가',
+                  ),
                 ),
               ),
             ),

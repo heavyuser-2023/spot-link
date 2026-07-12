@@ -22,6 +22,20 @@ class PeopleTab extends StatefulWidget {
 }
 
 class _PeopleTabState extends State<PeopleTab> {
+  /// True while the list is actively scrolling (drag or fling). Drives the
+  /// QR edge tab's tuck-away: content gets the space while moving, the tab
+  /// glides back the moment the list settles.
+  bool _scrolling = false;
+
+  bool _onScroll(ScrollNotification n) {
+    if (n is ScrollStartNotification && !_scrolling) {
+      setState(() => _scrolling = true);
+    } else if (n is ScrollEndNotification && _scrolling) {
+      setState(() => _scrolling = false);
+    }
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.watch<MeshFrontend>();
@@ -46,7 +60,9 @@ class _PeopleTabState extends State<PeopleTab> {
         Positioned.fill(
           child: c.contacts.isEmpty
               ? const _EmptyPeople()
-              : ListView(
+              : NotificationListener<ScrollNotification>(
+                  onNotification: _onScroll,
+                  child: ListView(
                   padding: const EdgeInsets.only(top: 4, bottom: 96),
                   children: [
                     if (nearby.isNotEmpty) ...[
@@ -64,12 +80,14 @@ class _PeopleTabState extends State<PeopleTab> {
                     ],
                   ],
                 ),
+              ),
         ),
         Positioned(
           right: 0,
           bottom: 88,
           child: QrEdgeButton(
             active: widget.active,
+            retracted: _scrolling,
             onPressed: () => pushWithController(context, const ScanScreen()),
           ),
         ),
@@ -82,12 +100,35 @@ class _PeopleTabState extends State<PeopleTab> {
 /// 신호가 강할수록(가까울수록) 안쪽 링, 멀티홉 상대는 최외곽 점선 링.
 /// 아바타를 탭하면 바로 대화가 열린다 — "누가 얼마나 가까이 있나"를
 /// 목록을 읽지 않고 한눈에 보는 화면.
-class _ProximityRadar extends StatelessWidget {
+class _ProximityRadar extends StatefulWidget {
   final List<Contact> peers;
   const _ProximityRadar({required this.peers});
 
   static const double _height = 264;
   static const _ringFractions = [0.30, 0.53, 0.76, 0.98];
+
+  @override
+  State<_ProximityRadar> createState() => _ProximityRadarState();
+}
+
+class _ProximityRadarState extends State<_ProximityRadar>
+    with SingleTickerProviderStateMixin {
+  /// Slow sonar sweep — one revolution every 6s. Painting is cheap (a single
+  /// sweep-gradient arc), and the motion sells "지금 실제로 훑고 있다".
+  late final AnimationController _sweep = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 6),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _sweep.dispose();
+    super.dispose();
+  }
+
+  static const double _height = _ProximityRadar._height;
+  static const _ringFractions = _ProximityRadar._ringFractions;
+  List<Contact> get peers => widget.peers;
 
   @override
   Widget build(BuildContext context) {
@@ -106,12 +147,16 @@ class _ProximityRadar extends StatelessWidget {
             return Stack(
               children: [
                 Positioned.fill(
-                  child: CustomPaint(
-                    painter: _RadarPainter(
-                      center: center,
-                      radii: [for (final f in _ringFractions) maxR * f],
-                      ringColor: scheme.outlineVariant,
-                      fillColor: scheme.primary,
+                  child: AnimatedBuilder(
+                    animation: _sweep,
+                    builder: (context, _) => CustomPaint(
+                      painter: _RadarPainter(
+                        center: center,
+                        radii: [for (final f in _ringFractions) maxR * f],
+                        ringColor: scheme.outlineVariant,
+                        fillColor: scheme.primary,
+                        sweep: _sweep.value * 2 * math.pi,
+                      ),
                     ),
                   ),
                 ),
@@ -227,11 +272,16 @@ class _RadarPainter extends CustomPainter {
   final List<double> radii;
   final Color ringColor;
   final Color fillColor;
+
+  /// Current sweep-beam angle (radians). Advances continuously for the
+  /// sonar-scan effect.
+  final double sweep;
   _RadarPainter({
     required this.center,
     required this.radii,
     required this.ringColor,
     required this.fillColor,
+    this.sweep = 0,
   });
 
   @override
@@ -248,6 +298,33 @@ class _RadarPainter extends CustomPainter {
           ],
         ).createShader(Rect.fromCircle(center: center, radius: radii.last)),
     );
+    // Sonar sweep beam: a ~50° trailing wedge that fades out behind the
+    // leading edge, squashed to the same 0.82 ellipse as the rings.
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.scale(1, 0.82);
+    canvas.drawPath(
+      Path()
+        ..moveTo(0, 0)
+        ..arcTo(Rect.fromCircle(center: Offset.zero, radius: radii.last),
+            sweep - 0.9, 0.9, false)
+        ..close(),
+      Paint()
+        // Fixed 0→0.9rad fade rotated to the current angle (SweepGradient
+        // angles must stay inside [0, 2π]; the rotation transform doesn't).
+        ..shader = SweepGradient(
+          startAngle: 0,
+          endAngle: 0.9,
+          colors: [
+            fillColor.withValues(alpha: 0.0),
+            fillColor.withValues(alpha: 0.16),
+          ],
+          transform: GradientRotation(sweep - 0.9),
+        ).createShader(
+            Rect.fromCircle(center: Offset.zero, radius: radii.last)),
+    );
+    canvas.restore();
+
     final stroke = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1;
@@ -275,7 +352,9 @@ class _RadarPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_RadarPainter old) =>
-      old.center != center || old.radii.length != radii.length;
+      old.center != center ||
+      old.radii.length != radii.length ||
+      old.sweep != sweep;
 }
 
 class _SectionHeader extends StatelessWidget {
@@ -340,18 +419,12 @@ class _PersonTile extends StatelessWidget {
             Positioned(
               right: -1,
               bottom: -1,
-              child: Container(
-                width: 14,
-                height: 14,
-                decoration: BoxDecoration(
-                  // Green = direct radio range, amber = reachable via relays.
-                  color: hops <= 1 ? Colors.green : Colors.amber,
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: Theme.of(context).colorScheme.surface,
-                    width: 2,
-                  ),
-                ),
+              // Green = direct radio range, amber = reachable via relays.
+              // Pulsing: presence is live, and the motion says so.
+              child: PulsingDot(
+                color: hops <= 1 ? Colors.green : Colors.amber,
+                size: 14,
+                borderColor: Theme.of(context).colorScheme.surface,
               ),
             ),
         ],
