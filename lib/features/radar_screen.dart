@@ -8,10 +8,11 @@ import '../data/models.dart';
 import 'chat_screen.dart';
 import 'ui_utils.dart';
 
-/// Full-screen proximity radar for crowded rooms: the People-tab card grown
-/// to the whole viewport, wrapped in an [InteractiveViewer] so a pinch zooms
-/// into a cluster of avatars and a drag pans across it. Tapping an avatar
-/// still opens the chat.
+/// Full-screen proximity radar for crowded rooms, with MAP-STYLE semantic
+/// zoom: pinching expands the radar SPACE (ring radii grow, so overlapping
+/// friends spread apart) while avatars and name labels keep their size —
+/// zooming a plain screenshot would only make the overlap bigger. Drag pans,
+/// double-tap (or the app-bar button) resets. Tapping an avatar opens chat.
 class RadarScreen extends StatefulWidget {
   const RadarScreen({super.key});
 
@@ -22,19 +23,62 @@ class RadarScreen extends StatefulWidget {
 class _RadarScreenState extends State<RadarScreen>
     with SingleTickerProviderStateMixin {
   static const _ringFractions = [0.30, 0.53, 0.76, 0.98];
+  static const double _minScale = 1.0;
+  static const double _maxScale = 5.0;
 
   late final AnimationController _sweep = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 6),
   )..repeat();
 
-  final _viewer = TransformationController();
+  /// Zoom factor applied to DISTANCES only (not to glyphs).
+  double _scale = 1.0;
+
+  /// Pan translation of the radar origin, in screen px.
+  Offset _offset = Offset.zero;
+
+  // Gesture-start snapshots.
+  double _startScale = 1.0;
+  Offset _startOffset = Offset.zero;
 
   @override
   void dispose() {
     _sweep.dispose();
-    _viewer.dispose();
     super.dispose();
+  }
+
+  void _reset() => setState(() {
+        _scale = 1.0;
+        _offset = Offset.zero;
+      });
+
+  void _onScaleStart(ScaleStartDetails d) {
+    _startScale = _scale;
+    _startOffset = _offset;
+  }
+
+  void _onScaleUpdate(ScaleUpdateDetails d, Offset center, double maxR) {
+    setState(() {
+      final next = (_startScale * d.scale).clamp(_minScale, _maxScale);
+      if (d.scale != 1.0) {
+        // Pinch: keep the world point under the fingers anchored while
+        // distances stretch around it (the anchor math already tracks the
+        // moving focal point, so no extra pan term here).
+        final focal = d.localFocalPoint;
+        final world = (focal - center - _startOffset) / _startScale;
+        _offset = focal - center - world * next;
+      } else {
+        // One-finger drag: plain pan.
+        _offset += d.focalPointDelta;
+      }
+      _scale = next;
+      // Loose bounds so the map can't be flung away entirely.
+      final lim = maxR * _scale;
+      _offset = Offset(
+        _offset.dx.clamp(-lim, lim),
+        _offset.dy.clamp(-lim, lim),
+      );
+    });
   }
 
   @override
@@ -48,11 +92,10 @@ class _RadarScreenState extends State<RadarScreen>
       appBar: AppBar(
         title: Text('주변 친구 ${nearby.length}'),
         actions: [
-          // One tap back to 1:1 after wandering around a crowd.
           IconButton(
             tooltip: '원래 배율',
             icon: const Icon(Icons.center_focus_strong_outlined),
-            onPressed: () => _viewer.value = Matrix4.identity(),
+            onPressed: _reset,
           ),
         ],
       ),
@@ -61,17 +104,14 @@ class _RadarScreenState extends State<RadarScreen>
           final size = Size(box.maxWidth, box.maxHeight);
           final center = Offset(size.width / 2, size.height / 2);
           final maxR = math.min(size.width, size.height) / 2 - 56;
+          final origin = center + _offset;
 
-          return InteractiveViewer(
-            transformationController: _viewer,
-            minScale: 1.0,
-            maxScale: 4.0,
-            // Lets a zoomed view pan a little past the edges so avatars near
-            // the border are reachable.
-            boundaryMargin: const EdgeInsets.all(96),
-            child: SizedBox(
-              width: size.width,
-              height: size.height,
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onScaleStart: _onScaleStart,
+            onScaleUpdate: (d) => _onScaleUpdate(d, center, maxR),
+            onDoubleTap: _reset,
+            child: ClipRect(
               child: Stack(
                 children: [
                   Positioned.fill(
@@ -79,8 +119,11 @@ class _RadarScreenState extends State<RadarScreen>
                       animation: _sweep,
                       builder: (context, _) => CustomPaint(
                         painter: RadarPainter(
-                          center: center,
-                          radii: [for (final f in _ringFractions) maxR * f],
+                          center: origin,
+                          // Semantic zoom: only the RADII stretch.
+                          radii: [
+                            for (final f in _ringFractions) maxR * f * _scale
+                          ],
                           ringColor: scheme.outlineVariant,
                           fillColor: scheme.primary,
                           sweep: _sweep.value * 2 * math.pi,
@@ -88,10 +131,10 @@ class _RadarScreenState extends State<RadarScreen>
                       ),
                     ),
                   ),
-                  // 나 (중심)
+                  // 나 (중심) — 크기 고정.
                   Positioned(
-                    left: center.dx - 22,
-                    top: center.dy - 22,
+                    left: origin.dx - 22,
+                    top: origin.dy - 22,
                     child: Container(
                       width: 44,
                       height: 44,
@@ -105,18 +148,22 @@ class _RadarScreenState extends State<RadarScreen>
                     ),
                   ),
                   for (var i = 0; i < nearby.length; i++)
-                    _avatar(context, c, nearby[i], i, center, maxR),
+                    _avatar(context, c, nearby[i], i, origin, maxR),
                   Positioned(
                     left: 0,
                     right: 0,
                     bottom: 10,
-                    child: Text(
-                      '가까울수록 중앙 · 핀치로 확대, 드래그로 이동',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context)
-                          .textTheme
-                          .labelSmall
-                          ?.copyWith(color: scheme.outline),
+                    child: IgnorePointer(
+                      child: Text(
+                        _scale > 1.01
+                            ? '${_scale.toStringAsFixed(1)}× · 두 번 탭하면 원래대로'
+                            : '가까울수록 중앙 · 핀치로 확대, 드래그로 이동',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall
+                            ?.copyWith(color: scheme.outline),
+                      ),
                     ),
                   ),
                 ],
@@ -129,24 +176,24 @@ class _RadarScreenState extends State<RadarScreen>
   }
 
   Widget _avatar(BuildContext context, MeshFrontend c, Contact peer, int index,
-      Offset center, double maxR) {
+      Offset origin, double maxR) {
     final bucket =
         proximityBucket(c.rssiOf(peer.peerHex), c.hopsTo(peer.peerHex));
-    final radius = maxR * _ringFractions[bucket.ring];
+    // Distance scales with the zoom; the glyph below does NOT.
+    final radius = maxR * _ringFractions[bucket.ring] * _scale;
     // Same stable hash + golden-angle spread as the card, so a peer sits in
-    // the SAME spot in both views — the fullscreen feels like zooming into
-    // the card, not a different map.
+    // the SAME spot in both views.
     var hash = 0;
     for (final u in peer.peerHex.codeUnits) {
       hash = (hash * 31 + u) & 0x7fffffff;
     }
     final angle = (hash % 360) * math.pi / 180 + index * 2.399;
-    final pos = center +
+    final pos = origin +
         Offset(math.cos(angle) * radius, math.sin(angle) * radius * 0.82);
 
     return AnimatedPositioned(
-      duration: const Duration(milliseconds: 700),
-      curve: Curves.easeOutCubic,
+      duration: const Duration(milliseconds: 120),
+      curve: Curves.linear,
       left: pos.dx - 40,
       top: pos.dy - 28,
       width: 80,
@@ -282,5 +329,6 @@ class RadarPainter extends CustomPainter {
   bool shouldRepaint(RadarPainter old) =>
       old.center != center ||
       old.radii.length != radii.length ||
+      old.radii.last != radii.last ||
       old.sweep != sweep;
 }
