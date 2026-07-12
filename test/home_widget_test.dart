@@ -12,6 +12,7 @@ import 'package:spot_link/core/crypto/identity.dart';
 import 'package:spot_link/core/mesh_node.dart';
 import 'package:spot_link/data/app_database.dart';
 import 'package:spot_link/data/identity_store.dart';
+import 'package:spot_link/features/add_friend_fab.dart';
 import 'package:spot_link/features/home_screen.dart';
 
 import 'fake_transport.dart';
@@ -75,7 +76,8 @@ void main() {
     await tester.tap(find.text('친구').last);
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('아직 아무도 없어요'), findsOneWidget);
-    expect(find.text('QR로 추가'), findsOneWidget);
+    // The QR-add affordance is the Instagram-style edge-docked tab.
+    expect(find.byType(QrEdgeButton), findsOneWidget);
 
     // Me tab.
     await tester.tap(find.text('내 정보').last);

@@ -3,45 +3,15 @@ import 'package:provider/provider.dart';
 
 import '../app/mesh_controller.dart';
 import '../data/models.dart';
-import 'add_friend_fab.dart';
 import 'chat_screen.dart';
 import 'scan_screen.dart';
 import 'ui_utils.dart';
 
-class ChatsTab extends StatefulWidget {
+class ChatsTab extends StatelessWidget {
   /// Jumps to the People tab — the natural next step when there is nothing
   /// to chat about yet.
   final VoidCallback? onFindPeople;
-
-  /// True while this tab is the visible one (replays the FAB entrance).
-  final bool active;
-  const ChatsTab({super.key, this.onFindPeople, this.active = true});
-
-  @override
-  State<ChatsTab> createState() => _ChatsTabState();
-}
-
-class _ChatsTabState extends State<ChatsTab> {
-  final _scroll = ScrollController();
-  double _collapse = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _scroll.addListener(_onScroll);
-  }
-
-  void _onScroll() {
-    if (!_scroll.hasClients) return;
-    final next = (_scroll.offset / 60).clamp(0.0, 1.0);
-    if ((next - _collapse).abs() > 0.01) setState(() => _collapse = next);
-  }
-
-  @override
-  void dispose() {
-    _scroll.dispose();
-    super.dispose();
-  }
+  const ChatsTab({super.key, this.onFindPeople});
 
   @override
   Widget build(BuildContext context) {
@@ -49,25 +19,13 @@ class _ChatsTabState extends State<ChatsTab> {
     final convos = c.conversations();
 
     if (convos.isEmpty) {
-      // The empty state already carries its own CTA buttons — no FAB on top.
-      return _EmptyChats(onFindPeople: widget.onFindPeople);
+      return _EmptyChats(onFindPeople: onFindPeople);
     }
-    // Same one-tap "QR로 추가" as the People tab: adding a friend is the most
-    // common next action from the conversation list too (매번 친구 탭으로
-    // 건너갈 필요 없이), mirroring the messenger-style compose button.
-    return Scaffold(
-      body: ListView.separated(
-        controller: _scroll,
-        padding: const EdgeInsets.only(top: 4, bottom: 96),
-        itemCount: convos.length,
-        separatorBuilder: (_, _) => const Divider(height: 1, indent: 76),
-        itemBuilder: (context, i) => _ConversationTile(summary: convos[i]),
-      ),
-      floatingActionButton: AddFriendFab(
-        active: widget.active,
-        collapse: _collapse,
-        onPressed: () => pushWithController(context, const ScanScreen()),
-      ),
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      itemCount: convos.length,
+      separatorBuilder: (_, _) => const Divider(height: 1, indent: 76),
+      itemBuilder: (context, i) => _ConversationTile(summary: convos[i]),
     );
   }
 }

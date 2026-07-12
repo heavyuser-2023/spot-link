@@ -22,36 +22,6 @@ class PeopleTab extends StatefulWidget {
 }
 
 class _PeopleTabState extends State<PeopleTab> {
-  final _scroll = ScrollController();
-  // 0 = at top (full extended FAB) … 1 = scrolled (collapsed to icon).
-  double _collapse = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _scroll.addListener(_onScroll);
-  }
-
-  @override
-  void didUpdateWidget(PeopleTab old) {
-    super.didUpdateWidget(old);
-    // Became the active tab: the FAB's own AnimatedScale replays via its key.
-    if (!old.active && widget.active) setState(() {});
-  }
-
-  void _onScroll() {
-    if (!_scroll.hasClients) return;
-    // Collapse over the first 60px of scroll — like Instagram's compose FAB.
-    final next = (_scroll.offset / 60).clamp(0.0, 1.0);
-    if ((next - _collapse).abs() > 0.01) setState(() => _collapse = next);
-  }
-
-  @override
-  void dispose() {
-    _scroll.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
     final c = context.watch<MeshFrontend>();
@@ -69,32 +39,41 @@ class _PeopleTabState extends State<PeopleTab> {
     final offline = c.contacts.where((x) => !c.isNearby(x.peerHex)).toList()
       ..sort(byName);
 
-    return Scaffold(
-      body: c.contacts.isEmpty
-          ? const _EmptyPeople()
-          : ListView(
-              controller: _scroll,
-              padding: const EdgeInsets.only(top: 4, bottom: 96),
-              children: [
-                if (nearby.isNotEmpty) ...[
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                    child: _ProximityRadar(peers: nearby),
-                  ),
-                  _SectionHeader(label: '주변', count: nearby.length, live: true),
-                  ...nearby.map((x) => _PersonTile(contact: x)),
-                ],
-                if (offline.isNotEmpty) ...[
-                  _SectionHeader(label: '연락처', count: offline.length),
-                  ...offline.map((x) => _PersonTile(contact: x)),
-                ],
-              ],
-            ),
-      floatingActionButton: AddFriendFab(
-        active: widget.active,
-        collapse: _collapse,
-        onPressed: () => pushWithController(context, const ScanScreen()),
-      ),
+    // The QR-add affordance is an Instagram-style tab docked flush to the
+    // RIGHT EDGE (not a floating pill) — hence a Stack, not a Scaffold FAB.
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: c.contacts.isEmpty
+              ? const _EmptyPeople()
+              : ListView(
+                  padding: const EdgeInsets.only(top: 4, bottom: 96),
+                  children: [
+                    if (nearby.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                        child: _ProximityRadar(peers: nearby),
+                      ),
+                      _SectionHeader(
+                          label: '주변', count: nearby.length, live: true),
+                      ...nearby.map((x) => _PersonTile(contact: x)),
+                    ],
+                    if (offline.isNotEmpty) ...[
+                      _SectionHeader(label: '연락처', count: offline.length),
+                      ...offline.map((x) => _PersonTile(contact: x)),
+                    ],
+                  ],
+                ),
+        ),
+        Positioned(
+          right: 0,
+          bottom: 88,
+          child: QrEdgeButton(
+            active: widget.active,
+            onPressed: () => pushWithController(context, const ScanScreen()),
+          ),
+        ),
+      ],
     );
   }
 }

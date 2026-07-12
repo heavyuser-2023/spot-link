@@ -50,10 +50,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final c = context.watch<MeshFrontend>();
     final titles = ['채팅', '친구', '내 정보'];
     final tabs = [
-      ChatsTab(
-        onFindPeople: () => setState(() => _index = 1),
-        active: _index == 0,
-      ),
+      ChatsTab(onFindPeople: () => setState(() => _index = 1)),
       PeopleTab(active: _index == 1),
       const MeTab(),
     ];
