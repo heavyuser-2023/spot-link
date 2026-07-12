@@ -79,7 +79,9 @@ class _PeopleTabState extends State<PeopleTab> {
                         ...nearby.map((x) => _PersonTile(contact: x)),
                       ],
                       if (offline.isNotEmpty) ...[
-                        _SectionHeader(label: '연락처', count: offline.length),
+                        // 전화 연락처가 아니라 '만난 적 있는 SpotLink 친구' 목록이다
+                      // (QR 추가 또는 근처에서 자동 발견) — 라벨도 그렇게 읽혀야 한다.
+                      _SectionHeader(label: '만났던 친구', count: offline.length),
                         ...offline.map((x) => _PersonTile(contact: x)),
                       ],
                     ],

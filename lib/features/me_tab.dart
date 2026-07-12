@@ -11,6 +11,7 @@ import '../app/app_share.dart';
 import '../app/background_service.dart';
 import '../app/build_flags.dart';
 import '../app/mesh_controller.dart';
+import 'guide_screen.dart';
 import 'ui_utils.dart';
 
 class MeTab extends StatelessWidget {
@@ -143,6 +144,16 @@ class MeTab extends StatelessWidget {
                     onPressed: () => _confirmClearRelay(context, c),
                     child: const Text('비우기'),
                   ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.menu_book_outlined),
+            title: const Text('사용법과 동작 원리'),
+            subtitle: const Text('첫 실행 때 본 안내를 다시 볼 수 있습니다.'),
+            onTap: () =>
+                pushWithController(context, const GuideScreen()),
           ),
         ),
         if (Platform.isAndroid) ...[

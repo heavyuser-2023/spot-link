@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import '../core/ble/mesh_transport.dart' show bleLogSink;
 import '../data/app_database.dart';
 import '../data/identity_store.dart';
+import '../features/guide_screen.dart';
 import '../features/home_screen.dart';
 import '../features/onboarding_screen.dart';
 import 'background_service.dart';
@@ -36,6 +37,12 @@ class _BootstrapState extends State<Bootstrap> {
   MeshFrontend? _controller;
   final _identityStore = IdentityStore();
 
+  /// First-run guide gate. Cleared by a tiny flag file only when the user
+  /// checks "다시 보지 않기" — unchecked means they'll get it again next
+  /// launch, by request. Re-viewable any time from the Me tab.
+  bool _guideSeen = true;
+  File? _guideFlagFile;
+
   /// Last boot failure, rendered on the splash — turns an opaque endless
   /// spinner into a readable diagnosis on any phone.
   String? _bootError;
@@ -53,6 +60,13 @@ class _BootstrapState extends State<Bootstrap> {
   Future<void> _start() async {
     await initializeDateFormatting('ko', null);
     await _wireBleFileLog();
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      _guideFlagFile = File(p.join(dir.path, 'guide_seen'));
+      _guideSeen = _guideFlagFile!.existsSync();
+    } catch (_) {
+      _guideSeen = true; // storage hiccup: never block entry on the guide
+    }
 
     // First run (no name yet): show onboarding BEFORE requesting OS
     // permissions. Otherwise the permission dialogs stack over the splash,
@@ -254,6 +268,19 @@ class _BootstrapState extends State<Bootstrap> {
       case _Stage.onboarding:
         return OnboardingScreen(onSubmit: _onNameChosen);
       case _Stage.ready:
+        if (!_guideSeen) {
+          return GuideScreen(
+            firstRun: true,
+            onDone: (dontShowAgain) {
+              if (dontShowAgain) {
+                try {
+                  _guideFlagFile?.writeAsStringSync('1');
+                } catch (_) {}
+              }
+              setState(() => _guideSeen = true);
+            },
+          );
+        }
         return ChangeNotifierProvider.value(
           value: _controller!,
           child: const HomeScreen(),
