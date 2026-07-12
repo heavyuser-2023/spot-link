@@ -149,18 +149,21 @@ class _MeshStatusChip extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 350),
         curve: Curves.easeOut,
+        // Fixed height: in loosely-constrained hosts (macOS app bar) the pill
+        // ballooned to fill whatever it was given — a chip must stay a chip.
+        height: 30,
         decoration: BoxDecoration(
           color: bg,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(15),
         ),
         child: Material(
           color: Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(15),
           child: InkWell(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(15),
             onTap: () => _showStatusSheet(context),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -175,13 +178,8 @@ class _MeshStatusChip extends StatelessWidget {
                   const SizedBox(width: 6),
                   AnimatedSwitcher(
                     duration: const Duration(milliseconds: 250),
-                    transitionBuilder: (child, anim) => FadeTransition(
-                      opacity: anim,
-                      child: SizeTransition(
-                          sizeFactor: anim,
-                          axis: Axis.horizontal,
-                          child: child),
-                    ),
+                    transitionBuilder: (child, anim) =>
+                        FadeTransition(opacity: anim, child: child),
                     child: Text(label,
                         key: ValueKey(label),
                         style: TextStyle(
