@@ -66,7 +66,13 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: Column(
         children: [
-          if (!c.started) _BluetoothBanner(status: c.radioStatus),
+          if (!c.started)
+            _BluetoothBanner(status: c.radioStatus)
+          // Radio is fine, but iOS won't wake us in the background on only
+          // "While Using" location — friends can't reach us once the screen
+          // locks. Distinct from the BT banner; only one shows at a time.
+          else if (c.beaconNeedsAlways)
+            const _LocationAlwaysBanner(),
           Expanded(child: IndexedStack(index: _index, children: tabs)),
         ],
       ),
@@ -316,6 +322,35 @@ class _BluetoothBanner extends StatelessWidget {
       content: Text(
         message,
         style: TextStyle(color: scheme.onErrorContainer),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => openAppSettings(),
+          child: const Text('설정 열기'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Warns that background wake is crippled: beacon monitoring is on but iOS
+/// location is only "While Using". iOS ignores repeat upgrade prompts once
+/// declined, so the fix lives in Settings — offer a one-tap shortcut.
+class _LocationAlwaysBanner extends StatelessWidget {
+  const _LocationAlwaysBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return MaterialBanner(
+      backgroundColor: scheme.tertiaryContainer,
+      leading: Icon(Icons.location_on_outlined,
+          color: scheme.onTertiaryContainer),
+      content: Text(
+        '위치 권한이 "앱을 사용하는 동안"으로 되어 있어, 화면이 꺼지면 친구가 '
+        '나를 깨워 연결할 수 없습니다. "항상 허용"으로 바꾸면 백그라운드에서도 '
+        '자동으로 연결됩니다.',
+        style: TextStyle(color: scheme.onTertiaryContainer),
       ),
       actions: [
         TextButton(

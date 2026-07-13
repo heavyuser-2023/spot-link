@@ -374,6 +374,9 @@ class RemoteMeshController extends MeshFrontend
   bool get beaconMonitoring => false;
 
   @override
+  bool get beaconNeedsAlways => false; // Android: no iOS beacon-wake grant
+
+  @override
   Future<void> setBeaconMonitoring(bool on) async {}
 
   // ---- MeshFrontend: inbox / conversations ----

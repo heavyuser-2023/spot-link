@@ -1070,9 +1070,18 @@ class MeshController extends MeshFrontend
   @override
   bool beaconMonitoring = false;
 
+  @override
+  bool beaconNeedsAlways = false;
+
   Future<void> _refreshBeaconStatus() async {
     final s = await BeaconWake.status();
     beaconMonitoring = s['monitoring'] == true;
+    // Surface a degraded grant to the UI: monitoring is on but iOS only gave
+    // us "While Using", so nothing wakes us in the background. We still fire
+    // the upgrade prompt below, but once the user has declined it iOS ignores
+    // the call — the banner + Settings shortcut is then the only way out.
+    beaconNeedsAlways =
+        Platform.isIOS && beaconMonitoring && s['auth'] != 'always';
     // Monitoring defaults to ON (see BeaconPlugin.swift) but only works with
     // the "always" location grant — ask once on the first run.
     // Beacon-wake RX (relaunching a terminated app on region entry) requires

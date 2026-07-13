@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(git -c url.\"https://github.com/\".insteadOf=\"https://heavyuser-2023@github.com/\" push origin main)"
+    ]
+  }
+}

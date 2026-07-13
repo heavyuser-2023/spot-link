@@ -75,6 +75,13 @@ abstract class MeshFrontend extends ChangeNotifier {
   bool get beaconMonitoring;
   Future<void> setBeaconMonitoring(bool on);
 
+  /// iOS only: beacon wake is on but location is merely "While Using", so the
+  /// OS won't wake us in the background — the app can't fix this itself (iOS
+  /// ignores repeat upgrade prompts once declined), the user must flip it to
+  /// "Always" in Settings. Drives the home warning banner. Always false on
+  /// Android.
+  bool get beaconNeedsAlways;
+
   // ---- inbox / conversations ----
   List<ConversationSummary> conversations();
   List<ChatMessage> conversation(String peerHex);
