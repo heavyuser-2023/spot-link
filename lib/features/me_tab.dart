@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
@@ -190,6 +191,28 @@ class MeTab extends StatelessWidget {
                   context.read<MeshFrontend>().setBeaconMonitoring(v),
             ),
           ),
+          // Gentle, opt-in nudge — NOT an alarm. Basic background reconnect
+          // already works on "While Using" (BLE state restoration); "Always"
+          // only adds waking after force-quit / reboot and faster wakes.
+          if (c.beaconNeedsAlways) ...[
+            const SizedBox(height: 8),
+            Card(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: ListTile(
+                leading: const Icon(Icons.lightbulb_outline),
+                title: const Text('연결이 더 잘 되게 하려면'),
+                subtitle: const Text(
+                    '위치 권한이 "앱을 사용하는 동안"입니다. "항상 허용"으로 바꾸면 '
+                    '앱을 완전히 종료했거나 폰을 재부팅한 뒤에도 자동으로 다시 '
+                    '연결됩니다. (지금도 백그라운드 연결은 됩니다.)'),
+                isThreeLine: true,
+                trailing: TextButton(
+                  onPressed: () => openAppSettings(),
+                  child: const Text('설정'),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 8),
           Card(
             child: ListTile(
