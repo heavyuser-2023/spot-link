@@ -450,6 +450,10 @@ class MeshController extends MeshFrontend
       if (started) unawaited(node.wakeUp());
       // iOS kills beacon TX in the background — re-light the torch.
       unawaited(BeaconWake.startTx());
+      // Re-read the location grant: the user may have just flipped it to
+      // "Always" in Settings, and without this the "needs Always" banner
+      // lingers until an app restart (it's only checked at boot otherwise).
+      unawaited(_refreshBeaconStatus());
       if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
     } else if (state == AppLifecycleState.paused) {
       node.setForeground(false); // back to the OS-required filtered scan
