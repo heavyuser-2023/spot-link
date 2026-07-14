@@ -228,6 +228,23 @@ class MeshTransport implements MeshTransportInterface {
     knownPeersSave?.call(_knownPeers.toList());
   }
 
+  /// Which known-peer ids to arm as pending reconnects, MOST-RECENT FIRST and
+  /// capped at [_maxPendingReconnects] (further clamped by [budget]).
+  ///
+  /// [saved] is oldest→newest (see [_rememberPeer]). The cap matters: without
+  /// it, arming all known peers overflows the pending set, and
+  /// [_pendingReconnect] evicts the oldest-ARMED entry — which, arming
+  /// newest-first, is the freshest peer. That dropped the peer we JUST linked
+  /// with in favour of stale old ids, leaving the one connect-by-identifier
+  /// that would actually succeed un-armed. iOS 27 can't rediscover a
+  /// backgrounded peer by scan, so this pending connect is the only reconnect
+  /// path — it must target the freshest ids. Pure + static for testability.
+  static List<String> pendingReconnectOrder(List<String> saved, int budget) {
+    final cap = budget < _maxPendingReconnects ? budget : _maxPendingReconnects;
+    if (cap <= 0) return const [];
+    return saved.reversed.take(cap).toList();
+  }
+
   /// iOS: stand up pending connects to every persisted peer. Capped so the
   /// standing connects can't starve scan-driven links of [maxLinks] slots.
   Future<void> _reconnectKnownPeers() async {
@@ -237,8 +254,7 @@ class MeshTransport implements MeshTransportInterface {
       _knownPeers.addAll(saved);
       final budget = maxLinks - _links.length - _connecting.length - 2;
       var armed = 0;
-      for (final uuid in saved.reversed) {
-        if (armed >= budget) break;
+      for (final uuid in pendingReconnectOrder(saved, budget)) {
         try {
           final peripheral = await _central.getPeripheral(uuid);
           if (_links.containsKey('C:$uuid') || _connecting.contains(uuid)) {
