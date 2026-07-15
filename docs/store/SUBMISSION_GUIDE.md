@@ -72,6 +72,26 @@ https://github.com/heavyuser-2023/spot-link/blob/main/docs/PRIVACY.md
 
 ---
 
+## ⚡ (선택) 업로드까지 원커맨드 자동화 — fastlane
+
+계정과 서비스 계정 JSON만 준비되면, 리스팅 문구·그래픽·스크린샷·번들을 **한 명령으로** 올릴 수 있게 fastlane을 깔아뒀습니다.
+
+준비(1회):
+1. Play 개발자 계정 생성 + 앱을 콘솔에서 **최초 1회 생성**(빈 앱).
+2. Play Console → 설정 → **API 액세스** → 서비스 계정 만들기 → JSON 키 발급.
+3. JSON을 `android/fastlane/play-service-account.json`에 저장(gitignore됨).
+
+실행:
+```
+cd android
+bundle install
+bundle exec fastlane deploy                 # 내부 테스트 트랙 (안전)
+bundle exec fastlane deploy track:production # 프로덕션(초안으로 업로드)
+```
+이 레인이 store .aab 빌드 → 업로드 → 리스팅/스크린샷(`android/fastlane/metadata/android/ko-KR/`)까지 동기화합니다. 데이터 안전·콘텐츠 등급 등 폼은 콘솔에서 위 답안대로 한 번 채우면 됩니다.
+
+---
+
 ## 🔎 제출 전 최종 체크
 - [ ] .aab가 최신(위 빌드 명령으로 재생성한 것)인지
 - [ ] 스크린샷 5장이 새 디자인인지 (docs/store/screenshot_*)

@@ -47,3 +47,10 @@ app.*.map.json
 # Local plugin package build artifacts
 packages/*/android/.gradle/
 packages/*/android/build/
+
+# Play 업로드 자동화 (fastlane)
+android/fastlane/play-service-account.json
+android/fastlane/report.xml
+android/fastlane/Preview.html
+android/.bundle/
+android/vendor/

@@ -1,0 +1,48 @@
+# SpotLink — Google Play 업로드 자동화
+#
+# 사전 준비(사용자 1회): Play 개발자 계정 생성 → 앱 최초 1회 생성 →
+# Play Console 설정 → API 액세스에서 서비스 계정 JSON 발급 후
+# android/fastlane/play-service-account.json 로 저장(gitignore됨).
+#
+# 실행:
+#   cd android
+#   bundle install
+#   bundle exec fastlane deploy            # 내부 테스트 트랙(안전)
+#   bundle exec fastlane deploy track:production   # 프로덕션
+#
+# STORE_BUILD 정의로 사이드로드 전용 기능(APK 공유)이 빠진 store 번들을 빌드합니다.
+
+default_platform(:android)
+
+platform :android do
+  desc "store 플레이버 App Bundle을 빌드해 Play에 업로드"
+  lane :deploy do |options|
+    track = options[:track] || "internal"
+
+    key = "fastlane/play-service-account.json"
+    unless File.exist?(key)
+      UI.user_error!(
+        "서비스 계정 키가 없습니다: android/#{key}\n" \
+        "Play Console → 설정 → API 액세스에서 JSON을 발급해 이 경로에 두세요."
+      )
+    end
+
+    # 서명된 store .aab 빌드 (릴리즈 키는 android/key.properties 사용).
+    sh(
+      "flutter", "build", "appbundle", "--release",
+      "--flavor", "store", "--dart-define=STORE_BUILD=true"
+    )
+
+    upload_to_play_store(
+      track: track,
+      aab: "../build/app/outputs/bundle/storeRelease/app-store-release.aab",
+      release_status: track == "production" ? "draft" : "completed",
+      skip_upload_apk: true,
+      skip_upload_metadata: false,
+      skip_upload_images: false,
+      skip_upload_screenshots: false,
+      metadata_path: "fastlane/metadata/android"
+    )
+    UI.success!("업로드 완료: track=#{track}")
+  end
+end

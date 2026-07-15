@@ -1,0 +1,6 @@
+package_name("kr.co.monolith.spot_link")
+
+# Google Play Developer API 서비스 계정 키(JSON) 경로.
+# Play Console → 설정 → API 액세스에서 서비스 계정을 만들고 JSON 키를
+# 아래 경로(gitignore됨)에 두세요. 없으면 deploy 레인이 안내 후 중단합니다.
+json_key_file("fastlane/play-service-account.json")

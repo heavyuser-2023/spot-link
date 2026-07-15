@@ -1,0 +1,5 @@
+source "https://rubygems.org"
+
+# Play Store 업로드 자동화. 사용법:
+#   cd android && bundle install && bundle exec fastlane deploy
+gem "fastlane"
