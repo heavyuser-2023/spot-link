@@ -64,6 +64,15 @@ class MeshController extends MeshFrontend
   Timer? _presenceTimer;
   Timer? _bootFgRecheck;
 
+  /// iOS background-relaunch escape hatch. After a swipe-kill, a relaunch
+  /// rotates our BLE address, so every identifier the peer stored for us is
+  /// instantly stale; a beacon-woken (background) app additionally can't be
+  /// seen by scan at all on iOS 27 (overflow ad + broken UUID filter). Wake
+  /// then reconnect is thus structurally impossible in the background — but
+  /// foreground↔foreground links in seconds. So: relaunched in background and
+  /// still linkless after 10s → nudge the user with a one-tap notification.
+  Timer? _wakeNudgeTimer;
+
   /// Linkless-watchdog beacon pulse (iOS foreground torch). When we hold NO
   /// links for [_linklessPulseAfter], the wake torch may be stuck: a peer that
   /// was swipe-killed while "inside" our beacon region never re-enters while
@@ -308,6 +317,10 @@ class MeshController extends MeshFrontend
           node.setForeground(false);
         }
       });
+      if (Platform.isIOS) {
+        _wakeNudgeTimer =
+            Timer(const Duration(seconds: 10), _maybeWakeNudge);
+      }
     }
     if (!started) {
       lastError = 'Bluetooth unavailable';
@@ -386,6 +399,39 @@ class MeshController extends MeshFrontend
     } catch (_) {} // battery plugin unavailable / transient — keep last tier
   }
 
+  /// See [_wakeNudgeTimer]. Fires once, 10s after boot: a BACKGROUND relaunch
+  /// (beacon wake / BLE restoration) that is still linkless can never join
+  /// silently — nudge with a tappable notification instead. A normal
+  /// foreground launch, or a wake whose fresh identifiers connected within
+  /// 10s, is a no-op. Cooldown persisted to disk: region-rotation wakes
+  /// repeat every ~36s, and each is a fresh process.
+  Future<void> _maybeWakeNudge() async {
+    final s = WidgetsBinding.instance.lifecycleState;
+    final background = s == AppLifecycleState.paused ||
+        s == AppLifecycleState.detached ||
+        s == AppLifecycleState.hidden;
+    if (!background || !started || linkCount > 0) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final stamp = File(p.join(dir.path, 'wake_nudge_at'));
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (stamp.existsSync()) {
+        final last = int.tryParse(stamp.readAsStringSync().trim()) ?? 0;
+        if (now - last < 15 * 60 * 1000) return;
+      }
+      stamp.writeAsStringSync('$now');
+    } catch (_) {
+      return; // no persisted cooldown → don't risk a notification storm
+    }
+    bleLogSink?.call('${DateTime.now().toIso8601String()} wake nudge shown '
+        '(background relaunch, linkless 10s)');
+    await NotificationService.showMessage(
+      conversationKey: 'wake-nudge',
+      title: '주변에 SpotLink 친구가 있어요',
+      body: '탭해서 열면 바로 연결됩니다.',
+    );
+  }
+
   /// See [_linklessSince]. iOS foreground only: pulse the wake torch when we
   /// have held no links for [_linklessPulseAfter], to rescue a peer stuck
   /// inside our beacon region and unwedge a stalled advertiser. Free of
@@ -454,6 +500,7 @@ class MeshController extends MeshFrontend
       // "Always" in Settings, and without this the "needs Always" banner
       // lingers until an app restart (it's only checked at boot otherwise).
       unawaited(_refreshBeaconStatus());
+      unawaited(NotificationService.cancelFor('wake-nudge'));
       if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
     } else if (state == AppLifecycleState.paused) {
       node.setForeground(false); // back to the OS-required filtered scan
@@ -1225,6 +1272,7 @@ class MeshController extends MeshFrontend
     }
     _presenceTimer?.cancel();
     _bootFgRecheck?.cancel();
+    _wakeNudgeTimer?.cancel();
     _beaconPulseTimer?.cancel();
     _startRetryTimer?.cancel();
     _adaptiveTimer?.cancel();
