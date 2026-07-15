@@ -117,6 +117,10 @@ abstract class MeshTransportInterface {
   Stream<LinkEvent> get linkEvents;
   int get linkCount;
 
+  /// Distinct connected devices (de-dupes the bidirectional C:/P: links to
+  /// one peer). For the user-facing count; [linkCount] is the raw link total.
+  int get peerCount;
+
   /// Why the radio is (un)usable right now.
   RadioStatus get radioStatus;
 
@@ -349,6 +353,19 @@ class MeshTransport implements MeshTransportInterface {
   Iterable<MeshLink> get links => _links.values;
   @override
   int get linkCount => _links.length;
+
+  /// Distinct connected DEVICES. A peer linked both ways holds two entries
+  /// (`C:<id>` outbound + `P:<id>` inbound) with the SAME underlying id, so
+  /// stripping the 2-char `C:`/`P:` prefix and de-duping counts one device,
+  /// not two links. Drives the user-facing chip; internal logic keeps using
+  /// [linkCount].
+  @override
+  int get peerCount => distinctPeerCount(_links.keys);
+
+  /// Pure de-dup of link keys (`C:<id>`/`P:<id>`) to distinct device ids.
+  /// Static + pure for testability.
+  static int distinctPeerCount(Iterable<String> linkKeys) =>
+      linkKeys.map((k) => k.substring(2)).toSet().length;
 
   /// On iOS the very first launch reports `unauthorized`/`unknown` while the
   /// permission prompt is still on screen; once the user grants it the state

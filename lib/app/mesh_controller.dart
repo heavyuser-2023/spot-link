@@ -50,6 +50,8 @@ class MeshController extends MeshFrontend
   @override
   int linkCount = 0;
   @override
+  int peerCount = 0;
+  @override
   bool started = false;
   @override
   bool powerSaver = false;
@@ -575,6 +577,7 @@ class MeshController extends MeshFrontend
   Map<String, Object?> snapshotForRemote() => {
         'started': started,
         'links': linkCount,
+        'peers': peerCount,
         'err': lastError,
         'radio': radioStatus.index,
         'saver': powerSaver,
@@ -631,6 +634,7 @@ class MeshController extends MeshFrontend
     switch (e) {
       case LinksChanged(:final count):
         linkCount = count;
+        peerCount = node.peerCount; // distinct devices (C:/P: de-duped)
         _linklessSince = count == 0 ? (_linklessSince ?? DateTime.now()) : null;
         // A topology change earns a brief low-latency burst for fast (re)join.
         _lastTopoChange = DateTime.now();

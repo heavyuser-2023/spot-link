@@ -48,6 +48,7 @@ class RemoteMeshController extends MeshFrontend
   String _displayName;
   bool _started = false;
   int _linkCount = 0;
+  int _peerCount = 0;
   String? _lastError;
   RadioStatus _radio = RadioStatus.unknown;
   // Android runtime BLE permission missing (checked in the UI isolate, which
@@ -190,6 +191,7 @@ class RemoteMeshController extends MeshFrontend
   void _applySnapshot(Map<String, Object?> m) {
     _started = m['started'] == true;
     _linkCount = (m['links'] as num?)?.toInt() ?? 0;
+    _peerCount = (m['peers'] as num?)?.toInt() ?? _linkCount;
     _lastError = m['err'] as String?;
     final radioIdx = (m['radio'] as num?)?.toInt() ?? 0;
     _radio = RadioStatus
@@ -283,6 +285,9 @@ class RemoteMeshController extends MeshFrontend
   bool get started => _started;
   @override
   int get linkCount => _linkCount;
+
+  @override
+  int get peerCount => _peerCount;
   @override
   String? get lastError => _lastError;
   @override

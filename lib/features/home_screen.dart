@@ -117,7 +117,9 @@ class _MeshStatusChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final active = controller.started;
-    final count = controller.linkCount;
+    // Show DEVICES, not raw links: a peer linked both ways is 2 links but 1
+    // device, and "메시 2" for a single friend reads as two friends.
+    final count = controller.peerCount;
     final connected = active && count > 0;
 
     final (bg, fg, dot, label) = !active
@@ -230,9 +232,9 @@ class _StatusSheet extends StatelessWidget {
                 Expanded(
                   child: _StatusStat(
                     icon: Icons.bluetooth_connected,
-                    value: '${c.linkCount}',
+                    value: '${c.peerCount}',
                     label: '연결된 기기',
-                    color: c.linkCount > 0 ? scheme.primary : scheme.outline,
+                    color: c.peerCount > 0 ? scheme.primary : scheme.outline,
                   ),
                 ),
                 Expanded(

@@ -81,6 +81,8 @@ class FakeTransport implements MeshTransportInterface {
   Stream<LinkEvent> get linkEvents => _linkEvents.stream;
   @override
   int get linkCount => _neighbours.length;
+  @override
+  int get peerCount => _neighbours.length; // fake: one link per distinct peer
 
   @override
   Stream<bool> get availabilityChanged => _availability.stream;

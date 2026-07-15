@@ -46,6 +46,10 @@ abstract class MeshFrontend extends ChangeNotifier {
   // ---- status ----
   bool get started;
   int get linkCount;
+
+  /// Distinct connected devices (for the status chip). A peer linked both
+  /// ways counts once here, unlike [linkCount] which counts each C:/P: link.
+  int get peerCount;
   String? get lastError;
   RadioStatus get radioStatus;
   bool get powerSaver;

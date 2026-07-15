@@ -312,6 +312,7 @@ class MeshNode {
   Stream<NodeEvent> get events => _events.stream;
   PeerId get myId => identity.peerId;
   int get linkCount => transport.linkCount;
+  int get peerCount => transport.peerCount;
 
   /// Signal-strength readings for direct neighbours (proximity UI).
   Stream<RssiSample> get rssiSamples => transport.rssiSamples;
