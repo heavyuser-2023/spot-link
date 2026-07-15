@@ -406,11 +406,15 @@ class MeshController extends MeshFrontend
   /// 10s, is a no-op. Cooldown persisted to disk: region-rotation wakes
   /// repeat every ~36s, and each is a fresh process.
   Future<void> _maybeWakeNudge() async {
+    // NOT foreground = nudge-worthy. A beacon / state-restoration relaunch
+    // reports lifecycleState `null` or `inactive` (NOT paused) at this point,
+    // so the earlier `paused|detached|hidden` check silently missed exactly
+    // the background-relaunch case this nudge exists for (observed: gold woke,
+    // stayed linkless for minutes, no nudge ever fired). A genuine foreground
+    // launch is `resumed` by boot+10s, so "!= resumed" cleanly discriminates.
     final s = WidgetsBinding.instance.lifecycleState;
-    final background = s == AppLifecycleState.paused ||
-        s == AppLifecycleState.detached ||
-        s == AppLifecycleState.hidden;
-    if (!background || !started || linkCount > 0) return;
+    final foreground = s == AppLifecycleState.resumed;
+    if (foreground || !started || linkCount > 0) return;
     try {
       final dir = await getApplicationDocumentsDirectory();
       final stamp = File(p.join(dir.path, 'wake_nudge_at'));
