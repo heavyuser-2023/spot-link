@@ -64,14 +64,12 @@ class MeshController extends MeshFrontend
   Timer? _presenceTimer;
   Timer? _bootFgRecheck;
 
-  /// iOS background-relaunch escape hatch. After a swipe-kill, a relaunch
-  /// rotates our BLE address, so every identifier the peer stored for us is
-  /// instantly stale; a beacon-woken (background) app additionally can't be
-  /// seen by scan at all on iOS 27 (overflow ad + broken UUID filter). Wake
-  /// then reconnect is thus structurally impossible in the background — but
-  /// foreground↔foreground links in seconds. So: relaunched in background and
-  /// still linkless after 10s → nudge the user with a one-tap notification.
-  Timer? _wakeNudgeTimer;
+  /// iOS background escape hatch: when a swipe-kill/relaunch rotates our BLE
+  /// address (peer's stored id goes stale) or a link drops and iOS 27 can't
+  /// rediscover a backgrounded peer, wake→reconnect stalls silently — but
+  /// foreground↔foreground links in seconds. So when backgrounded + linkless
+  /// we nudge the user with a one-tap notification. Polled from
+  /// [_presenceTimer] (see [_maybeWakeNudge]); no dedicated timer.
 
   /// Linkless-watchdog beacon pulse (iOS foreground torch). When we hold NO
   /// links for [_linklessPulseAfter], the wake torch may be stuck: a peer that
@@ -317,10 +315,6 @@ class MeshController extends MeshFrontend
           node.setForeground(false);
         }
       });
-      if (Platform.isIOS) {
-        _wakeNudgeTimer =
-            Timer(const Duration(seconds: 10), _maybeWakeNudge);
-      }
     }
     if (!started) {
       lastError = 'Bluetooth unavailable';
@@ -339,6 +333,9 @@ class MeshController extends MeshFrontend
     // Refresh listeners periodically so "nearby" presence ages out.
     _presenceTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       _maybeBeaconPulse();
+      // Poll (not boot-only) so the nudge also covers a link that dropped
+      // later and couldn't re-establish, not just a wake that never linked.
+      if (Platform.isIOS && !headless) unawaited(_maybeWakeNudge());
       notifyListeners();
     });
     // Adaptive BLE power (Android only). Evaluate once now and on a slow tick.
@@ -399,12 +396,13 @@ class MeshController extends MeshFrontend
     } catch (_) {} // battery plugin unavailable / transient — keep last tier
   }
 
-  /// See [_wakeNudgeTimer]. Fires once, 10s after boot: a BACKGROUND relaunch
-  /// (beacon wake / BLE restoration) that is still linkless can never join
-  /// silently — nudge with a tappable notification instead. A normal
-  /// foreground launch, or a wake whose fresh identifiers connected within
-  /// 10s, is a no-op. Cooldown persisted to disk: region-rotation wakes
-  /// repeat every ~36s, and each is a fresh process.
+  /// Nudge the user to open the app when we're stuck offline in the
+  /// background. Polled every 10s from [_presenceTimer] so it covers BOTH a
+  /// background relaunch that never linked AND a link that came up then
+  /// DROPPED later (iOS 27 can't rediscover a backgrounded peer, so a dropped
+  /// link often can't re-establish silently). No-op while foregrounded or
+  /// linked. The 15-min disk cooldown keeps region-rotation wakes (~36s) and
+  /// the 10s poll from ever spamming.
   Future<void> _maybeWakeNudge() async {
     // NOT foreground = nudge-worthy. A beacon / state-restoration relaunch
     // reports lifecycleState `null` or `inactive` (NOT paused) at this point,
@@ -1276,7 +1274,6 @@ class MeshController extends MeshFrontend
     }
     _presenceTimer?.cancel();
     _bootFgRecheck?.cancel();
-    _wakeNudgeTimer?.cancel();
     _beaconPulseTimer?.cancel();
     _startRetryTimer?.cancel();
     _adaptiveTimer?.cancel();
