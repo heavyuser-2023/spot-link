@@ -19,4 +19,11 @@
     <uses-permission
         android:name="android.permission.READ_MEDIA_VIDEO"
         tools:node="remove" />
+
+    <!-- A plugin (file_picker) merges broad audio access too; SpotLink never
+         browses the audio library, so strip it — declaring it would trip
+         Play's photo/video/audio permissions policy with no valid use. -->
+    <uses-permission
+        android:name="android.permission.READ_MEDIA_AUDIO"
+        tools:node="remove" />
 </manifest>
