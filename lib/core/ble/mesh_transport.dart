@@ -279,6 +279,18 @@ class MeshTransport implements MeshTransportInterface {
   final Map<String, Peripheral> _pendingPeripherals = {};
   static const int _maxPendingReconnects = 4;
 
+  /// Per-pending staleness watchdog + strike counter. A pending connect that
+  /// produces no link within [_pendingStaleTimeout] is almost certainly aimed
+  /// at a rotated/dead identifier (a peer in range links in seconds). We free
+  /// the slot each time and, after two straight strikes, forget the identifier
+  /// so deep-heal/boot stop resurrecting it — the peer's live address is still
+  /// found by scan when it next appears. This is the leak fix: previously an
+  /// identifier was dropped ONLY on an `illegalArgument` throw, but the common
+  /// case is a connect that simply never completes and never throws.
+  final Map<String, Timer> _pendingTimers = {};
+  final Map<String, int> _pendingStaleStrikes = {};
+  static const Duration _pendingStaleTimeout = Duration(seconds: 90);
+
   /// Failed (re)connect attempts per peripheral, driving retry backoff.
   /// A pending reconnect is one-shot on iOS: once it completes and our GATT
   /// setup fails (e.g. the peer was republishing its service that instant),
@@ -642,6 +654,11 @@ class MeshTransport implements MeshTransportInterface {
     }
     _reconnectTimers.clear();
     _reconnectAttempts.clear();
+    for (final t in _pendingTimers.values) {
+      t.cancel();
+    }
+    _pendingTimers.clear();
+    _pendingStaleStrikes.clear();
     _rssiFails.clear();
     _links.clear();
     _connecting.clear();
@@ -1236,8 +1253,36 @@ class MeshTransport implements MeshTransportInterface {
     _connecting.add(key);
     _pendingKeys.add(key);
     _pendingPeripherals[key] = peripheral;
+    _pendingTimers[key]?.cancel();
+    _pendingTimers[key] = Timer(_pendingStaleTimeout, () => _expireStalePending(key));
     _log('BLE pending reconnect armed $key');
     unawaited(_establishLink(peripheral, key));
+  }
+
+  /// See [_pendingTimers]. Fired when a standing pending connect has gone
+  /// [_pendingStaleTimeout] without linking: free the slot, and after two
+  /// strikes forget the identifier so it stops being re-armed at every
+  /// deep-heal / boot.
+  void _expireStalePending(String key) {
+    _pendingTimers.remove(key);
+    if (_links.containsKey('C:$key')) return; // connected in the meantime
+    if (!_pendingKeys.contains(key)) return; // already resolved / evicted
+    final strikes = (_pendingStaleStrikes[key] ?? 0) + 1;
+    _pendingStaleStrikes[key] = strikes;
+    if (strikes >= 2 && _knownPeers.remove(key)) {
+      knownPeersSave?.call(_knownPeers.toList());
+      _pendingStaleStrikes.remove(key);
+      _log('BLE forgetting stale peer identifier $key '
+          '(no link in ${_pendingStaleTimeout.inSeconds}s x$strikes)');
+    } else {
+      _log('BLE pending reconnect expired $key (strike $strikes)');
+    }
+    final p = _pendingPeripherals[key];
+    if (p != null) {
+      // Cancels the awaiting connect() → its establishLink finally frees the
+      // _connecting / _pendingKeys slots.
+      unawaited(_central.disconnect(p).then((_) {}, onError: (_) {}));
+    }
   }
 
   /// Connect to a SpotLink peripheral and bring up the GATT link. The caller
@@ -1354,6 +1399,7 @@ class MeshTransport implements MeshTransportInterface {
       if (probe) _log('BLE probe hit: $key is a SpotLink peer');
       _reconnectAttempts.remove(key);
       _reconnectTimers.remove(key)?.cancel();
+      _pendingStaleStrikes.remove(key); // linked → identifier proven live
       _probeMisses.remove(key);
       _probeBackoff.remove(key);
       _rememberPeer(key);
@@ -1400,6 +1446,7 @@ class MeshTransport implements MeshTransportInterface {
       _connecting.remove(key);
       _pendingKeys.remove(key);
       _pendingPeripherals.remove(key);
+      _pendingTimers.remove(key)?.cancel(); // resolved → watchdog no longer needed
       if (probe) {
         _activeProbes.remove(key);
         // A probe that timed out (not a clean disconnect) leaves a pending
