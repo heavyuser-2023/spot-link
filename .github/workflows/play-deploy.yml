@@ -1,0 +1,62 @@
+# Google Play 자동 업로드.
+#
+# 계정과 아래 GitHub Secrets만 1회 준비하면, 이후에는 태그(v*) 푸시 또는
+# 수동 실행만으로 store App Bundle 빌드 → Play 업로드 → 리스팅/스크린샷
+# 동기화까지 사람 손 없이 자동 진행됩니다.
+#
+# 필요한 Secrets (Repo → Settings → Secrets and variables → Actions):
+#   PLAY_SERVICE_ACCOUNT_JSON  : Play Console → 설정 → API 액세스에서 발급한 서비스 계정 JSON 전체
+#   ANDROID_KEYSTORE_BASE64    : `base64 -i android/app/spotlink-release.jks` 출력
+#   ANDROID_KEY_PROPERTIES     : android/key.properties 파일 내용 전체
+#
+# 트랙: 수동 실행 시 track 입력(기본 internal). 태그 푸시는 internal로 안전 업로드.
+
+name: Play deploy
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "Play track"
+        default: "internal"
+        type: choice
+        options: [internal, alpha, beta, production]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+          bundler-cache: true
+          working-directory: android
+
+      - name: Restore signing + service account from secrets
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KP: ${{ secrets.ANDROID_KEY_PROPERTIES }}
+          SA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          echo "$KS" | base64 --decode > android/app/spotlink-release.jks
+          printf '%s' "$KP" > android/key.properties
+          printf '%s' "$SA" > android/fastlane/play-service-account.json
+
+      - run: flutter pub get
+
+      - name: Upload to Play
+        working-directory: android
+        run: bundle exec fastlane deploy track:${{ github.event.inputs.track || 'internal' }}
