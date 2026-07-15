@@ -88,15 +88,18 @@ class _PeopleTabState extends State<PeopleTab> {
                   ),
                 ),
         ),
-        Positioned(
-          right: 0,
-          bottom: 88,
-          child: QrEdgeButton(
-            active: widget.active,
-            retracted: _scrolling,
-            onPressed: () => pushWithController(context, const ScanScreen()),
+        // Edge affordance only alongside a real list — the empty state has its
+        // own centered CTA, so a second floating QR button there is redundant.
+        if (c.contacts.isNotEmpty)
+          Positioned(
+            right: 0,
+            bottom: 88,
+            child: QrEdgeButton(
+              active: widget.active,
+              retracted: _scrolling,
+              onPressed: () => pushWithController(context, const ScanScreen()),
+            ),
           ),
-        ),
       ],
     );
   }
@@ -515,26 +518,47 @@ class _EmptyPeople extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.watch<MeshFrontend>();
+    final scheme = Theme.of(context).colorScheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.groups_2_outlined, size: 64),
-            const SizedBox(height: 16),
-            Text('아직 아무도 없어요', style: Theme.of(context).textTheme.titleMedium),
+            // Same empty-state language as the Chats tab: a soft tinted disc
+            // with a tinted icon, never a heavy black glyph.
+            CircleAvatar(
+              radius: 40,
+              backgroundColor: scheme.primaryContainer,
+              child: Icon(Icons.groups_2_outlined,
+                  size: 40, color: scheme.onPrimaryContainer),
+            ),
+            const SizedBox(height: 20),
+            Text('아직 아무도 없어요',
+                style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
-            const Text(
+            Text(
               '주변의 SpotLink 사용자가 자동으로 나타납니다.\n'
               '친구의 QR 코드를 스캔해 안전하게 추가하고 인증하세요.',
               textAlign: TextAlign.center,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: () =>
+                  pushWithController(context, const ScanScreen()),
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('QR로 친구 추가'),
             ),
             if (!c.started) ...[
               const SizedBox(height: 16),
               Text(
                 '블루투스가 꺼져 있거나 권한이 없습니다.',
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+                textAlign: TextAlign.center,
+                style: TextStyle(color: scheme.error),
               ),
             ],
           ],

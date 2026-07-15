@@ -275,7 +275,9 @@ void main() {
     final a = await makeNode(radio, idA, 'Alice',
         retransmit: const Duration(seconds: 30),
         haveEvery: const Duration(milliseconds: 300));
-    final r = await makeNode(radio, idR, 'Relay',
+    // The relay must exist on the mesh (side effect of makeNode); we never
+    // reference the node handle directly, so don't bind it.
+    await makeNode(radio, idR, 'Relay',
         retransmit: const Duration(seconds: 30),
         haveEvery: const Duration(milliseconds: 300));
     final b = await makeNode(radio, idB, 'Bob',

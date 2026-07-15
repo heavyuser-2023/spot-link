@@ -33,38 +33,51 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     return Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(28),
+          padding: const EdgeInsets.fromLTRB(28, 28, 28, 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Spacer(),
-              Icon(Icons.hub, size: 56, color: scheme.primary),
-              const SizedBox(height: 20),
-              Text('SpotLink에 오신 걸 환영합니다',
-                  style: Theme.of(context).textTheme.headlineSmall),
-              const SizedBox(height: 8),
+              // A branded moment: the mark sits on a soft tinted disc rather
+              // than floating alone, giving the first screen presence.
+              Container(
+                width: 84,
+                height: 84,
+                decoration: BoxDecoration(
+                  color: scheme.primaryContainer,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(Icons.hub, size: 40, color: scheme.onPrimaryContainer),
+              ),
+              const SizedBox(height: 28),
+              Text('SpotLink에\n오신 걸 환영합니다',
+                  style: Theme.of(context).textTheme.headlineMedium),
+              const SizedBox(height: 12),
               Text(
                 '주변 친구들에게 표시될 이름을 정해주세요.\n'
                 '인터넷 없이 블루투스로 안전하게 대화합니다.',
-                style: Theme.of(context).textTheme.bodyMedium,
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: scheme.onSurfaceVariant),
               ),
-              const SizedBox(height: 28),
+              const SizedBox(height: 32),
               TextField(
                 controller: _controller,
                 autofocus: true,
                 textInputAction: TextInputAction.done,
                 maxLength: 32,
                 onSubmitted: (_) => _submit(),
+                // Inherits the app's filled input style — no outlined outlier.
                 decoration: const InputDecoration(
                   labelText: '표시 이름',
                   hintText: '예: 김정훈',
-                  border: OutlineInputBorder(),
+                  counterText: '', // a char counter here is just noise
                   prefixIcon: Icon(Icons.person_outline),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
+                height: 54,
                 child: FilledButton(
                   onPressed: _submitting ? null : _submit,
                   child: _submitting
@@ -72,7 +85,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           height: 20,
                           width: 20,
                           child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('시작하기'),
+                      : const Text('시작하기',
+                          style: TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w600)),
                 ),
               ),
               const Spacer(flex: 2),

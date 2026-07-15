@@ -914,20 +914,29 @@ class _EmptyChat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.lock_outline,
-                size: 40, color: Theme.of(context).hintColor),
-            const SizedBox(height: 12),
-            const Text('종단 간 암호화된 대화입니다.',
-                textAlign: TextAlign.center),
-            const SizedBox(height: 4),
+            // Consistent empty-state language: a soft tinted disc, not a bare
+            // hint-grey glyph. The lock signals the end-to-end encryption.
+            CircleAvatar(
+              radius: 36,
+              backgroundColor: scheme.primaryContainer,
+              child: Icon(Icons.lock_outline,
+                  size: 34, color: scheme.onPrimaryContainer),
+            ),
+            const SizedBox(height: 16),
+            Text('종단 간 암호화된 대화입니다',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
             Text('첫 인사를 건네보세요 👋',
-                style: Theme.of(context).textTheme.bodySmall),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant)),
           ],
         ),
       ),

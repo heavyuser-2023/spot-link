@@ -88,9 +88,12 @@ class _QrEdgeButtonState extends State<QrEdgeButton>
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeOutCubic,
         child: Material(
-          // Flat tonal surface like the reference — reads by tone, not shadow.
-          color: scheme.surfaceContainerHighest,
-          elevation: 0,
+          // Brand-tinted container so the edge tab reads unmistakably as a
+          // tappable action, not a muted/disabled sliver. A soft shadow lifts
+          // it off the list without shouting.
+          color: scheme.primaryContainer,
+          elevation: 3,
+          shadowColor: scheme.shadow.withValues(alpha: 0.5),
           borderRadius: const BorderRadius.only(
             topLeft: Radius.circular(26),
             bottomLeft: Radius.circular(26),
@@ -109,7 +112,7 @@ class _QrEdgeButtonState extends State<QrEdgeButton>
                   child: Icon(
                     Icons.qr_code_scanner,
                     size: 26,
-                    color: scheme.onSurfaceVariant,
+                    color: scheme.onPrimaryContainer,
                     semanticLabel: 'QR로 친구 추가',
                   ),
                 ),

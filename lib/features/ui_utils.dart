@@ -21,17 +21,20 @@ Color avatarColor(String key) {
   for (final c in key.codeUnits) {
     hash = (hash * 31 + c) & 0x7fffffff;
   }
+  // Curated, gently muted palette that harmonizes with the indigo brand — no
+  // neon Material-500 primaries clashing against the UI. Still ten clearly
+  // distinct hues so contacts stay tellable apart at a glance.
   const palette = [
-    Color(0xFF3D5AFE),
-    Color(0xFF00897B),
-    Color(0xFFD81B60),
-    Color(0xFF6D4C41),
-    Color(0xFF5E35B1),
-    Color(0xFF039BE5),
-    Color(0xFFF4511E),
-    Color(0xFF43A047),
-    Color(0xFF8E24AA),
-    Color(0xFFFB8C00),
+    Color(0xFF5B67CA), // indigo
+    Color(0xFF2A9D8F), // teal
+    Color(0xFFDE7356), // terracotta
+    Color(0xFF7A6FE0), // violet
+    Color(0xFF3E82C4), // ocean
+    Color(0xFF4C9A6B), // green
+    Color(0xFFB65C93), // magenta
+    Color(0xFFCB8A3E), // amber
+    Color(0xFF6E7486), // slate
+    Color(0xFFC1666B), // rose
   ];
   return palette[hash % palette.length];
 }

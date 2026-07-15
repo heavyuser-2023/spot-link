@@ -11,7 +11,7 @@ void main() {
       }),
     ));
 
-    expect(find.text('SpotLink에 오신 걸 환영합니다'), findsOneWidget);
+    expect(find.textContaining('오신 걸 환영합니다'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField), '김정훈');
     await tester.tap(find.text('시작하기'));
