@@ -74,13 +74,27 @@ class MeshController extends MeshFrontend
   /// [_presenceTimer] (see [_maybeWakeNudge]); no dedicated timer.
 
   /// Linkless-watchdog beacon pulse (iOS foreground torch). When we hold NO
-  /// links for [_linklessPulseAfter], the wake torch may be stuck: a peer that
-  /// was swipe-killed while "inside" our beacon region never re-enters while
-  /// we keep transmitting, and the region rotation could be wedged. Since we
+  /// links past a threshold, the wake torch may be stuck: a peer that was
+  /// swipe-killed while "inside" our beacon region never re-enters while we
+  /// keep transmitting, and the region rotation could be wedged. Since we
   /// have no links, briefly dropping TX costs nothing — do it to force a
   /// region EXIT+ENTER and re-light a possibly-stalled advertiser.
+  ///
+  /// ADAPTIVE threshold (field data 2026-07-16: ">1min not finding" cases):
+  ///  - BOOT-linkless (never linked this process — the quick swipe-kill →
+  ///    relaunch case, where the peer registered no EXIT and rotation may be
+  ///    the only wake left): pulse early at [_pulseAfterBootLinkless].
+  ///  - DROP-linkless (a link existed, then fell): the normal paths (pending
+  ///    connect, rotation wake ~20–54s) deserve an uninterrupted window first
+  ///    — pulsing sooner would silence rotation ENTERs for the 40s gap and
+  ///    can REGRESS the common case. Pulse at [_pulseAfterDrop], repeating
+  ///    every [_pulseAfterDrop] while still linkless.
+  /// Floor: rescue time ≈ threshold + 40s gap + ~5s link, i.e. ~75s (boot) /
+  /// ~105s (drop) — the 40s is iOS's ~30s region-exit debounce, not tunable.
   DateTime? _linklessSince;
   bool _beaconPulsing = false;
+  bool _everLinked = false; // any link this process → drop cadence
+  bool _pulsedSinceBoot = false; // after the 1st pulse, settle to drop cadence
   Timer? _beaconPulseTimer;
 
   /// Adaptive power (Android only — the 24/7 foreground-service drain). The
@@ -101,7 +115,8 @@ class MeshController extends MeshFrontend
   int _appliedScanCode = 2;
   bool? _appliedSaver;
   static const Duration _adaptiveInterval = Duration(seconds: 30);
-  static const Duration _linklessPulseAfter = Duration(minutes: 3);
+  static const Duration _pulseAfterBootLinkless = Duration(seconds: 30);
+  static const Duration _pulseAfterDrop = Duration(seconds: 60);
   // > iOS's ~30s region-exit debounce so a stuck peer actually EXITs.
   static const Duration _beaconPulseGap = Duration(seconds: 40);
   StreamSubscription? _sub;
@@ -292,6 +307,10 @@ class MeshController extends MeshFrontend
     _sub = node.events.listen(_onEvent);
     _rssiSub = node.rssiSamples.listen(_onRssi);
     started = await node.start();
+    // Start the linkless clock at boot: a relaunch that never links (quick
+    // swipe-kill → relaunch, peer's wake stuck) must trip the early pulse —
+    // LinksChanged alone never fires when no link ever forms.
+    if (started) _linklessSince ??= DateTime.now();
     // iOS scan mode follows the app's foreground state (a background
     // relaunch must use the filtered scan; a normal launch the wide one).
     // A normal launch passes through `inactive` on its way to `resumed`,
@@ -444,10 +463,14 @@ class MeshController extends MeshFrontend
     if (!Platform.isIOS || headless || !_foreground || _beaconPulsing) return;
     final since = _linklessSince;
     if (since == null || linkCount > 0) return;
-    if (DateTime.now().difference(since) < _linklessPulseAfter) return;
+    final threshold = (_everLinked || _pulsedSinceBoot)
+        ? _pulseAfterDrop
+        : _pulseAfterBootLinkless;
+    if (DateTime.now().difference(since) < threshold) return;
     _beaconPulsing = true;
+    _pulsedSinceBoot = true;
     bleLogSink?.call('${DateTime.now().toIso8601String()} '
-        'beacon wake pulse (linkless ${_linklessPulseAfter.inMinutes}m)');
+        'beacon wake pulse (linkless ${threshold.inSeconds}s)');
     unawaited(BeaconWake.stopTx().then((_) {
       _beaconPulseTimer?.cancel();
       _beaconPulseTimer = Timer(_beaconPulseGap, () {
@@ -635,6 +658,7 @@ class MeshController extends MeshFrontend
       case LinksChanged(:final count):
         linkCount = count;
         peerCount = node.peerCount; // distinct devices (C:/P: de-duped)
+        if (count > 0) _everLinked = true; // → drop cadence for future pulses
         _linklessSince = count == 0 ? (_linklessSince ?? DateTime.now()) : null;
         // A topology change earns a brief low-latency burst for fast (re)join.
         _lastTopoChange = DateTime.now();
