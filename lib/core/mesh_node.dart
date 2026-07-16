@@ -283,6 +283,24 @@ class MeshNode {
   /// 대한 병행 BLE 청크 경로를 억제한다.
   final Set<String> _fastActive = {};
 
+  /// Multipeer / Wi-Fi Direct는 동시에 여러 세션을 열면 전부 실패한다
+  /// (실기기: 파일 6개 동시 전송 → 6× `FT fast connect null`). 전송·수신
+  /// 협상+스트림을 한 건씩 직렬화한다. BLE 폴백은 락 밖에서 돌린다.
+  Future<void> _fastLaneChain = Future<void>.value();
+
+  /// Fast-lane 연결이 방금 실패했을 때 짧은 쿨다운 — 줄 선 나머지 파일이
+  /// 각자 25초씩 또 실패하며 줄 서지 않게 한다.
+  DateTime? _fastLaneCooldownoutUntil;
+
+  Future<T> _withFastLaneLock<T>(Future<T> Function() body) {
+    final gate = Completer<void>();
+    final prev = _fastLaneChain;
+    _fastLaneChain = gate.future;
+    return prev.then((_) => body()).whenComplete(() {
+      if (!gate.isCompleted) gate.complete();
+    });
+  }
+
   MeshNode({
     required this.identity,
     required this.displayName,
@@ -630,7 +648,8 @@ class MeshNode {
     if (fastLane != null &&
         fastLane!.capabilities.isNotEmpty &&
         sender.meta.fileSize >= fastLaneMinBytes) {
-      final ok = await _trySendFast(sender, dst, kex);
+      // 협상·Wi-Fi 스트림만 직렬화. 실패 후 BLE 폴백은 락 밖에서 병행 가능.
+      final ok = await _withFastLaneLock(() => _trySendFast(sender, dst, kex));
       if (ok) return; // fast lane이 전달을 완수함(전달 ACK는 BLE로 도착)
       if (!_senders.containsKey(tid)) return; // 그 사이에 취소됨/폐기됨
       bleLogSink?.call(
@@ -643,12 +662,22 @@ class MeshNode {
 
   /// 전송 측 fast path: BLE로 offer하고, ACCEPT를 기다리고, Wi-Fi로 연결한 뒤,
   /// 전체 암호문을 스트리밍한다. 피어가 바이트를 확인한 경우에만 true를 반환한다.
+  /// 호출자는 [_withFastLaneLock]으로 감싸 동시 Multipeer 세션을 막아야 한다.
   Future<bool> _trySendFast(
     FileSender sender,
     PeerId dst,
     Uint8List kex,
   ) async {
     final tid = sender.meta.transferIdHex;
+    final now = DateTime.now();
+    if (_fastLaneCooldownoutUntil != null && now.isBefore(_fastLaneCooldownoutUntil!)) {
+      bleLogSink?.call(
+        'FT fast skip (cooldown '
+        '${_fastLaneCooldownoutUntil!.difference(now).inSeconds}s): '
+        '${sender.meta.name}',
+      );
+      return false;
+    }
     final caps = fastLane!.capabilities;
     // Offer 페이로드: transferId(16) + capsBitmask(1).
     var bitmask = 0;
@@ -686,8 +715,12 @@ class MeshNode {
       session = await fastLane!.connect(tid, accept.offer);
       if (session == null) {
         bleLogSink?.call('FT fast connect null → BLE');
+        // 동시 다중 세션/라디오 혼잡으로 연속 실패하는 패턴을 짧게 차단.
+        _fastLaneCooldownoutUntil =
+            DateTime.now().add(const Duration(seconds: 15));
         return false;
       }
+      _fastLaneCooldownoutUntil = null; // 성공 → 쿨다운 해제
       _fastActive.add(tid);
       // fast lane이 전송을 소유하는 동안에는 idle 감시 타이머에 먹여줄 BLE
       // ACK가 없으므로, 그동안은 우리가 직접 먹여준다.
@@ -1284,31 +1317,39 @@ class MeshNode {
     if (receiver == null || _completedTransfers.contains(tid)) return;
     if (_fastActive.contains(tid)) return; // 이미 협상 중
 
-    // capabilities를 교집합하고 선호도로 고른다: AP 없는 네이티브 P2P
-    // (Wi-Fi Aware/Direct/Multipeer)가 LAN 소켓을 이긴다. 공유 액세스 포인트
-    // 없이도 동작하며 "더 순수한" 직접 링크이기 때문이다.
+    // 수신 측은 네트워크 대기(connect)를 앱 전역 락으로 감싸지 않는다 —
+    // 송신 측이 같은 락을 잡고 ACCEPT를 기다리면 교착이 난다. 송신 직렬화 +
+    // 네이티브 single-flight로 동시 advertiser 폭주를 막는다.
+    //
+    // capabilities 교집합을 선호도 순으로 시도: 네이티브 P2P 우선, 실패 시
+    // 같은 Wi-Fi의 LAN 소켓.
     final senderMask = payload[16];
-    FastLaneKind? chosen;
-    for (final k in fastLane!.capabilities) {
-      if ((senderMask & (1 << k.code)) != 0) {
-        if (chosen == null || _lanePreference(k) > _lanePreference(chosen)) {
-          chosen = k;
-        }
-      }
-    }
-    if (chosen == null) return; // 공유 전송 수단 없음 → BLE
-    bleLogSink?.call('FT fast offer accepted: ${chosen.name} (tid $tid)');
+    final candidates = fastLane!.capabilities
+        .where((k) => (senderMask & (1 << k.code)) != 0)
+        .toList()
+      ..sort((a, b) => _lanePreference(b).compareTo(_lanePreference(a)));
+    if (candidates.isEmpty) return; // 공유 전송 수단 없음 → BLE
 
     final kex = _knownKex[from.hex];
     if (kex == null) return;
 
     FastLaneInbound? inbound;
-    try {
-      inbound = await fastLane!.prepareInbound(tid, chosen);
-    } catch (_) {
-      inbound = null;
+    FastLaneKind? chosen;
+    for (final k in candidates) {
+      try {
+        inbound = await fastLane!.prepareInbound(tid, k);
+      } catch (_) {
+        inbound = null;
+      }
+      if (inbound != null) {
+        chosen = k;
+        break;
+      }
+      bleLogSink?.call('FT fast prepareInbound failed: ${k.name}');
     }
-    if (inbound == null) return; // 수신 대기 불가 → BLE
+    if (inbound == null || chosen == null) return; // 전부 실패 → BLE
+
+    bleLogSink?.call('FT fast offer accepted: ${chosen.name} (tid $tid)');
 
     _fastActive.add(tid);
     // ACCEPT: transferId(16) + chosenKind(1) + offerLen(2) + offerBlob.

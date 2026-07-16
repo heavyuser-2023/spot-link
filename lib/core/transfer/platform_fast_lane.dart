@@ -83,6 +83,14 @@ class PlatformFastLane implements FastLaneInterface {
     }
   }
 
+  /// Optional sink for native `log` events (wired to ble.log in the app layer).
+  static void Function(String msg)? logSink;
+
+  void _completeConnected(String tid, bool ok) {
+    final c = _connected[tid];
+    if (c != null && !c.isCompleted) c.complete(ok);
+  }
+
   void _onEvent(dynamic e) {
     if (e is! Map) return;
     final tid = e['transferId'] as String?;
@@ -90,18 +98,30 @@ class PlatformFastLane implements FastLaneInterface {
     if (tid == null || kind == null) return;
     switch (kind) {
       case 'connected':
-        _connected[tid]?.complete(true);
+        _completeConnected(tid, true);
         break;
       case 'data':
         final d = e['data'];
-        if (d is Uint8List) _incoming[tid]?.add(d);
+        if (d is Uint8List) {
+          final c = _incoming[tid];
+          if (c != null && !c.isClosed) c.add(d);
+        }
         break;
       case 'eof':
-        _incoming[tid]?.close();
+        final c = _incoming[tid];
+        if (c != null && !c.isClosed) c.close();
         break;
       case 'error':
-        _connected[tid]?.complete(false);
-        _incoming[tid]?.close();
+        _completeConnected(tid, false);
+        final c = _incoming[tid];
+        if (c != null && !c.isClosed) c.close();
+        break;
+      case 'log':
+        final msg = e['message'] as String?;
+        if (msg != null) {
+          logSink?.call('FT native: $msg');
+          if (kDebugMode) debugPrint('FastLane: $msg');
+        }
         break;
     }
   }

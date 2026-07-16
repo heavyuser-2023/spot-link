@@ -241,6 +241,8 @@ class MeshController extends MeshFrontend
     // 모든 플랫폼에서 안전하다: 네이티브 핸들러가 없으면 → capabilities는 비어
     // 있는 채로 유지되고 파일은 LAN 소켓이나 BLE를 사용한다.
     await PlatformFastLane.instance.warmUp();
+    // Native Multipeer/Wi-Fi Direct diagnostics → Documents/ble.log
+    PlatformFastLane.logSink = (msg) => bleLogSink?.call(msg);
     bleLogSink?.call('FastLane caps: '
         '${PlatformFastLane.instance.capabilities.map((k) => k.name).toList()}');
     if (headless) {
