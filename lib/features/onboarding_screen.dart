@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-/// First-run screen: ask the user what name others should see. Without this,
-/// every peer appears as the default "SpotLink User".
+/// 첫 실행 화면: 다른 사람에게 어떤 이름으로 보일지 사용자에게 묻는다. 이것이
+/// 없으면 모든 피어가 기본값 "SpotLink User"로 표시된다.
 class OnboardingScreen extends StatefulWidget {
   final Future<void> Function(String name) onSubmit;
   const OnboardingScreen({super.key, required this.onSubmit});
@@ -38,8 +38,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Spacer(),
-              // A branded moment: the mark sits on a soft tinted disc rather
-              // than floating alone, giving the first screen presence.
+              // 브랜드를 각인시키는 순간: 마크가 홀로 떠 있지 않고 부드럽게
+              // 물든 원판 위에 놓여, 첫 화면에 존재감을 준다.
               Container(
                 width: 84,
                 height: 84,
@@ -66,11 +66,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 textInputAction: TextInputAction.done,
                 maxLength: 32,
                 onSubmitted: (_) => _submit(),
-                // Inherits the app's filled input style — no outlined outlier.
+                // 앱의 채워진(filled) 입력 스타일을 상속한다 — 혼자 테두리 형태로 튀지 않는다.
                 decoration: const InputDecoration(
                   labelText: '표시 이름',
                   hintText: '예: 김정훈',
-                  counterText: '', // a char counter here is just noise
+                  counterText: '', // 여기서 글자 수 카운터는 그저 잡음일 뿐
                   prefixIcon: Icon(Icons.person_outline),
                 ),
               ),

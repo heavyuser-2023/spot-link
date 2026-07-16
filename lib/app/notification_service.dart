@@ -2,10 +2,10 @@ import 'dart:io';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-/// Shows local notifications for incoming messages/files while the app is not
-/// in the foreground (e.g. screen off / backgrounded). The Android foreground
-/// service keeps the process alive so these can fire; on iOS the background BLE
-/// modes do the same.
+/// 앱이 포그라운드에 있지 않을 때(예: 화면 꺼짐 / 백그라운드) 수신 메시지/파일에
+/// 대한 로컬 알림을 표시한다. Android 포그라운드 서비스가 프로세스를 살려 두어
+/// 이 알림들이 발생할 수 있게 하고, iOS에서는 백그라운드 BLE 모드가 같은 역할을
+/// 한다.
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static bool _ready = false;
@@ -26,8 +26,7 @@ class NotificationService {
       settings: const InitializationSettings(android: android, iOS: darwin),
     );
 
-    // Create the Android channel up front so the first notification isn't
-    // silently dropped.
+    // 첫 알림이 조용히 버려지지 않도록 Android 채널을 미리 생성한다.
     final android2 = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
     await android2?.createNotificationChannel(const AndroidNotificationChannel(
@@ -36,18 +35,18 @@ class NotificationService {
       description: _channelDesc,
       importance: Importance.high,
     ));
-    // Ask for POST_NOTIFICATIONS on Android 13+ (no-op on older). Best-effort:
-    // in the foreground-service isolate there is no Activity and the plugin
-    // NPEs — the UI isolate has already asked, and showing notifications only
-    // needs the grant, not the request.
+    // Android 13+에서 POST_NOTIFICATIONS를 요청한다(이전 버전에서는 no-op).
+    // 최선의 노력(best-effort): 포그라운드 서비스 isolate에는 Activity가 없어
+    // 플러그인이 NPE를 낸다 — UI isolate가 이미 요청했고, 알림을 표시하는 데는
+    // 요청이 아니라 권한만 있으면 된다.
     try {
       await android2?.requestNotificationsPermission();
     } catch (_) {}
     _ready = true;
   }
 
-  /// Notification id derived from a conversation key so messages from the same
-  /// peer collapse onto one entry instead of stacking endlessly.
+  /// 같은 피어의 메시지가 끝없이 쌓이는 대신 하나의 항목으로 합쳐지도록, 대화
+  /// 키에서 파생한 알림 id.
   static int _idFor(String key) => key.hashCode & 0x7fffffff;
 
   static Future<void> showMessage({
@@ -56,7 +55,7 @@ class NotificationService {
     required String body,
   }) async {
     if (!_ready) {
-      // Never let a notification failure crash the receive path.
+      // 알림 실패가 수신 경로를 크래시시키는 일은 절대 없게 한다.
       try {
         await init();
       } catch (_) {
@@ -80,7 +79,7 @@ class NotificationService {
             const NotificationDetails(android: android, iOS: darwin),
       );
     } catch (_) {
-      // Ignore: notifications are best-effort, especially on desktop/test.
+      // 무시: 알림은 최선의 노력(best-effort)일 뿐이며, 특히 데스크톱/테스트에서 그렇다.
     }
   }
 

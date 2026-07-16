@@ -8,8 +8,8 @@ import 'scan_screen.dart';
 import 'ui_utils.dart';
 
 class ChatsTab extends StatelessWidget {
-  /// Jumps to the People tab — the natural next step when there is nothing
-  /// to chat about yet.
+  /// 친구 탭으로 이동한다 — 아직 나눌 대화가 없을 때 자연스러운 다음
+  /// 단계다.
   final VoidCallback? onFindPeople;
   const ChatsTab({super.key, this.onFindPeople});
 
@@ -53,7 +53,7 @@ class _ConversationTile extends StatelessWidget {
             Positioned(
               right: -1,
               bottom: -1,
-              // Pulsing: this friend is reachable RIGHT NOW.
+              // 깜빡임: 이 친구는 지금 당장 연결 가능하다.
               child: PulsingDot(
                 color: Colors.green,
                 size: 14,

@@ -1,16 +1,16 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-/// A node identity, derived from its public key.
+/// 공개 키로부터 파생된 노드 신원.
 ///
-/// On the wire we only carry the first [wireLength] bytes of the full
-/// SHA-256(publicKey) digest to keep frame headers small. The full public key
-/// is exchanged during the ANNOUNCE handshake, so the short id is only ever
-/// used as a routing/dedup hint — never as a security boundary.
+/// 프레임 헤더를 작게 유지하기 위해, 와이어에서는 전체
+/// SHA-256(publicKey) 다이제스트의 앞 [wireLength] 바이트만 실어 나른다. 전체
+/// 공개 키는 ANNOUNCE 핸드셰이크 중에 교환되므로, 이 짧은 id는 언제나
+/// 라우팅/중복 제거 힌트로만 쓰이며 — 보안 경계로는 절대 쓰이지 않는다.
 class PeerId {
   static const int wireLength = 8;
 
-  /// The short id bytes carried on the wire (exactly [wireLength] bytes).
+  /// 와이어에 실리는 짧은 id 바이트 (정확히 [wireLength] 바이트).
   final Uint8List bytes;
 
   PeerId(Uint8List raw)
@@ -20,7 +20,7 @@ class PeerId {
               : (Uint8List(wireLength)..setRange(0, raw.length, raw)),
         );
 
-  /// The broadcast destination: all-zero id.
+  /// 브로드캐스트 목적지: 전부 0인 id.
   static final PeerId broadcast = PeerId(Uint8List(wireLength));
 
   bool get isBroadcast {
@@ -30,7 +30,7 @@ class PeerId {
     return true;
   }
 
-  /// Hex representation, used as a stable map key / db key.
+  /// 안정적인 맵 키 / db 키로 사용되는 16진수 표현.
   String get hex {
     final sb = StringBuffer();
     for (final b in bytes) {
@@ -39,7 +39,7 @@ class PeerId {
     return sb.toString();
   }
 
-  /// A short human-friendly form for the UI.
+  /// UI를 위한 짧고 사람이 읽기 쉬운 형태.
   String get short => hex.substring(0, 6);
 
   factory PeerId.fromHex(String hex) {
@@ -50,8 +50,8 @@ class PeerId {
     return PeerId(out);
   }
 
-  /// Compare two ids lexicographically. Used for connection-role tie-break:
-  /// the node with the smaller id takes the Central (connecting) role.
+  /// 두 id를 사전식으로 비교한다. 연결 역할 동점 처리에 사용된다:
+  /// id가 더 작은 노드가 Central(연결을 거는) 역할을 맡는다.
   int compareTo(PeerId other) {
     for (var i = 0; i < wireLength; i++) {
       final d = bytes[i] - other.bytes[i];
@@ -79,6 +79,6 @@ bool _listEquals(Uint8List a, Uint8List b) {
   return true;
 }
 
-/// Utility: base64url helpers used for QR payloads and db storage of keys.
+/// 유틸: QR 페이로드와 키의 db 저장에 사용되는 base64url 헬퍼.
 String b64(List<int> bytes) => base64Url.encode(bytes);
 Uint8List unb64(String s) => base64Url.decode(s);

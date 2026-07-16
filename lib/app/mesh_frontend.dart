@@ -6,7 +6,7 @@ import '../core/ble/mesh_transport.dart' show RadioStatus;
 import '../core/model/peer_id.dart';
 import '../data/models.dart';
 
-/// A row in the conversation (inbox) list.
+/// 대화(받은편지함) 목록의 한 행.
 class ConversationSummary {
   final String peerHex;
   final String displayName;
@@ -25,40 +25,40 @@ class ConversationSummary {
   });
 }
 
-/// Everything the Flutter UI needs from "the mesh", independent of where the
-/// mesh actually runs.
+/// Flutter UI가 "메시"로부터 필요로 하는 모든 것으로, 메시가 실제로 어디서
+/// 실행되는지와 무관하다.
 ///
-/// Two implementations:
-/// - [MeshController] — the real brain (BLE node + persistence). Used on iOS,
-///   and inside the Android foreground-service isolate.
-/// - [RemoteMeshController] — Android UI: a thin client that mirrors the
-///   service-owned mesh over the foreground-task message port and NEVER
-///   touches BLE itself. The mesh must live in exactly one isolate — every
-///   two-mesh coordination scheme eventually raced and doubled the GATT
-///   server (see headless_mesh.dart history).
+/// 두 가지 구현:
+/// - [MeshController] — 진짜 두뇌(BLE 노드 + 영속화). iOS에서, 그리고 Android
+///   foreground-service isolate 안에서 사용된다.
+/// - [RemoteMeshController] — Android UI: foreground-task 메시지 포트를 통해
+///   서비스가 소유한 메시를 미러링하는 씬 클라이언트로, BLE 자체는 결코 건드리지
+///   않는다. 메시는 정확히 하나의 isolate에만 존재해야 한다 — 메시를 둘 두는 모든
+///   조율 방식은 결국 경쟁 상태에 빠져 GATT 서버를 이중으로 만들었다
+///   (headless_mesh.dart 이력 참고).
 abstract class MeshFrontend extends ChangeNotifier {
-  // ---- identity / profile ----
+  // ---- 신원 / 프로필 ----
   String get displayName;
   PeerId get myId;
   String get myQrPayload;
   Future<void> setDisplayName(String name);
 
-  // ---- status ----
+  // ---- 상태 ----
   bool get started;
   int get linkCount;
 
-  /// Distinct connected devices (for the status chip). A peer linked both
-  /// ways counts once here, unlike [linkCount] which counts each C:/P: link.
+  /// 서로 다른 연결된 기기 수(상태 칩용). 양방향으로 링크된 피어는 여기서 한 번만
+  /// 세며, 각 C:/P: 링크를 세는 [linkCount]와 다르다.
   int get peerCount;
   String? get lastError;
   RadioStatus get radioStatus;
   bool get powerSaver;
   void setPowerSaver(bool saver);
 
-  /// Transient, user-facing errors (for snackbars).
+  /// 일시적인 사용자 대상 에러(스낵바용).
   Stream<String> get errorEvents;
 
-  // ---- presence / contacts ----
+  // ---- 프레즌스 / 연락처 ----
   List<Contact> get contacts;
   Contact? contactByHex(String peerHex);
   bool isNearby(String peerHex);
@@ -70,23 +70,22 @@ abstract class MeshFrontend extends ChangeNotifier {
   Future<void> deleteContact(String peerHex);
   Future<void> renameContact(String peerHex, String name);
 
-  // ---- relay mailbox (settings UI) ----
+  // ---- 릴레이 메일박스(설정 UI) ----
   int get relayStoreCount;
   int get relayStoreBytes;
   Future<void> clearRelayStore();
 
-  // ---- wake beacon (iOS-only toggle; meaningless on Android) ----
+  // ---- 웨이크 비콘(iOS 전용 토글; Android에서는 의미 없음) ----
   bool get beaconMonitoring;
   Future<void> setBeaconMonitoring(bool on);
 
-  /// iOS only: beacon wake is on but location is merely "While Using", so the
-  /// OS won't wake us in the background — the app can't fix this itself (iOS
-  /// ignores repeat upgrade prompts once declined), the user must flip it to
-  /// "Always" in Settings. Drives the home warning banner. Always false on
-  /// Android.
+  /// iOS 전용: 웨이크 비콘은 켜져 있지만 위치 권한이 "사용 중에만"에 불과해서, OS가
+  /// 백그라운드에서 우리를 깨우지 못한다 — 앱 스스로는 이를 고칠 수 없고(iOS는 한 번
+  /// 거부되면 반복되는 업그레이드 프롬프트를 무시한다), 사용자가 설정에서 "항상"으로
+  /// 바꿔야 한다. 홈 경고 배너를 구동한다. Android에서는 항상 false다.
   bool get beaconNeedsAlways;
 
-  // ---- inbox / conversations ----
+  // ---- 받은편지함 / 대화 ----
   List<ConversationSummary> conversations();
   List<ChatMessage> conversation(String peerHex);
   int unreadFor(String peerHex);
@@ -94,15 +93,15 @@ abstract class MeshFrontend extends ChangeNotifier {
   Future<void> openConversation(String peerHex);
   void closeConversation();
 
-  // ---- messaging ----
+  // ---- 메시징 ----
   Future<void> sendText(String peerHex, String text);
   Future<void> retryText(ChatMessage failed);
   Future<void> sendFile(String peerHex,
       {required Uint8List bytes, required String name, required String mime});
 
-  /// Preferred over [sendFile] whenever a path exists: the file is hashed
-  /// and chunked straight from disk, so a large transfer never pins the whole
-  /// payload in RAM (jetsam bait on iOS).
+  /// 경로가 있을 때는 [sendFile]보다 선호된다: 파일을 디스크에서 곧바로 해싱하고
+  /// 청크로 나누므로, 큰 전송이 전체 페이로드를 RAM에 고정하는 일이 결코 없다
+  /// (iOS에서 jetsam의 먹잇감이 된다).
   Future<void> sendFilePath(String peerHex,
       {required String path, required String name, required String mime});
   Future<void> cancelFile(ChatMessage msg);
@@ -110,7 +109,7 @@ abstract class MeshFrontend extends ChangeNotifier {
   Future<void> deleteMessage(ChatMessage msg);
   Map<String, double> get transferProgress;
 
-  // ---- local file actions (operate on paths in the shared app container) --
+  // ---- 로컬 파일 동작(공유 앱 컨테이너 내 경로에 대해 작동) --
   Future<void> openFile(ChatMessage msg);
   Future<bool> saveToGallery(ChatMessage msg);
   Future<void> shareFile(ChatMessage msg);

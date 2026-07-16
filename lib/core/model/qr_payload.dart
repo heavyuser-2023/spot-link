@@ -3,19 +3,19 @@ import 'dart:typed_data';
 
 import 'peer_id.dart';
 
-/// The friend-QR payload format:
-/// `SPOTLINK1:<base64url public bundle>:<base64url display name>`.
+/// 친구 QR 페이로드 형식:
+/// `SPOTLINK1:<base64url 공개 번들>:<base64url 표시 이름>`.
 ///
-/// The single codec for both building (me tab) and parsing (scan screen /
-/// share links), so the wire format can only ever change in one place.
+/// 생성(나 탭)과 파싱(스캔 화면 / 공유 링크) 양쪽을 위한 단일 코덱이므로,
+/// 와이어 형식은 오직 한 곳에서만 바뀔 수 있다.
 abstract final class QrPayload {
   static const prefix = 'SPOTLINK1:';
 
   static String encode(Uint8List publicBundle, String displayName) =>
       '$prefix${b64(publicBundle)}:${b64(utf8.encode(displayName))}';
 
-  /// Returns (publicBundle, displayName), or null when [payload] is not a
-  /// valid SpotLink QR. The name part is optional (older payloads).
+  /// (publicBundle, displayName)를 반환하거나, [payload]가 유효한 SpotLink
+  /// QR이 아니면 null을 반환한다. 이름 부분은 선택 사항이다(구형 페이로드).
   static (Uint8List, String)? decode(String payload) {
     if (!payload.startsWith(prefix)) return null;
     final body = payload.substring(prefix.length);

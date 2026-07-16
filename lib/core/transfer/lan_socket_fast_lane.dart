@@ -4,23 +4,22 @@ import 'dart:typed_data';
 
 import 'fast_lane.dart';
 
-/// A fast lane that moves file bytes over a plain TCP socket when both peers
-/// share a Wi-Fi/LAN. Pure `dart:io` — works iOS↔Android with no native code,
-/// and is fully testable over real loopback sockets.
+/// 두 피어가 같은 Wi-Fi/LAN을 공유할 때 파일 바이트를 평범한 TCP 소켓으로
+/// 옮기는 패스트레인. 순수 `dart:io` — 네이티브 코드 없이 iOS↔Android로
+/// 동작하며, 실제 루프백 소켓 위에서 완전히 테스트할 수 있다.
 ///
-/// This covers the very common "둘 다 같은 Wi-Fi" case (home / office / cafe)
-/// at Wi-Fi speed. It does NOT provide AP-less peer-to-peer (that needs the
-/// native Wi-Fi Aware / Direct / MultipeerConnectivity transports); when no
-/// usable LAN address exists, [capabilities] is empty and the mesh stays on
-/// BLE. The receiver binds an ephemeral port and advertises its <IPv4:port>
-/// over BLE; the sender dials it.
+/// 이는 매우 흔한 "둘 다 같은 Wi-Fi" 경우(집 / 사무실 / 카페)를 Wi-Fi 속도로
+/// 처리한다. AP 없는 P2P는 제공하지 않는다(그건 네이티브 Wi-Fi Aware / Direct /
+/// MultipeerConnectivity 전송이 필요하다); 사용 가능한 LAN 주소가 없으면
+/// [capabilities]가 비어 있고 메시는 BLE에 머문다. 수신자는 임시 포트를
+/// 바인딩하고 자신의 <IPv4:port>를 BLE로 광고한다; 발신자가 그곳으로 연결한다.
 class LanSocketFastLane implements FastLaneInterface {
-  /// Injectable for tests: how we discover our own reachable IPv4 addresses.
-  /// Defaults to enumerating non-loopback network interfaces.
+  /// 테스트를 위해 주입 가능: 우리 자신의 도달 가능한 IPv4 주소를 어떻게
+  /// 발견하는지. 기본값은 루프백이 아닌 네트워크 인터페이스를 열거하는 것이다.
   final Future<List<InternetAddress>> Function() _localAddresses;
 
-  /// Injectable for tests: bind address for the listening socket. Real devices
-  /// bind 0.0.0.0 (all interfaces); tests can pin loopback.
+  /// 테스트를 위해 주입 가능: 수신 대기 소켓의 바인드 주소. 실제 기기는 0.0.0.0
+  /// (모든 인터페이스)에 바인딩한다; 테스트는 루프백으로 고정할 수 있다.
   final InternetAddress _bindHost;
 
   LanSocketFastLane({
@@ -50,7 +49,7 @@ class LanSocketFastLane implements FastLaneInterface {
       String transferIdHex, FastLaneKind kind) async {
     if (kind != FastLaneKind.lanSocket) return null;
     final addrs = await _localAddresses();
-    if (addrs.isEmpty) return null; // not on any network → BLE
+    if (addrs.isEmpty) return null; // 어떤 네트워크에도 없음 → BLE
 
     late final ServerSocket server;
     try {
@@ -59,8 +58,8 @@ class LanSocketFastLane implements FastLaneInterface {
       return null;
     }
 
-    // Advertise the first reachable IPv4 + the chosen port.
-    final ip = addrs.first.rawAddress; // 4 bytes for IPv4
+    // 도달 가능한 첫 IPv4 + 선택된 포트를 광고한다.
+    final ip = addrs.first.rawAddress; // IPv4의 경우 4바이트
     if (ip.length != 4) {
       await server.close();
       return null;
@@ -70,7 +69,7 @@ class LanSocketFastLane implements FastLaneInterface {
       ..[4] = (server.port >> 8) & 0xff
       ..[5] = server.port & 0xff;
 
-    // Accept exactly one connection, then stop listening.
+    // 정확히 하나의 연결만 수락한 뒤, 수신 대기를 멈춘다.
     final completer = Completer<FastLaneSession?>();
     late final StreamSubscription sub;
     final timeout = Timer(const Duration(seconds: 8), () {
@@ -111,7 +110,7 @@ class LanSocketFastLane implements FastLaneInterface {
           timeout: const Duration(seconds: 6));
       return _SocketSession(socket);
     } catch (_) {
-      return null; // couldn't reach → BLE fallback
+      return null; // 도달할 수 없음 → BLE 폴백
     }
   }
 }
@@ -122,7 +121,7 @@ class _SocketSession implements FastLaneSession {
   _SocketSession(this._socket);
 
   @override
-  Stream<Uint8List> get incoming => _socket; // Socket is a Stream<Uint8List>
+  Stream<Uint8List> get incoming => _socket; // Socket은 Stream<Uint8List>이다
 
   @override
   void add(Uint8List data) => _socket.add(data);
@@ -131,7 +130,7 @@ class _SocketSession implements FastLaneSession {
   Future<void> finishSending() async {
     try {
       await _socket.flush();
-      // Half-close the write side → signals EOF to the peer's reader.
+      // 쓰기 쪽을 half-close → 피어의 리더에게 EOF를 알린다.
       await _socket.close();
     } catch (_) {}
   }

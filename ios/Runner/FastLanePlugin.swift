@@ -2,20 +2,20 @@ import Flutter
 import Foundation
 import MultipeerConnectivity
 
-/// Wi-Fi fast lane for iOS via MultipeerConnectivity (AWDL — AP-less P2P over
-/// Wi-Fi/BLE, Apple devices only). Implements the `spotlink/fastlane` channel
-/// contract used by Dart's PlatformFastLane: the mesh negotiates over BLE and
-/// hands transferId + connection info here; this moves the file bytes.
+/// MultipeerConnectivity를 이용한 iOS용 Wi-Fi 패스트 레인 (AWDL — Wi-Fi/BLE
+/// 상에서 AP 없이 동작하는 P2P, Apple 기기 전용). Dart의 PlatformFastLane이
+/// 사용하는 `spotlink/fastlane` 채널 계약을 구현한다: 메시가 BLE로 협상하고
+/// transferId + 연결 정보를 여기로 넘겨주면, 이 코드가 파일 바이트를 옮긴다.
 ///
-/// NOTE: Implemented per Apple's MultipeerConnectivity API. Not runtime-verified
-/// in this build — needs two iOS devices to validate on hardware.
+/// NOTE: Apple의 MultipeerConnectivity API대로 구현했다. 이 빌드에서는 런타임
+/// 검증이 되지 않았다 — 하드웨어 검증에는 iOS 기기 두 대가 필요하다.
 class FastLanePlugin: NSObject, FlutterStreamHandler {
-  private let serviceType = "spotlink-ft" // 1–15 chars, [a-z0-9-]
+  private let serviceType = "spotlink-ft" // 1~15자, [a-z0-9-]
   private let myPeerId = MCPeerID(displayName: UUID().uuidString.prefix(8).description)
 
   private var eventSink: FlutterEventSink?
 
-  // Per-transfer MC objects.
+  // 전송 단위별 MC 객체들.
   private var sessions = [String: MCSession]()
   private var advertisers = [String: MCNearbyServiceAdvertiser]()
   private var browsers = [String: MCNearbyServiceBrowser]()
@@ -67,7 +67,7 @@ class FastLanePlugin: NSObject, FlutterStreamHandler {
       }
       result(nil)
     case "finishSending":
-      result(nil) // receiver completes on the Dart length-prefix; no EOF needed
+      result(nil) // 수신 측은 Dart의 길이 접두사로 완료를 판단한다; EOF 불필요
     case "close":
       if let tid = tid { teardown(tid) }
       result(nil)
@@ -82,7 +82,7 @@ class FastLanePlugin: NSObject, FlutterStreamHandler {
     return s
   }
 
-  // Receiver: advertise this transferId and wait for the sender to connect.
+  // 수신 측: 이 transferId를 광고하고 송신 측이 연결해 오기를 기다린다.
   private func prepareInbound(_ tid: String, result: @escaping FlutterResult) {
     let session = makeSession()
     sessions[tid] = session
@@ -91,11 +91,11 @@ class FastLanePlugin: NSObject, FlutterStreamHandler {
     adv.delegate = self
     advertisers[tid] = adv
     adv.startAdvertisingPeer()
-    // The sender matches us by the tid in discoveryInfo; blob is unused.
+    // 송신 측은 discoveryInfo의 tid로 우리를 매칭한다; blob은 사용하지 않는다.
     result(FlutterStandardTypedData(bytes: Data([1])))
   }
 
-  // Sender: browse for the advertiser carrying this transferId, then invite.
+  // 송신 측: 이 transferId를 지닌 advertiser를 탐색한 뒤 초대한다.
   private func connect(_ tid: String, blob _: Data, result: @escaping FlutterResult) {
     let session = makeSession()
     sessions[tid] = session
@@ -103,7 +103,7 @@ class FastLanePlugin: NSObject, FlutterStreamHandler {
     browser.delegate = self
     browsers[tid] = browser
     browser.startBrowsingForPeers()
-    result(true) // "started"; actual connection arrives via the event stream
+    result(true) // "시작됨"; 실제 연결은 이벤트 스트림을 통해 도착한다
   }
 
   private func send(_ tid: String, _ data: Data) {
@@ -120,7 +120,7 @@ class FastLanePlugin: NSObject, FlutterStreamHandler {
     sessions[tid] = nil
   }
 
-  // Map an MCSession back to its transferId.
+  // MCSession을 그 transferId로 역매핑한다.
   private func tidFor(_ session: MCSession) -> String? {
     sessions.first(where: { $0.value === session })?.key
   }
@@ -135,8 +135,8 @@ extension FastLanePlugin: MCSessionDelegate {
       emit(tid, "connected")
     case .notConnected:
       emit(tid, "eof")
-      // Drop this transfer's MC objects so stale advertisers/sessions don't
-      // accumulate across retries and cross-talk between transfers.
+      // 이 전송의 MC 객체들을 버려서, 오래된 advertiser/session이 재시도를
+      // 거치며 쌓여 전송끼리 서로 간섭하지 않도록 한다.
       teardown(tid)
     default:
       break
@@ -151,13 +151,13 @@ extension FastLanePlugin: MCSessionDelegate {
   func session(_: MCSession, didFinishReceivingResourceWithName _: String, fromPeer _: MCPeerID, at _: URL?, withError _: Error?) {}
 }
 
-// MARK: - Advertiser (receiver side)
+// MARK: - Advertiser (수신 측)
 extension FastLanePlugin: MCNearbyServiceAdvertiserDelegate {
   func advertiser(_ advertiser: MCNearbyServiceAdvertiser,
                   didReceiveInvitationFromPeer _: MCPeerID,
                   withContext _: Data?,
                   invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-    // Accept into the session prepared for THIS advertiser's transfer.
+    // THIS advertiser의 전송을 위해 준비된 세션으로 수락한다.
     if let tid = advertisers.first(where: { $0.value === advertiser })?.key,
        let session = sessions[tid] {
       invitationHandler(true, session)
@@ -167,7 +167,7 @@ extension FastLanePlugin: MCNearbyServiceAdvertiserDelegate {
   }
 }
 
-// MARK: - Browser (sender side)
+// MARK: - Browser (송신 측)
 extension FastLanePlugin: MCNearbyServiceBrowserDelegate {
   func browser(_ browser: MCNearbyServiceBrowser,
                foundPeer peerID: MCPeerID,

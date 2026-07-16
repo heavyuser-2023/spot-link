@@ -8,18 +8,17 @@ import '../core/ble/mesh_transport.dart' show bleLogSink;
 import 'bridge_protocol.dart';
 import 'mesh_controller.dart';
 
-/// Service-isolate side of the UI bridge: exposes the one true
-/// [MeshController] to the (optional) UI isolate as JSON messages over the
-/// foreground-task port.
+/// UI 브리지의 서비스 isolate 쪽: 유일하게 진짜인 [MeshController]를
+/// 포그라운드 task 포트를 통해 JSON 메시지로 (선택적) UI isolate에 노출한다.
 ///
-/// Protocol:
-///  UI → service: `{"c": command, ...args}`  (see [handle])
-///  service → UI: `{"t":"snap", ...state}`   throttled full snapshot
-///                `{"t":"err","m":...}`      transient error → snackbar
+/// 프로토콜:
+///  UI → service: `{"c": command, ...args}`  ([handle] 참고)
+///  service → UI: `{"t":"snap", ...state}`   스로틀된 전체 스냅샷
+///                `{"t":"err","m":...}`      일시적 오류 → 스낵바
 ///
-/// Chat history itself never crosses the port — both isolates share the
-/// SQLite file (WAL), so the UI reloads its open conversation whenever the
-/// snapshot's `rev` counter moves.
+/// 채팅 기록 자체는 절대 포트를 건너지 않는다 — 두 isolate가 SQLite 파일(WAL)을
+/// 공유하므로, UI는 스냅샷의 `rev` 카운터가 움직일 때마다 열려 있는 대화를
+/// 다시 로드한다.
 class MeshHost {
   final MeshController controller;
 
@@ -27,8 +26,8 @@ class MeshHost {
   Timer? _uiStaleTimer;
   StreamSubscription? _errSub;
 
-  /// Last signal from the UI isolate. When it goes silent (swipe-kill — no
-  /// 'bye' arrives), flip back to background-notification behaviour.
+  /// UI isolate로부터의 마지막 신호. 이것이 조용해지면(스와이프킬 — 'bye'가
+  /// 오지 않음) 백그라운드 알림 동작으로 되돌린다.
   DateTime _lastUiSignal = DateTime.fromMillisecondsSinceEpoch(0);
   bool _uiForeground = false;
 
@@ -36,8 +35,8 @@ class MeshHost {
     controller.addListener(_scheduleSnapshot);
     _errSub = controller.errorEvents.listen(
         (m) => _send({'t': Bridge.typeError, 'm': m}));
-    // The UI keepalive ticks every ~10s while it exists; 35s of silence
-    // means the UI isolate is gone (or frozen) — resume notifying.
+    // UI keepalive는 존재하는 동안 약 10초마다 틱을 보낸다; 35초의 침묵은 UI
+    // isolate가 사라졌음(또는 얼어붙었음)을 뜻한다 — 알림을 재개한다.
     _uiStaleTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!_uiForeground) return;
       if (DateTime.now().difference(_lastUiSignal) >
@@ -50,9 +49,8 @@ class MeshHost {
     _scheduleSnapshot();
   }
 
-  /// Push a fresh snapshot soon, coalescing bursts (RSSI samples arrive every
-  /// few seconds per peer; serializing on every notifyListeners would be
-  /// wasteful).
+  /// 곧 새 스냅샷을 보내되, 몰아치는 것을 합친다(RSSI 샘플은 피어마다 몇 초에
+  /// 한 번씩 도착한다; notifyListeners마다 직렬화하면 낭비가 심할 것이다).
   void _scheduleSnapshot() {
     _throttle ??= Timer(const Duration(milliseconds: 250), () {
       _throttle = null;
@@ -63,7 +61,7 @@ class MeshHost {
   void _send(Map<String, Object?> m) {
     try {
       FlutterForegroundTask.sendDataToMain(jsonEncode(m));
-    } catch (_) {} // no UI attached — fine
+    } catch (_) {} // 붙어 있는 UI 없음 — 괜찮다
   }
 
   Future<void> handle(Object data) async {
@@ -126,10 +124,10 @@ class MeshHost {
     }
   }
 
-  /// The UI hands over a path (bytes never cross the port, and the payload
-  /// never enters RAM here either — the controller copies it with a native
-  /// File.copy and streams chunks from disk). Outbox temp files are ours to
-  /// delete; picker paths belong to the OS cache and are left alone.
+  /// UI가 경로를 넘겨준다(바이트는 절대 포트를 건너지 않으며, 여기서 페이로드가
+  /// RAM에 올라오는 일도 없다 — 컨트롤러가 네이티브 File.copy로 복사하고 디스크에서
+  /// 청크를 스트리밍한다). outbox 임시 파일은 우리가 삭제할 몫이고, 피커 경로는
+  /// OS 캐시 소유이므로 건드리지 않는다.
   Future<void> _sendFile(Map<String, Object?> m) async {
     final path = m['path'] as String;
     try {

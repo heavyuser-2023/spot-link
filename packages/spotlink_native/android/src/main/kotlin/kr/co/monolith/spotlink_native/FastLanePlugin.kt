@@ -22,15 +22,15 @@ import java.net.Socket
 import kotlin.concurrent.thread
 
 /**
- * Wi-Fi fast lane for Android via Wi-Fi Direct (Wi-Fi P2P). The receiver
- * creates an autonomous group (acting as a temporary SoftAP / group owner at
- * 192.168.49.1) and advertises its SSID+passphrase over BLE; the sender joins
- * that Wi-Fi via [WifiNetworkSpecifier] and both move the file's bytes over a
- * plain TCP socket. The mesh still negotiates/encrypts/ACKs over BLE.
+ * Wi-Fi Direct(Wi-Fi P2P)를 이용한 Android용 Wi-Fi 패스트 레인. 수신 측은
+ * 자율 그룹을 생성하고(192.168.49.1의 임시 SoftAP / 그룹 오너 역할) 자신의
+ * SSID+passphrase를 BLE로 광고한다; 송신 측은 [WifiNetworkSpecifier]로 그
+ * Wi-Fi에 접속하며, 양쪽은 평범한 TCP 소켓으로 파일 바이트를 옮긴다. 메시는
+ * 여전히 BLE로 협상/암호화/ACK를 수행한다.
  *
- * Implements the `spotlink/fastlane` channel contract used by Dart's
- * PlatformFastLane. NOTE: written per the Android APIs but NOT runtime-verified
- * in this build — needs two Android devices to validate on hardware.
+ * Dart의 PlatformFastLane이 사용하는 `spotlink/fastlane` 채널 계약을 구현한다.
+ * NOTE: Android API대로 작성했으나 이 빌드에서는 런타임 검증이 되지 않았다 —
+ * 하드웨어 검증에는 Android 기기 두 대가 필요하다.
  */
 class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
     EventChannel.StreamHandler {
@@ -103,7 +103,7 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         }
     }
 
-    // Receiver: create a group, listen on a socket, advertise SSID+pass+ip:port.
+    // 수신 측: 그룹을 생성하고, 소켓에서 대기하며, SSID+pass+ip:port를 광고한다.
     @Suppress("MissingPermission")
     private fun prepareInbound(tid: String, result: MethodChannel.Result) {
         val mgr = p2p
@@ -113,7 +113,7 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             override fun onSuccess() {
                 mgr.requestGroupInfo(ch) { group ->
                     if (group == null) { result.success(null); return@requestGroupInfo }
-                    // Group owner address is fixed at 192.168.49.1.
+                    // 그룹 오너 주소는 192.168.49.1로 고정되어 있다.
                     val ownerIp = "192.168.49.1"
                     val t = Transfer(tid)
                     transfers[tid] = t
@@ -127,7 +127,7 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         })
     }
 
-    // Sender: join the receiver's group SSID as a Wi-Fi client, then dial it.
+    // 송신 측: 수신 측 그룹 SSID에 Wi-Fi 클라이언트로 접속한 뒤 다이얼한다.
     private fun connect(tid: String, blob: ByteArray, result: MethodChannel.Result) {
         val parts = String(blob, Charsets.UTF_8).split("\n")
         if (parts.size < 4 || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -148,7 +148,7 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         transfers[tid] = t
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                // Dial the group owner over the joined P2P network.
+                // 접속한 P2P 네트워크를 통해 그룹 오너로 다이얼한다.
                 t.dial(network, ip, portStr.toInt())
             }
             override fun onUnavailable() {
@@ -158,19 +158,19 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         t.networkCallback = callback
         t.connectivityManager = cm
         cm.requestNetwork(request, callback)
-        result.success(true) // connection result arrives via the event stream
+        result.success(true) // 연결 결과는 이벤트 스트림을 통해 도착한다
     }
 
     private fun teardown(tid: String) {
         transfers.remove(tid)?.close()
-        // Best-effort: remove the P2P group if we created one.
+        // best-effort: 우리가 생성한 P2P 그룹이 있으면 제거한다.
         val mgr = p2p; val ch = p2pChannel
         if (mgr != null && ch != null) {
             mgr.removeGroup(ch, null)
         }
     }
 
-    /** One transfer's socket + reader/writer threads. */
+    /** 한 전송의 소켓 + 리더/라이터 스레드. */
     inner class Transfer(private val tid: String) {
         private var server: ServerSocket? = null
         private var socket: Socket? = null
@@ -226,7 +226,7 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         }
 
         fun finishSending() {
-            // Receiver completes on the Dart length-prefix; nothing to signal.
+            // 수신 측은 Dart의 길이 접두사로 완료를 판단한다; 알릴 것이 없다.
         }
 
         fun close() {

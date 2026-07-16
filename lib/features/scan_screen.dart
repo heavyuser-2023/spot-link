@@ -66,14 +66,14 @@ class _ScanScreenState extends State<ScanScreen> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
-        // Force white over the camera: the app-bar theme's titleTextStyle uses
-        // onSurface (dark), which is unreadable against the live preview.
+        // 카메라 위에서는 흰색으로 강제한다: 앱 바 테마의 titleTextStyle은
+        // onSurface(어두운 색)를 써서, 라이브 프리뷰 위에서는 읽을 수 없다.
         titleTextStyle: const TextStyle(
             color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700),
         title: const Text('QR 코드 스캔'),
         actions: [
-          // Torch toggle — scanning a printed/on-screen code in a dim room is a
-          // real case; a flashlight belongs right here.
+          // 손전등 토글 — 어두운 방에서 인쇄된/화면 속 코드를 스캔하는 건
+          // 실제로 있는 상황이다; 손전등은 바로 여기에 있어야 한다.
           IconButton(
             tooltip: '플래시',
             icon: const Icon(Icons.flash_on),
@@ -86,8 +86,8 @@ class _ScanScreenState extends State<ScanScreen> {
         alignment: Alignment.center,
         children: [
           MobileScanner(controller: _controller, onDetect: _onDetect),
-          // Dim scrim with a clear cut-out around the aiming frame, so the eye
-          // is guided straight to where the code should go.
+          // 조준 프레임 주위만 뚜렷하게 뚫어 놓은 어두운 스크림. 시선이 코드를
+          // 두어야 할 곳으로 곧장 향하도록 유도한다.
           const _ScannerScrim(size: 248),
           Positioned(
             left: 0,
@@ -115,8 +115,8 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 }
 
-/// A translucent scrim over the camera with a rounded transparent window in
-/// the centre, plus four bright corner accents that read as an aiming frame.
+/// 카메라 위에 덮이는 반투명 스크림. 가운데에 모서리가 둥근 투명한 창이 있고,
+/// 조준 프레임처럼 읽히는 밝은 모서리 강조 네 개가 더해진다.
 class _ScannerScrim extends StatelessWidget {
   final double size;
   const _ScannerScrim({required this.size});
@@ -149,32 +149,32 @@ class _ScrimPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final rrect = RRect.fromRectAndRadius(rect, Radius.circular(radius));
-    // Dim everything except the aiming window (even-odd punches the hole).
+    // 조준 창을 뺀 나머지를 모두 어둡게 한다(even-odd 규칙으로 구멍을 뚫는다).
     final scrim = Path()
       ..addRect(Offset.zero & size)
       ..addRRect(rrect)
       ..fillType = PathFillType.evenOdd;
     canvas.drawPath(scrim, Paint()..color = Colors.black.withValues(alpha: 0.5));
 
-    // Bright rounded corner accents.
+    // 밝고 둥근 모서리 강조.
     final stroke = Paint()
       ..color = Colors.white
       ..strokeWidth = 4
       ..strokeCap = StrokeCap.round
       ..style = PaintingStyle.stroke;
-    const c = 28.0; // corner arm length
+    const c = 28.0; // 모서리 팔 길이
     void corner(Offset o, Offset h, Offset v) {
       canvas.drawLine(o, o + h, stroke);
       canvas.drawLine(o, o + v, stroke);
     }
 
-    // Insets so the arms sit just inside the rounded window.
+    // 팔이 둥근 창의 딱 안쪽에 놓이도록 하는 인셋.
     final l = rect.left + radius * 0.4, r = rect.right - radius * 0.4;
     final t = rect.top + radius * 0.4, b = rect.bottom - radius * 0.4;
-    corner(Offset(l, t), const Offset(c, 0), const Offset(0, c)); // TL
-    corner(Offset(r, t), const Offset(-c, 0), const Offset(0, c)); // TR
-    corner(Offset(l, b), const Offset(c, 0), const Offset(0, -c)); // BL
-    corner(Offset(r, b), const Offset(-c, 0), const Offset(0, -c)); // BR
+    corner(Offset(l, t), const Offset(c, 0), const Offset(0, c)); // 좌상단
+    corner(Offset(r, t), const Offset(-c, 0), const Offset(0, c)); // 우상단
+    corner(Offset(l, b), const Offset(c, 0), const Offset(0, -c)); // 좌하단
+    corner(Offset(r, b), const Offset(-c, 0), const Offset(0, -c)); // 우하단
   }
 
   @override

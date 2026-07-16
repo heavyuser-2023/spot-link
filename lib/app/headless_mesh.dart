@@ -15,21 +15,21 @@ import 'mesh_controller.dart';
 import 'mesh_host.dart';
 import 'notification_service.dart';
 
-/// Entry point of the Android foreground service's own isolate — the SINGLE
-/// OWNER of the mesh (v1.4.0).
+/// Android 포그라운드 서비스 자체 isolate의 진입점 — 메시의 단일 소유자
+/// (SINGLE OWNER, v1.4.0).
 ///
-/// The mesh node lives here and ONLY here, whether the service was started by
-/// the UI or by the system (boot / swipe-kill restart / app update / OEM kill
-/// recovery). The UI isolate, when it exists, attaches as a thin client over
-/// the task port (see [MeshHost] / RemoteMeshController) and never opens a
-/// BLE stack of its own.
+/// 메시 노드는 서비스가 UI에 의해 시작됐든 시스템에 의해 시작됐든(부팅 /
+/// 스와이프킬 재시작 / 앱 업데이트 / OEM 킬 복구) 여기, 오직 여기에만(ONLY)
+/// 존재한다. UI isolate는 존재할 경우 task 포트를 통해 얇은 클라이언트로
+/// 붙으며([MeshHost] / RemoteMeshController 참고), 자신만의 BLE 스택은 결코
+/// 열지 않는다.
 ///
-/// History: v1.3.2–1.3.5 ran a SECOND mesh here only while the UI was dead
-/// and coordinated ownership via ping/pong, then file, then prefs heartbeats
-/// — every scheme eventually raced and doubled the GATT server, which iOS
-/// centrals cannot connect through. v1.3.6 removed the headless mesh
-/// entirely (no relay after swipe-kill). Single ownership removes the
-/// coordination problem instead of trying to win it.
+/// 이력: v1.3.2–1.3.5는 UI가 죽어 있을 때만 여기서 두 번째(SECOND) 메시를
+/// 돌리고 ping/pong, 이어 파일, 다시 prefs 하트비트로 소유권을 조율했다 —
+/// 모든 방식이 결국 경쟁 상태를 일으켜 GATT 서버를 이중화했고, iOS central은
+/// 그런 상태로는 연결할 수 없다. v1.3.6은 헤드리스 메시를 완전히 제거했다
+/// (스와이프킬 후 릴레이 없음). 단일 소유권은 조율 문제를 이기려 애쓰는 대신
+/// 아예 없애 버린다.
 @pragma('vm:entry-point')
 void headlessMeshMain() {
   FlutterForegroundTask.setTaskHandler(_MeshOwnerHandler());
@@ -44,9 +44,9 @@ class _MeshOwnerHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     await _startMesh();
-    // No identity yet (first run before onboarding finished) or a transient
-    // boot failure: keep retrying so the mesh comes up on its own the moment
-    // it can, without any signal from the UI.
+    // 아직 신원 없음(온보딩이 끝나기 전 최초 실행) 또는 일시적 부팅 실패:
+    // UI로부터 어떤 신호도 없이, 가능해지는 순간 메시가 스스로 올라오도록
+    // 계속 재시도한다.
     _retryTimer =
         Timer.periodic(const Duration(seconds: 10), (_) => _startMesh());
   }
@@ -56,15 +56,15 @@ class _MeshOwnerHandler extends TaskHandler {
     _starting = true;
     try {
       WidgetsFlutterBinding.ensureInitialized();
-      // The service's background engine does NOT auto-register Dart plugin
-      // implementations. Without this every plugin channel (BLE, sqflite,
-      // secure storage, notifications) throws MissingPluginException.
+      // 서비스의 백그라운드 엔진은 Dart 플러그인 구현을 자동 등록하지
+      // 않는다(NOT). 이것이 없으면 모든 플러그인 채널(BLE, sqflite, secure
+      // storage, notifications)이 MissingPluginException을 던진다.
       DartPluginRegistrant.ensureInitialized();
       await _wireServiceLog();
       await NotificationService.init();
       final store = IdentityStore();
       final name = await store.storedName();
-      // Onboarding never completed on this device: nothing to run yet.
+      // 이 기기에서 온보딩이 완료된 적 없음: 아직 실행할 것이 없다.
       if (name == null || name.trim().isEmpty) return;
       final identity = await store.loadOrCreate();
       final controller = MeshController(
@@ -80,19 +80,19 @@ class _MeshOwnerHandler extends TaskHandler {
       await BackgroundService.updateStatus(controller.linkCount);
       bleLogSink?.call('MESH service owner up (started=${controller.started})');
     } catch (e) {
-      // Best-effort: a failed start must never crash the service — the retry
-      // timer (and the next system restart) tries again.
+      // 최선의 노력(best-effort): 시작 실패가 서비스를 크래시시키는 일은 절대
+      // 없어야 한다 — 재시도 타이머가(그리고 다음 시스템 재시작이) 다시 시도한다.
       bleLogSink?.call('MESH service start failed: $e');
     } finally {
       _starting = false;
     }
   }
 
-  /// Mirror service-isolate diagnostics into Documents/ble-service.log —
-  /// separate from the UI isolate's ble.log so concurrent appends from two
-  /// isolates never interleave. Pull with `devicectl`/`adb` like ble.log.
+  /// 서비스 isolate 진단 로그를 Documents/ble-service.log에 미러링한다 — 두
+  /// isolate에서의 동시 추가 기록이 서로 뒤섞이지 않도록 UI isolate의 ble.log와
+  /// 분리한다. ble.log처럼 `devicectl`/`adb`로 꺼낸다.
   Future<void> _wireServiceLog() async {
-    if (bleLogSink != null) return; // already wired in this isolate
+    if (bleLogSink != null) return; // 이 isolate에서는 이미 연결됨
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File(p.join(dir.path, 'ble-service.log'));
@@ -104,13 +104,13 @@ class _MeshOwnerHandler extends TaskHandler {
           '=== mesh service start ${DateTime.now().toIso8601String()} ===');
       bleLogSink =
           (line) => sink.writeln('${DateTime.now().toIso8601String()} $line');
-    } catch (_) {} // diagnostics only
+    } catch (_) {} // 진단 전용
   }
 
   @override
   void onReceiveData(Object data) {
     _host?.handle(data);
-    // A command while we're down (e.g. right after onboarding): try booting.
+    // 우리가 꺼져 있는 동안 들어온 명령(예: 온보딩 직후): 부팅을 시도한다.
     if (_controller == null) _startMesh();
   }
 

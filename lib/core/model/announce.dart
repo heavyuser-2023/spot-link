@@ -1,15 +1,15 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-/// The ANNOUNCE payload exchanged link-locally right after a link comes up.
-/// It carries the sender's 64-byte public bundle and display name so the peer
-/// can address, encrypt to, and label them.
+/// 링크가 올라온 직후 링크-로컬로 교환되는 ANNOUNCE 페이로드.
+/// 피어가 상대를 지정하고, 암호화하고, 라벨을 붙일 수 있도록 발신자의
+/// 64바이트 공개 번들과 표시 이름을 실어 나른다.
 ///
-/// Layout: version(u8) | bundle(64) | nameLen(u16) | name(utf8).
+/// 레이아웃: version(u8) | bundle(64) | nameLen(u16) | name(utf8).
 class Announce {
   static const int version1 = 1;
 
-  final Uint8List publicBundle; // 64 bytes
+  final Uint8List publicBundle; // 64바이트
   final String displayName;
 
   Announce({required this.publicBundle, required this.displayName});

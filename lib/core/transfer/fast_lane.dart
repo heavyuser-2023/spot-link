@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-/// The kind of direct Wi-Fi transport a device can offer for a bulk transfer.
-/// Values are wire-stable (sent in a negotiation frame) — append only.
+/// 기기가 대용량 전송을 위해 제안할 수 있는 직접 Wi-Fi 전송의 종류.
+/// 값은 와이어에서 안정적이다(협상 프레임으로 전송됨) — 추가만 허용.
 enum FastLaneKind {
   wifiAware(1), // Android Wi-Fi Aware (NAN) — AP 없는 직접 연결 (네이티브)
   wifiDirect(2), // Android Wi-Fi Direct (WifiP2p) — 네이티브
@@ -20,58 +20,58 @@ enum FastLaneKind {
   }
 }
 
-/// Opaque connection info the receiver hands back over BLE so the sender can
-/// dial a direct Wi-Fi channel. [blob] is platform-specific (e.g. Wi-Fi Aware
-/// publish info, SoftAP SSID+psk, or a MultipeerConnectivity token).
+/// 발신자가 직접 Wi-Fi 채널로 연결할 수 있도록 수신자가 BLE로 되돌려 주는
+/// 불투명한 연결 정보. [blob]은 플랫폼별로 다르다(예: Wi-Fi Aware publish
+/// 정보, SoftAP SSID+psk, 또는 MultipeerConnectivity 토큰).
 class FastLaneOffer {
   final FastLaneKind kind;
   final Uint8List blob;
   const FastLaneOffer(this.kind, this.blob);
 }
 
-/// A live, bidirectional byte channel over the fast lane. Reliability and
-/// ordering are the transport's job (TCP / OS), so the mesh sends the whole
-/// ciphertext as a single length-prefixed blob — no chunk/ACK/window logic.
+/// 패스트레인 위의 살아 있는 양방향 바이트 채널. 신뢰성과 순서 보장은 전송
+/// 계층의 몫(TCP / OS)이므로, 메시는 암호문 전체를 하나의 길이 프리픽스가 붙은
+/// blob으로 보낸다 — 청크/ACK/윈도 로직이 없다.
 abstract class FastLaneSession {
-  /// Bytes arriving from the peer.
+  /// 피어로부터 도착하는 바이트.
   Stream<Uint8List> get incoming;
 
-  /// Send bytes to the peer.
+  /// 피어에게 바이트를 보낸다.
   void add(Uint8List data);
 
-  /// Politely finish sending (half-close); safe to call once.
+  /// 정중하게 전송을 끝낸다(half-close); 한 번 호출하는 것은 안전하다.
   Future<void> finishSending();
 
-  /// Tear the channel down (releases the Wi-Fi radio).
+  /// 채널을 허문다(Wi-Fi 라디오를 해제한다).
   Future<void> close();
 }
 
-/// Optional bulk-transfer accelerator injected into [MeshNode]. When absent
-/// (the default), the node uses BLE chunking for everything — so this is a
-/// pure, opt-in upgrade with BLE always available as the fallback.
+/// [MeshNode]에 주입되는 선택적 대용량 전송 가속기. 없을 때(기본값)는 노드가
+/// 모든 것을 BLE 청킹으로 처리한다 — 따라서 이는 순수하게 선택적으로 켜는
+/// 업그레이드이며, BLE는 언제나 폴백으로 사용할 수 있다.
 ///
-/// The control plane (discovery, negotiation, delivery ACK) stays on BLE;
-/// this interface only moves the file *bytes*.
+/// 제어 평면(발견, 협상, 전달 ACK)은 BLE에 그대로 남고, 이 인터페이스는 파일의
+/// *바이트*만 옮긴다.
 abstract class FastLaneInterface {
-  /// What this device can offer right now (empty ⇒ no fast lane available,
-  /// so every transfer stays on BLE).
+  /// 이 기기가 지금 제안할 수 있는 것(비어 있으면 ⇒ 사용 가능한 패스트레인이
+  /// 없어 모든 전송이 BLE에 머문다).
   Set<FastLaneKind> get capabilities;
 
-  /// Receiver side: begin listening for one inbound transfer and return the
-  /// connection info to send back over BLE. Returns null if it can't (→ BLE).
-  /// The returned session completes when the sender connects.
+  /// 수신자 측: 들어오는 전송 하나를 수신 대기하기 시작하고 BLE로 되돌려 보낼
+  /// 연결 정보를 반환한다. 불가능하면 null을 반환한다(→ BLE). 반환된 세션은
+  /// 발신자가 연결하면 완료된다.
   Future<FastLaneInbound?> prepareInbound(
     String transferIdHex,
     FastLaneKind kind,
   );
 
-  /// Sender side: dial the receiver using the [offer] it returned over BLE.
-  /// Returns a connected session, or null on failure (→ BLE fallback).
+  /// 발신자 측: 수신자가 BLE로 반환한 [offer]를 사용해 수신자에게 연결한다.
+  /// 연결된 세션을 반환하거나, 실패 시 null을 반환한다(→ BLE 폴백).
   Future<FastLaneSession?> connect(String transferIdHex, FastLaneOffer offer);
 }
 
-/// The receiver's half: the offer to advertise over BLE plus a future that
-/// resolves to the session once the sender connects (or null on timeout).
+/// 수신자 측 절반: BLE로 광고할 오퍼와, 발신자가 연결되면 세션으로 해석되는
+/// (타임아웃 시 null인) future.
 class FastLaneInbound {
   final FastLaneOffer offer;
   final Future<FastLaneSession?> session;

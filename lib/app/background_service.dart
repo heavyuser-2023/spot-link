@@ -4,21 +4,20 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'headless_mesh.dart';
 
-/// The Android foreground service that OWNS the one and only mesh node.
+/// 유일무이한 메시 노드를 소유(OWN)하는 Android 포그라운드 서비스.
 ///
-/// Single-owner architecture (v1.4.0): the mesh (BLE stacks, persistence,
-/// notifications) runs in the service's task isolate — ALWAYS, whether or not
-/// the UI is open. The UI isolate attaches as a thin client over the task
-/// message port ([RemoteMeshController]) and never touches BLE itself. This
-/// is what makes swipe-kill survival safe: the mesh's isolate never dies with
-/// the activity, so there is no ownership handoff and no window where two
-/// BLE stacks (→ duplicate GATT servers) can coexist. Every previous
-/// two-mesh coordination scheme (ping/pong, file/prefs heartbeats,
-/// self-yield) raced eventually — see headless_mesh.dart history.
+/// 단일 소유자 아키텍처(v1.4.0): 메시(BLE 스택, 영속화, 알림)는 UI가 열려
+/// 있든 아니든 항상(ALWAYS) 서비스의 task isolate에서 실행된다. UI isolate는
+/// task 메시지 포트([RemoteMeshController])를 통해 얇은 클라이언트로 붙을 뿐,
+/// 자신이 직접 BLE를 건드리지 않는다. 이것이 스와이프킬 생존을 안전하게
+/// 만드는 요소다: 메시의 isolate는 액티비티와 함께 죽는 일이 없으므로, 소유권
+/// 이양도 없고 두 BLE 스택(→ 중복 GATT 서버)이 공존할 수 있는 틈도 없다.
+/// 이전의 모든 두-메시 조율 방식(ping/pong, 파일/prefs 하트비트, 자가 양보)은
+/// 결국 경쟁 상태를 일으켰다 — headless_mesh.dart의 이력 참고.
 ///
-/// On iOS there is no equivalent service: the UI isolate runs a local
-/// [MeshController] and the OS's bluetooth background modes keep it alive
-/// best-effort. A user-terminated app cannot be revived (platform policy).
+/// iOS에는 이에 상응하는 서비스가 없다: UI isolate가 로컬 [MeshController]를
+/// 실행하고, OS의 bluetooth 백그라운드 모드가 최선을 다해(best-effort) 이를
+/// 살려 둔다. 사용자가 종료한 앱은 되살릴 수 없다(플랫폼 정책).
 class BackgroundService {
   static bool get _supported => Platform.isAndroid;
 
@@ -60,8 +59,8 @@ class BackgroundService {
     await FlutterForegroundTask.stopService();
   }
 
-  /// UI → service command (JSON string). Fire-and-forget: results come back
-  /// as state snapshots on the reverse port.
+  /// UI → 서비스 명령(JSON 문자열). 발사 후 망각(fire-and-forget): 결과는 역방향
+  /// 포트에서 상태 스냅샷으로 돌아온다.
   static void sendToService(String json) {
     if (!_supported) return;
     try {
@@ -69,8 +68,8 @@ class BackgroundService {
     } catch (_) {}
   }
 
-  /// Called from the SERVICE isolate to reflect link count on the persistent
-  /// notification.
+  /// 링크 수를 상시 알림(persistent notification)에 반영하기 위해 서비스(SERVICE)
+  /// isolate에서 호출된다.
   static Future<void> updateStatus(int linkCount) async {
     if (!_supported) return;
     if (!await FlutterForegroundTask.isRunningService) return;
@@ -82,10 +81,10 @@ class BackgroundService {
     );
   }
 
-  // ---- battery optimization (Samsung 등 OEM 킬러 대응) ----
+  // ---- 배터리 최적화 (Samsung 등 OEM 킬러 대응) ----
 
-  /// True when Android won't kill our service for battery reasons (or when
-  /// the platform has no such concept, e.g. iOS).
+  /// Android가 배터리를 이유로 서비스를 죽이지 않을 때(또는 플랫폼에 그러한
+  /// 개념 자체가 없을 때, 예: iOS) true.
   static Future<bool> get isIgnoringBatteryOptimizations async {
     if (!_supported) return true;
     try {
@@ -95,8 +94,8 @@ class BackgroundService {
     }
   }
 
-  /// Shows the system dialog asking the user to exempt SpotLink from battery
-  /// optimization — without this, OEMs silently kill the relay after a while.
+  /// SpotLink를 배터리 최적화에서 제외해 달라고 사용자에게 요청하는 시스템
+  /// 다이얼로그를 띄운다 — 이것이 없으면 OEM들이 얼마 뒤 릴레이를 조용히 죽인다.
   static Future<void> requestIgnoreBatteryOptimization() async {
     if (!_supported) return;
     try {

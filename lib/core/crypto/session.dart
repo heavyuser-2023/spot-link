@@ -4,14 +4,13 @@ import 'package:cryptography/cryptography.dart';
 
 import 'identity.dart';
 
-/// End-to-end payload encryption between this node and a remote peer.
+/// 이 노드와 원격 피어 사이의 종단 간(end-to-end) 페이로드 암호화.
 ///
-/// A shared secret is established with X25519 ECDH between our kex key pair and
-/// the peer's kex public key, then stretched with HKDF-SHA256 into a 256-bit
-/// AES-GCM key. Relay nodes carry the ciphertext blindly — only the endpoints
-/// hold the key.
+/// 우리 kex 키 쌍과 피어의 kex 공개 키 사이의 X25519 ECDH로 공유 비밀을
+/// 수립한 뒤, HKDF-SHA256로 늘려 256비트 AES-GCM 키로 만든다. 릴레이 노드는
+/// 암호문을 내용 모르게 실어 나른다 — 오직 양 끝점만 키를 가진다.
 ///
-/// Wire layout of an encrypted payload: nonce(12) || cipherText || mac(16).
+/// 암호화된 페이로드의 와이어 레이아웃: nonce(12) || cipherText || mac(16).
 class SessionCrypto {
   final Identity _self;
 
@@ -23,7 +22,7 @@ class SessionCrypto {
   static const int macLength = 16;
   static const _info = 'spotlink-e2e-v1';
 
-  // Cache derived session keys per remote kex public key.
+  // 원격 kex 공개 키별로 파생된 세션 키를 캐시한다.
   final Map<String, SecretKey> _keyCache = {};
 
   SessionCrypto(this._self);
@@ -38,8 +37,8 @@ class SessionCrypto {
       remotePublicKey:
           SimplePublicKey(remoteKexPublic, type: KeyPairType.x25519),
     );
-    // Salt bound to both public keys (sorted) so both sides derive the same
-    // key regardless of direction.
+    // 양쪽 공개 키(정렬됨)에 묶인 salt이므로, 방향과 무관하게 양측이 동일한
+    // 키를 파생한다.
     final salt = _combinedSalt(_self.kexPublic, remoteKexPublic);
     final derived = await _hkdf.deriveKey(
       secretKey: shared,
@@ -50,7 +49,7 @@ class SessionCrypto {
     return derived;
   }
 
-  /// Encrypt [plaintext] for the peer identified by [remoteKexPublic].
+  /// [remoteKexPublic]로 식별되는 피어를 위해 [plaintext]를 암호화한다.
   Future<Uint8List> encrypt(
       Uint8List plaintext, Uint8List remoteKexPublic) async {
     final key = await _sessionKey(remoteKexPublic);
@@ -63,7 +62,7 @@ class SessionCrypto {
     return out;
   }
 
-  /// Decrypt a payload produced by a peer's [encrypt] to us.
+  /// 피어가 우리에게 보내려고 [encrypt]로 생성한 페이로드를 복호화한다.
   Future<Uint8List> decrypt(
       Uint8List data, Uint8List remoteKexPublic) async {
     if (data.length < nonceLength + macLength) {
@@ -82,7 +81,7 @@ class SessionCrypto {
       _keyCache.remove(_hex(remoteKexPublic));
 
   static Uint8List _combinedSalt(Uint8List a, Uint8List b) {
-    // Order-independent salt so both endpoints agree.
+    // 양 끝점이 합의하도록 순서에 무관한 salt.
     final first = _compare(a, b) <= 0 ? a : b;
     final second = identical(first, a) ? b : a;
     return Uint8List(first.length + second.length)

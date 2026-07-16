@@ -73,8 +73,8 @@ class _HomeScreenState extends State<HomeScreen> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: (i) {
-          // Drop any lingering text focus so the keyboard never covers the
-          // destination tab's content.
+          // 남아 있던 텍스트 포커스를 해제해, 키보드가 이동한 탭의 콘텐츠를
+          // 가리지 않도록 한다.
           FocusManager.instance.primaryFocus?.unfocus();
           setState(() => _index = i);
         },
@@ -106,9 +106,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// The mesh at a glance: colored pill in the app bar ("메시 2" / "검색 중" /
-/// "꺼짐"). Tapping opens a status sheet with details and quick settings —
-/// one obvious place to answer "지금 연결돼 있나?".
+/// 메시를 한눈에: 앱 바에 표시되는 색상 알약("메시 2" / "검색 중" /
+/// "꺼짐"). 탭하면 세부 정보와 빠른 설정이 담긴 상태 시트가 열린다 —
+/// "지금 연결돼 있나?"에 답해 주는 분명한 한 곳이다.
 class _MeshStatusChip extends StatelessWidget {
   final MeshFrontend controller;
   const _MeshStatusChip({required this.controller});
@@ -117,8 +117,8 @@ class _MeshStatusChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final active = controller.started;
-    // Show DEVICES, not raw links: a peer linked both ways is 2 links but 1
-    // device, and "메시 2" for a single friend reads as two friends.
+    // 원시 링크가 아니라 기기 수를 보여 준다: 양방향으로 연결된 피어는 링크가
+    // 2개지만 기기는 1개이고, 친구 한 명에 "메시 2"라고 뜨면 친구 둘로 읽힌다.
     final count = controller.peerCount;
     final connected = active && count > 0;
 
@@ -146,13 +146,13 @@ class _MeshStatusChip extends StatelessWidget {
     return Semantics(
       label: connected ? '$count개 기기 연결됨' : (active ? '주변 검색 중' : '연결 없음'),
       button: true,
-      // State changes GLIDE (color cross-fade) instead of snapping, and the
-      // dot breathes while actively searching — the chip feels alive.
+      // 상태 변화는 툭 끊기지 않고 부드럽게 흐르며(색상 크로스페이드), 점은
+      // 활발히 검색하는 동안 숨 쉬듯 움직인다 — 칩이 살아 있는 느낌을 준다.
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 350),
         curve: Curves.easeOut,
-        // Fixed height: in loosely-constrained hosts (macOS app bar) the pill
-        // ballooned to fill whatever it was given — a chip must stay a chip.
+        // 고정 높이: 제약이 느슨한 호스트(macOS 앱 바)에서는 알약이 주어진
+        // 공간을 채우려 부풀어 올랐다 — 칩은 칩으로 남아 있어야 한다.
         height: 30,
         decoration: BoxDecoration(
           color: bg,
@@ -209,8 +209,8 @@ class _MeshStatusChip extends StatelessWidget {
   }
 }
 
-/// Detail sheet behind the status chip: link count, nearby people, relay
-/// mailbox and the battery-saver toggle — the "how is my mesh doing" hub.
+/// 상태 칩 뒤에 있는 세부 시트: 링크 수, 주변 사람, 중계 보관함, 배터리 절약
+/// 토글 — "내 메시는 지금 어떤가"를 확인하는 허브다.
 class _StatusSheet extends StatelessWidget {
   const _StatusSheet();
 
@@ -329,7 +329,7 @@ class _BluetoothBanner extends StatelessWidget {
   }
 }
 
-/// A small unread-count badge overlaid on a nav icon.
+/// 내비게이션 아이콘 위에 겹쳐 표시되는 작은 안 읽음 개수 배지.
 class _UnreadBadge extends StatelessWidget {
   final int count;
   final Widget child;

@@ -23,14 +23,14 @@ import 'mesh_frontend_state.dart';
 import 'notification_service.dart';
 import 'permissions.dart';
 
-/// Android UI-side [MeshFrontend]: a thin client of the mesh that the
-/// foreground service owns (see headless_mesh.dart). Holds NO BLE stack —
-/// state arrives as JSON snapshots over the task port, commands go back the
-/// same way, and chat history is read straight from the shared SQLite file
-/// (WAL) whenever the snapshot's `rev` counter moves.
+/// Android UI 측 [MeshFrontend]: 포그라운드 서비스가 소유한 메시의
+/// 얇은 클라이언트 (headless_mesh.dart 참조). BLE 스택을 전혀 보유하지 않음 —
+/// 상태는 task 포트를 통해 JSON snapshot으로 도착하고, 명령은 같은 경로로
+/// 되돌아가며, 채팅 기록은 snapshot의 `rev` 카운터가 움직일 때마다 공유
+/// SQLite 파일(WAL)에서 곧바로 읽는다.
 ///
-/// Presence / roster / inbox queries and local file actions live in the
-/// shared [MeshFrontendState] / [LocalFileActions] mixins.
+/// 프레즌스 / 로스터 / 수신함 조회와 로컬 파일 액션은 공유
+/// [MeshFrontendState] / [LocalFileActions] 믹스인에 들어 있다.
 class RemoteMeshController extends MeshFrontend
     with MeshFrontendState, LocalFileActions, WidgetsBindingObserver {
   final Identity identity;
@@ -44,20 +44,20 @@ class RemoteMeshController extends MeshFrontend
     required this.identityStore,
   }) : _displayName = displayName;
 
-  // ---- mirrored state (authoritative copy lives in the service) ----
+  // ---- 미러링된 상태 (권위 있는 원본은 서비스에 존재) ----
   String _displayName;
   bool _started = false;
   int _linkCount = 0;
   int _peerCount = 0;
   String? _lastError;
   RadioStatus _radio = RadioStatus.unknown;
-  // Android runtime BLE permission missing (checked in the UI isolate, which
-  // — unlike the service — has an Activity to prompt from). When true and the
-  // mesh isn't up, we surface the actionable "권한 없음" banner instead of the
-  // vague `unknown` default: without the permission, Android blocks the
-  // connectedDevice foreground service, so the service never boots and never
-  // sends a real radio status — the UI would otherwise sit on the ambiguous
-  // fallback with no hint that permission is the fix.
+  // Android 런타임 BLE 권한 누락 (UI isolate에서 확인 — 서비스와 달리 UI
+  // isolate에는 권한을 요청할 Activity가 있다). true이고 메시가 올라오지
+  // 않은 상태이면, 모호한 `unknown` 기본값 대신 조치 가능한 "권한 없음"
+  // 배너를 노출한다: 권한이 없으면 Android가 connectedDevice 포그라운드
+  // 서비스를 차단하므로 서비스가 아예 부팅되지 않고 실제 라디오 상태도
+  // 보내지 않는다 — 그렇지 않으면 UI는 권한이 해결책이라는 힌트도 없이
+  // 모호한 폴백 상태에 머물게 된다.
   bool _blePermMissing = false;
   bool _powerSaver = false;
   int _relayCount = 0;
@@ -70,9 +70,9 @@ class RemoteMeshController extends MeshFrontend
   Completer<void>? _firstSnap;
   bool _wired = false;
 
-  /// Bring the bridge up: make sure the owning service runs, then wait for
-  /// its first state snapshot. Throws on timeout so the caller's retry loop
-  /// (bootstrap splash) stays in charge.
+  /// 브리지를 올린다: 소유 서비스가 실행 중인지 확인한 뒤 그 첫 상태
+  /// snapshot을 기다린다. 타임아웃 시 예외를 던져 호출자의 재시도 루프
+  /// (부트스트랩 스플래시)가 계속 주도권을 갖게 한다.
   Future<void> init() async {
     _firstSnap = Completer<void>();
     FlutterForegroundTask.addTaskDataCallback(_onData);
@@ -82,7 +82,7 @@ class RemoteMeshController extends MeshFrontend
             AppLifecycleState.resumed ||
         WidgetsBinding.instance.lifecycleState == null;
 
-    // Instant first paint from the shared DB while the service answers.
+    // 서비스가 응답하는 동안 공유 DB로부터 즉시 첫 화면을 그린다.
     contactList
       ..clear()
       ..addAll(await db.allContacts());
@@ -92,12 +92,12 @@ class RemoteMeshController extends MeshFrontend
     }
     notifyListeners();
 
-    // Bring the owning service up. NEVER fatal: if the service can't start
-    // (e.g. Android 14+ blocks the connectedDevice foreground service until
-    // Bluetooth is granted) we still enter the app in a connecting/offline
-    // state and keep retrying in the background. Bricking the splash on a
-    // service hiccup — with a 30s hard timeout — was strictly worse: the user
-    // couldn't even reach the screens that fix it. (Seen on a fresh S23:
+    // 소유 서비스를 올린다. 절대 치명적이지 않게: 서비스가 시작되지 못해도
+    // (예: Android 14+ 는 Bluetooth 권한이 부여되기 전까지 connectedDevice
+    // 포그라운드 서비스를 차단한다) 앱은 연결 중/오프라인 상태로 진입하고
+    // 백그라운드에서 계속 재시도한다. 서비스 문제로 스플래시를 먹통으로
+    // 만드는 것은 — 30초 하드 타임아웃과 함께 — 명백히 더 나빴다: 사용자가
+    // 문제를 해결할 화면에조차 도달할 수 없었다. (갓 초기화한 S23에서 관찰:
     // "mesh service unreachable: TimeoutException after 0:00:30".)
     try {
       await BackgroundService.start();
@@ -106,8 +106,8 @@ class RemoteMeshController extends MeshFrontend
     }
     _sayHello();
 
-    // Give the happy path a short window to deliver the first snapshot, then
-    // proceed regardless. On S21 the snapshot lands in well under a second.
+    // 정상 경로에 첫 snapshot을 전달할 짧은 시간을 준 뒤, 어떻든 진행한다.
+    // S21에서는 snapshot이 1초도 채 안 되어 도착한다.
     try {
       await _firstSnap!.future.timeout(const Duration(seconds: 12));
     } catch (_) {
@@ -115,12 +115,12 @@ class RemoteMeshController extends MeshFrontend
       notifyListeners();
     }
 
-    // Persistent bridge keepalive + reconnect. While no snapshot has arrived
-    // it re-attempts startService (covers a service that never came up —
-    // permission just granted, OEM kill) and nudges a running-but-still-
-    // booting service (its onReceiveData re-kicks a stalled mesh boot). Once
-    // connected it settles into the plain foreground ping the service uses as
-    // its UI-alive heartbeat (>35s silence → service resumes notifying).
+    // 지속적인 브리지 keepalive + 재연결. snapshot이 아직 도착하지 않은
+    // 동안에는 startService를 재시도하고 (아예 올라오지 못한 서비스를 커버 —
+    // 방금 권한 부여됨, OEM kill) 실행 중이지만 아직 부팅 중인 서비스를
+    // 살짝 재촉한다 (그 onReceiveData가 멈춘 메시 부팅을 다시 걷어찬다). 일단
+    // 연결되면, 서비스가 UI 생존 하트비트로 사용하는 단순 포그라운드 핑으로
+    // 안정화된다 (35초 이상 침묵 → 서비스가 알림 갱신을 재개).
     _keepalive = Timer.periodic(const Duration(seconds: 5), (_) async {
       if (_firstSnap?.isCompleted ?? true) {
         _send({'c': Bridge.cmdForeground, 'v': _foreground});
@@ -132,9 +132,9 @@ class RemoteMeshController extends MeshFrontend
       }
       notifyListeners();
     });
-    // The wake torch (iBeacon TX) is a UI-engine plugin; light it from here.
+    // 웨이크 토치(iBeacon TX)는 UI 엔진 플러그인이다; 여기서 켠다.
     unawaited(BeaconWake.startTx());
-    // Verify the BLE permission the service needs (it can't prompt itself).
+    // 서비스가 필요로 하는 BLE 권한을 확인한다 (서비스는 스스로 요청 불가).
     unawaited(_ensureBlePermission());
   }
 
@@ -143,13 +143,12 @@ class RemoteMeshController extends MeshFrontend
     _send({'c': Bridge.cmdForeground, 'v': _foreground});
   }
 
-  /// Re-check the runtime BLE permission and, if missing, re-request it (the
-  /// UI isolate has an Activity, so the OS prompt can appear — unlike the
-  /// headless service). Runs at init and whenever the app returns to the
-  /// foreground, so a permission that was denied or auto-revoked (Samsung
-  /// "unused-app" cleanup) can recover the moment the user reopens the app.
-  /// The `unauthorized` banner + its "설정 열기" button covers the
-  /// permanently-denied case where no prompt shows.
+  /// 런타임 BLE 권한을 다시 확인하고, 누락된 경우 재요청한다 (UI isolate에는
+  /// Activity가 있어 OS 프롬프트가 뜰 수 있다 — 헤드리스 서비스와 달리).
+  /// init 시점과 앱이 포그라운드로 돌아올 때마다 실행되므로, 거부되었거나
+  /// 자동 회수된(삼성 "미사용 앱" 정리) 권한을 사용자가 앱을 다시 여는 순간
+  /// 복구할 수 있다. 프롬프트가 뜨지 않는 영구 거부 상황은 `unauthorized`
+  /// 배너와 그 "설정 열기" 버튼이 커버한다.
   Future<void> _ensureBlePermission() async {
     if (!Platform.isAndroid) return;
     var granted = await Permissions.hasBleGranted();
@@ -161,8 +160,8 @@ class RemoteMeshController extends MeshFrontend
       _blePermMissing = missing;
       notifyListeners();
     }
-    // Newly granted: poke the service so it (re)starts now instead of waiting
-    // for the keepalive tick — the 'fg' command retries a down mesh.
+    // 방금 권한 부여됨: keepalive 틱을 기다리는 대신 서비스를 찔러 지금
+    // (재)시작하게 한다 — 'fg' 명령이 다운된 메시를 재시도한다.
     if (granted) _send({'c': Bridge.cmdForeground, 'v': _foreground});
   }
 
@@ -227,8 +226,8 @@ class RemoteMeshController extends MeshFrontend
       ..clear()
       ..addAll(
           asMap(m['unread']).map((k, v) => MapEntry(k, (v as num).toInt())));
-    // The UI suppresses its open conversation's unread locally too — the
-    // 'open' command races the next snapshot otherwise.
+    // UI는 열려 있는 대화의 읽지 않음 수를 로컬에서도 억제한다 — 그렇지
+    // 않으면 'open' 명령이 다음 snapshot과 경쟁 상태가 된다.
     if (_openPeer != null) unreadCounts.remove(_openPeer);
     lastMessages
       ..clear()
@@ -259,7 +258,7 @@ class RemoteMeshController extends MeshFrontend
     notifyListeners();
   }
 
-  // ---- MeshFrontend: identity / profile ----
+  // ---- MeshFrontend: 신원 / 프로필 ----
 
   @override
   String get displayName => _displayName;
@@ -279,7 +278,7 @@ class RemoteMeshController extends MeshFrontend
     notifyListeners();
   }
 
-  // ---- MeshFrontend: status ----
+  // ---- MeshFrontend: 상태 ----
 
   @override
   bool get started => _started;
@@ -303,7 +302,7 @@ class RemoteMeshController extends MeshFrontend
     notifyListeners();
   }
 
-  // ---- MeshFrontend: presence / contacts ----
+  // ---- MeshFrontend: 프레즌스 / 연락처 ----
 
   @override
   Future<Contact> addContactFromBundle(Uint8List bundle,
@@ -314,11 +313,11 @@ class RemoteMeshController extends MeshFrontend
       'name': name,
       'v': verified,
     });
-    // Mirror immediately so the scan screen can confirm without waiting a
-    // snapshot round-trip; the authoritative row arrives with the next snap.
+    // 스캔 화면이 snapshot 왕복을 기다리지 않고 확인할 수 있도록 즉시
+    // 미러링한다; 권위 있는 행은 다음 snap과 함께 도착한다.
     final ci = ContactIdentity.fromBundle(bundle, displayName: name);
     final existing = contactByHex(ci.peerId.hex);
-    // Same rule as the service: a user-renamed contact keeps its name.
+    // 서비스와 동일한 규칙: 사용자가 이름을 바꾼 연락처는 그 이름을 유지한다.
     final nameLocked = existing?.nameLocked ?? false;
     final contact = Contact(
       peerHex: ci.peerId.hex,
@@ -358,7 +357,7 @@ class RemoteMeshController extends MeshFrontend
     notifyListeners();
   }
 
-  // ---- MeshFrontend: relay store ----
+  // ---- MeshFrontend: 릴레이 저장소 ----
 
   @override
   int get relayStoreCount => _relayCount;
@@ -373,18 +372,18 @@ class RemoteMeshController extends MeshFrontend
     notifyListeners();
   }
 
-  // ---- MeshFrontend: wake beacon (iOS-only concept; no-op mirror here) ----
+  // ---- MeshFrontend: 웨이크 비콘 (iOS 전용 개념; 여기선 no-op 미러) ----
 
   @override
   bool get beaconMonitoring => false;
 
   @override
-  bool get beaconNeedsAlways => false; // Android: no iOS beacon-wake grant
+  bool get beaconNeedsAlways => false; // Android: iOS 비콘 웨이크 권한 없음
 
   @override
   Future<void> setBeaconMonitoring(bool on) async {}
 
-  // ---- MeshFrontend: inbox / conversations ----
+  // ---- MeshFrontend: 수신함 / 대화 ----
 
   @override
   Future<void> openConversation(String peerHex) async {
@@ -401,7 +400,7 @@ class RemoteMeshController extends MeshFrontend
     _send({'c': Bridge.cmdClose});
   }
 
-  // ---- MeshFrontend: messaging ----
+  // ---- MeshFrontend: 메시징 ----
 
   @override
   Future<void> sendText(String peerHex, String text) async {
@@ -418,8 +417,8 @@ class RemoteMeshController extends MeshFrontend
       {required Uint8List bytes,
       required String name,
       required String mime}) async {
-    // Bytes never cross the isolate port: hand the service a temp file in
-    // the shared app container instead (it cleans up outbox files once sent).
+    // 바이트는 절대 isolate 포트를 건너가지 않는다: 대신 공유 앱 컨테이너의
+    // 임시 파일을 서비스에 넘긴다 (전송이 끝나면 outbox 파일을 정리한다).
     final dir = await getApplicationDocumentsDirectory();
     final folder = Directory(p.join(dir.path, 'outbox'));
     if (!await folder.exists()) await folder.create(recursive: true);
@@ -435,8 +434,8 @@ class RemoteMeshController extends MeshFrontend
       {required String path,
       required String name,
       required String mime}) async {
-    // Same sandbox, so the service isolate reads the path directly; it makes
-    // its own durable copy under sent/ before streaming from disk.
+    // 같은 샌드박스이므로 서비스 isolate가 경로를 직접 읽는다; 디스크에서
+    // 스트리밍하기 전에 sent/ 아래에 자체 영구 복사본을 만든다.
     _send({
       'c': Bridge.cmdSendFile,
       'p': peerHex,
@@ -468,9 +467,9 @@ class RemoteMeshController extends MeshFrontend
     notifyListeners();
   }
 
-  // ---- local file actions: see LocalFileActions ----
+  // ---- 로컬 파일 액션: LocalFileActions 참조 ----
 
-  // ---- lifecycle ----
+  // ---- 생명주기 ----
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -478,13 +477,13 @@ class RemoteMeshController extends MeshFrontend
     _send({'c': Bridge.cmdForeground, 'v': _foreground});
     if (_foreground) {
       unawaited(BeaconWake.startTx());
-      // Re-verify the BLE permission on every return: it may have been granted
-      // in Settings (recovering a service Android blocked for missing it) or
-      // auto-revoked while away.
+      // 복귀할 때마다 BLE 권한을 재검증한다: 설정에서 권한이 부여되었거나
+      // (권한 누락으로 Android가 차단했던 서비스를 복구) 자리를 비운 사이
+      // 자동 회수되었을 수 있다.
       unawaited(_ensureBlePermission());
       if (_openPeer != null) NotificationService.cancelFor(_openPeer!);
     } else if (state == AppLifecycleState.paused) {
-      // Backgrounded = jetsam candidacy: shed rebuildable state now.
+      // 백그라운드 전환 = jetsam 대상 후보: 재구성 가능한 상태를 지금 버린다.
       _trimMemory();
     }
   }
@@ -512,6 +511,6 @@ class RemoteMeshController extends MeshFrontend
   void dispose() {
     _send({'c': Bridge.cmdBye});
     _teardownWiring();
-    super.dispose(); // MeshFrontendState closes the error stream
+    super.dispose(); // MeshFrontendState가 에러 스트림을 닫는다
   }
 }

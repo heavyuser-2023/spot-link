@@ -30,9 +30,9 @@ class _ChatScreenState extends State<ChatScreen> {
   int _lastCount = 0;
   MeshFrontend? _controller;
 
-  /// True when a message arrived while the user was scrolled up reading
-  /// history — shown as a floating "새 메시지" chip instead of yanking the
-  /// scroll position away from them.
+  /// 사용자가 위로 스크롤해 이전 기록을 읽는 동안 메시지가 도착하면 true.
+  /// 스크롤 위치를 강제로 끌어내리지 않고, 떠 있는 "새 메시지" 칩으로
+  /// 알려 준다.
   bool _showNewMsgChip = false;
 
   @override
@@ -53,7 +53,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
-    // Use the captured reference: context is defunct during dispose.
+    // 캡처해 둔 참조를 사용: dispose 중에는 context가 무효화된다.
     _controller?.closeConversation();
     _input.dispose();
     _scroll.dispose();
@@ -79,7 +79,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _attach() async {
-    // Ask where to pick from: the photo gallery or the file browser.
+    // 어디서 고를지 묻는다: 사진 갤러리 또는 파일 브라우저.
     final source = await showModalBottomSheet<_AttachSource>(
       context: context,
       showDragHandle: true,
@@ -130,11 +130,11 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
-    // Gallery uses the platform media picker (PHPicker on iOS, gallery on
-    // Android) and allows multi-select; files keep the single-pick browser.
-    // withData: false — the picker gives us a path, and the disk-backed send
-    // never loads the payload into RAM (a picked video used to live in the
-    // Dart heap for the whole multi-minute transfer).
+    // 갤러리는 플랫폼 미디어 피커(iOS는 PHPicker, Android는 갤러리)를 쓰며
+    // 다중 선택을 허용한다. 파일은 단일 선택 브라우저를 그대로 쓴다.
+    // withData: false — 피커가 경로를 넘겨주고, 디스크 기반 전송은 페이로드를
+    // RAM에 절대 올리지 않는다(예전에는 선택한 동영상이 몇 분에 걸친 전송
+    // 내내 Dart 힙에 상주했다).
     final result = await FilePicker.platform.pickFiles(
       type: source == _AttachSource.gallery ? FileType.media : FileType.any,
       allowMultiple: source == _AttachSource.gallery,
@@ -153,7 +153,7 @@ class _ChatScreenState extends State<ChatScreen> {
           mime: mime,
         );
       } else if (f.bytes != null) {
-        // No path (rare: web/virtual providers) — byte fallback.
+        // 경로가 없는 경우(드묾: 웹/가상 프로바이더) — 바이트로 대체.
         await controller.sendFile(
           widget.peerHex,
           bytes: f.bytes!,
@@ -165,8 +165,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _animateToBottom();
   }
 
-  /// Send our own installed APK through the mesh — the receiver taps the
-  /// bubble to install, so the app spreads with no store and no internet.
+  /// 설치된 자체 APK를 메시로 전송한다 — 수신자가 말풍선을 탭하면 설치되므로,
+  /// 스토어도 인터넷도 없이 앱이 퍼진다.
   Future<void> _sendApk() async {
     final messenger = ScaffoldMessenger.of(context);
     final controller = context.read<MeshFrontend>();
@@ -176,7 +176,7 @@ class _ChatScreenState extends State<ChatScreen> {
           const SnackBar(content: Text('설치 파일을 꺼내지 못했습니다')));
       return;
     }
-    // Disk-backed: a ~76MB APK read into RAM was itself a jetsam trigger.
+    // 디스크 기반: ~76MB APK를 RAM에 읽어 들이는 것 자체가 jetsam을 유발했다.
     await controller.sendFilePath(
       widget.peerHex,
       path: apk.path,
@@ -186,9 +186,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _animateToBottom();
   }
 
-  // The list is rendered with reverse: true (chat standard) so offset 0 IS
-  // the bottom — the newest bubble can never be clipped by a stale
-  // maxScrollExtent, with or without the keyboard.
+  // 목록은 reverse: true(채팅 표준)로 렌더링하므로 offset 0이 곧 맨 아래다 —
+  // 키보드 유무와 관계없이, 최신 말풍선이 오래된 maxScrollExtent에 잘릴 일이
+  // 없다.
   bool get _nearBottom {
     if (!_scroll.hasClients) return true;
     return _scroll.offset < 240;
@@ -218,14 +218,14 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     final c = context.watch<MeshFrontend>();
     final contact = c.contactByHex(widget.peerHex);
-    // Fall back to the PEER's short id (not our own) when they aren't a contact.
+    // 연락처가 아닐 때는 (내 것이 아니라) 상대의 짧은 id로 대체한다.
     final name = contact?.displayName ?? PeerId.fromHex(widget.peerHex).short;
     final messages = c.conversation(widget.peerHex);
     final nearby = c.isNearby(widget.peerHex);
     final hops = c.hopsTo(widget.peerHex);
 
-    // Auto-scroll on new messages when already near the bottom; when the
-    // user is reading history, offer a "새 메시지" chip instead of yanking.
+    // 이미 맨 아래 근처면 새 메시지가 오면 자동 스크롤한다. 사용자가 이전
+    // 기록을 읽는 중이면 강제로 끌어내리지 않고 "새 메시지" 칩을 제시한다.
     if (messages.length != _lastCount) {
       final grew = messages.length > _lastCount;
       _lastCount = messages.length;
@@ -313,7 +313,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             horizontal: 12, vertical: 12),
                         itemCount: items.length,
                         itemBuilder: (_, i) {
-                          // reverse: index 0 is the bottom-most entry.
+                          // reverse: 인덱스 0이 맨 아래 항목이다.
                           final item = items[items.length - 1 - i];
                           if (item is _DateItem) {
                             return _DateChip(label: item.label);
@@ -423,8 +423,8 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// Peer detail sheet from the app bar: identity at a glance (인증 여부,
-  /// 메시 거리, ID 복사) without leaving the conversation.
+  /// 앱 바에서 여는 상대 상세 시트: 대화를 벗어나지 않고 신원을 한눈에 확인
+  /// (인증 여부, 메시 거리, ID 복사).
   void _showPeerSheet(BuildContext context, MeshFrontend c, String name,
       String presence, bool nearby) {
     final contact = c.contactByHex(widget.peerHex);
@@ -549,10 +549,9 @@ class _Bubble extends StatelessWidget {
 
   bool get _isMe => message.direction == MsgDirection.outgoing;
 
-  /// An outgoing message that hasn't been confirmed delivered (✓✓) for a
-  /// while: still "sent" (handed to a link, no receipt back) or "queued" (no
-  /// route). Surfaced with a warning + one-tap resend so a message can never
-  /// silently fail to arrive without the user noticing.
+  /// 한동안 전달 확인(✓✓)이 안 된 발신 메시지: 여전히 "sent"(링크에 넘겼지만
+  /// 수신 확인이 없음) 또는 "queued"(경로 없음) 상태다. 경고와 원탭 재전송을
+  /// 함께 노출해, 메시지가 사용자도 모르게 조용히 도착 실패하는 일이 없게 한다.
   static const _undeliveredAfterMs = 90 * 1000;
   bool get _undeliveredWarn {
     if (!_isMe) return false;
@@ -571,8 +570,8 @@ class _Bubble extends StatelessWidget {
     final fg = _isMe ? scheme.onPrimary : scheme.onSurface;
     final failed = message.status == MsgStatus.failed;
 
-    // Messenger-style asymmetric corners: the corner pointing at the sender
-    // is tight, the rest round.
+    // 메신저 스타일의 비대칭 모서리: 보낸 사람 쪽을 가리키는 모서리는 뾰족하게,
+    // 나머지는 둥글게.
     final radius = BorderRadius.only(
       topLeft: const Radius.circular(18),
       topRight: const Radius.circular(18),
@@ -626,8 +625,8 @@ class _Bubble extends StatelessWidget {
                       style: TextStyle(
                           color: scheme.onErrorContainer, fontSize: 11)),
                 ),
-              // Long-undelivered (no ✓✓): make it impossible to miss + offer a
-              // one-tap resend. Takes priority over the calmer "queued" note.
+              // 오래 전달 안 됨(✓✓ 없음): 놓칠 수 없게 표시하고 원탭 재전송을
+              // 제공한다. 더 차분한 "queued" 안내보다 우선한다.
               if (!failed && _undeliveredWarn)
                 Padding(
                   padding: const EdgeInsets.only(top: 3),
@@ -661,15 +660,15 @@ class _Bubble extends StatelessWidget {
     );
   }
 
-  /// Bubble time label. Incoming texts carry the SENDER's send time in the
-  /// envelope; when it meaningfully differs from the arrival time (>1 min —
-  /// i.e. the message rode store-and-forward for a while) show both so the
-  /// receiver can tell when it was written vs when it reached them.
+  /// 말풍선 시간 라벨. 수신 텍스트는 봉투에 보낸 사람의 전송 시각을 담고 있다.
+  /// 이 시각이 도착 시각과 유의미하게 다르면(>1분 — 즉 메시지가 한동안
+  /// store-and-forward를 거친 경우) 둘 다 표시해, 수신자가 작성 시점과 도착
+  /// 시점을 구분할 수 있게 한다.
   String _timeLabel() {
     final sent = message.sentTs;
     if (_isMe || sent == null) return clockTime(message.timestamp);
-    // Sender's clock ahead of ours (skew): a "sent later than arrived" label
-    // reads as nonsense — fall back to the arrival time alone.
+    // 보낸 사람 시계가 우리보다 앞선 경우(시계 오차): "도착보다 늦게 전송"
+    // 이라는 라벨은 말이 안 되므로 — 도착 시각만 표시하도록 대체한다.
     if (sent > message.timestamp) return clockTime(message.timestamp);
     if (message.timestamp - sent < 60 * 1000) {
       return clockTime(message.timestamp);
@@ -704,7 +703,7 @@ class _Bubble extends StatelessWidget {
     return mime.startsWith('image/') || mime.startsWith('video/');
   }
 
-  /// Images open in the in-app viewer; everything else via the system app.
+  /// 이미지는 앱 내 뷰어로 열고, 그 외에는 모두 시스템 앱으로 연다.
   void _view(BuildContext context) {
     if (_isImage) {
       Navigator.push(
@@ -719,8 +718,8 @@ class _Bubble extends StatelessWidget {
     }
   }
 
-  /// Long-press management menu: view/save/share/delete for files,
-  /// copy/delete for texts.
+  /// 길게 눌러 여는 관리 메뉴: 파일은 보기/저장/공유/삭제, 텍스트는
+  /// 복사/삭제.
   void _showMenu(BuildContext context) {
     final messenger = ScaffoldMessenger.of(context);
     final isText = message.kind == MsgKind.text;
@@ -853,7 +852,7 @@ class _Bubble extends StatelessWidget {
   Widget _fileContent(BuildContext context, Color fg) {
     final progress = controller.transferProgress[message.msgId];
     final canOpen = message.filePath != null;
-    // Received/sent images render as an inline thumbnail — tap for viewer.
+    // 받은/보낸 이미지는 인라인 썸네일로 렌더링된다 — 탭하면 뷰어로 연다.
     if (canOpen && _isImage) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(10),
@@ -921,8 +920,8 @@ class _EmptyChat extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Consistent empty-state language: a soft tinted disc, not a bare
-            // hint-grey glyph. The lock signals the end-to-end encryption.
+            // 일관된 빈 상태 언어: 밋밋한 힌트-그레이 글리프가 아니라 은은하게
+            // 틴트된 원. 자물쇠는 종단 간 암호화를 나타낸다.
             CircleAvatar(
               radius: 36,
               backgroundColor: scheme.primaryContainer,
@@ -944,7 +943,7 @@ class _EmptyChat extends StatelessWidget {
   }
 }
 
-/// Full-screen image viewer with pinch-zoom and quick save/share actions.
+/// 핀치 줌과 빠른 저장/공유 액션을 갖춘 전체 화면 이미지 뷰어.
 class _ImageViewerPage extends StatelessWidget {
   final ChatMessage message;
   final MeshFrontend controller;
@@ -983,9 +982,9 @@ class _ImageViewerPage extends StatelessWidget {
       body: Center(
         child: InteractiveViewer(
           maxScale: 6,
-          // Bound the decode: a 12MP photo decodes to ~48MB of bitmap at full
-          // resolution — far beyond what a phone screen can show. 2048px keeps
-          // zooming crisp at a tenth of the RAM.
+          // 디코딩 크기를 제한: 12MP 사진은 전체 해상도로 디코딩하면 ~48MB
+          // 비트맵이 된다 — 폰 화면이 보여줄 수 있는 것보다 한참 크다. 2048px면
+          // RAM은 10분의 1로 쓰면서 확대해도 선명하다.
           child: Image.file(File(message.filePath!), cacheWidth: 2048),
         ),
       ),

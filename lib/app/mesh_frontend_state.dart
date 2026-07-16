@@ -10,41 +10,41 @@ import '../core/model/peer_id.dart';
 import '../data/models.dart';
 import 'mesh_frontend.dart';
 
-/// Shared in-memory state and derived queries for BOTH [MeshFrontend]
-/// implementations — the real [MeshController] (iOS UI isolate / Android
-/// service isolate) and the [RemoteMeshController] UI mirror.
+/// 두(BOTH) [MeshFrontend] 구현 — 실제 [MeshController](iOS UI isolate /
+/// Android 서비스 isolate)와 [RemoteMeshController] UI 미러 — 이 공유하는
+/// 인메모리 상태와 파생 쿼리.
 ///
-/// Presence, contact-roster and inbox behaviour lives here exactly once:
-/// a change is automatically identical on every platform, instead of two
-/// hand-kept copies drifting apart.
+/// 프레즌스, 연락처 로스터, 받은편지함 동작이 여기 딱 한 번만 존재한다:
+/// 손으로 관리하는 두 사본이 서로 어긋나는 대신, 변경 하나가 모든 플랫폼에서
+/// 자동으로 동일해진다.
 mixin MeshFrontendState on MeshFrontend {
-  /// A peer is considered "nearby" if it has announced within this window.
+  /// 피어가 이 시간 창 안에 announce했다면 "근처(nearby)"로 간주한다.
   static const Duration presenceTtl = Duration(seconds: 40);
 
-  /// An RSSI reading older than this no longer says anything about proximity.
+  /// 이보다 오래된 RSSI 측정값은 더 이상 근접성에 대해 아무것도 말해 주지 않는다.
   static const Duration rssiTtl = Duration(seconds: 40);
 
-  // Mutable state, written by the owning controller (announce events on the
-  // real controller, snapshot application on the mirror). @protected: this is
-  // implementation plumbing — the UI reads through the MeshFrontend getters.
+  // 소유 컨트롤러가 기록하는 가변 상태(실제 컨트롤러에서는 announce 이벤트로,
+  // 미러에서는 스냅샷 적용으로). @protected: 이것은 구현 배관(plumbing)이다 —
+  // UI는 MeshFrontend getter를 통해 읽는다.
   @protected
   final List<Contact> contactList = [];
   @protected
-  final Map<String, int> lastSeenAt = {}; // peerHex -> epoch ms of announce
+  final Map<String, int> lastSeenAt = {}; // peerHex -> announce 시각의 epoch ms
   @protected
-  final Map<String, int> lastHopCount = {}; // peerHex -> mesh distance
+  final Map<String, int> lastHopCount = {}; // peerHex -> 메시 거리
   @protected
   final Map<String, double> rssiSmoothed = {}; // peerHex -> EMA dBm
   @protected
-  final Map<String, int> rssiSeenAt = {}; // peerHex -> epoch ms of sample
+  final Map<String, int> rssiSeenAt = {}; // peerHex -> 샘플 시각의 epoch ms
   @protected
-  final Map<String, int> unreadCounts = {}; // peerHex -> unread count
+  final Map<String, int> unreadCounts = {}; // peerHex -> 읽지 않은 수
   @protected
-  final Map<String, ChatMessage> lastMessages = {}; // peerHex -> latest msg
+  final Map<String, ChatMessage> lastMessages = {}; // peerHex -> 최신 메시지
   @protected
   final Map<String, List<ChatMessage>> conversationCache = {};
 
-  /// Transient, user-facing errors (surfaced as snackbars).
+  /// 일시적인, 사용자에게 보이는 오류(스낵바로 표시됨).
   @protected
   final StreamController<String> errors = StreamController<String>.broadcast();
 
@@ -70,7 +70,7 @@ mixin MeshFrontendState on MeshFrontend {
     return null;
   }
 
-  /// Insert-or-replace by peerHex.
+  /// peerHex 기준으로 삽입 또는 교체.
   @protected
   void replaceContact(Contact c) {
     contactList.removeWhere((x) => x.peerHex == c.peerHex);
@@ -93,8 +93,8 @@ mixin MeshFrontendState on MeshFrontend {
   @override
   int hopsTo(String peerHex) => lastHopCount[peerHex] ?? 1;
 
-  /// Smoothed RSSI (dBm) for a direct neighbour, or null when we have no
-  /// fresh reading (multihop peers, or the radio went quiet).
+  /// 직접 이웃에 대한 평활화된 RSSI(dBm), 또는 최신 측정값이 없을 때 null
+  /// (멀티홉 피어이거나 무선이 조용해진 경우).
   @override
   int? rssiOf(String peerHex) {
     final at = rssiSeenAt[peerHex];
@@ -117,8 +117,8 @@ mixin MeshFrontendState on MeshFrontend {
   @override
   int get totalUnread => unreadCounts.values.fold(0, (a, b) => a + b);
 
-  /// The inbox: everyone we have a conversation with OR who is a contact,
-  /// most-recent-message first, then nearby, then name.
+  /// 받은편지함: 대화를 나눈 적 있는 모든 사람 또는(OR) 연락처인 사람, 최신
+  /// 메시지 순, 그다음 근처 순, 그다음 이름 순.
   @override
   List<ConversationSummary> conversations() {
     final hexes = <String>{
@@ -139,7 +139,7 @@ mixin MeshFrontendState on MeshFrontend {
     list.sort((a, b) {
       final at = a.lastMessage?.timestamp ?? 0;
       final bt = b.lastMessage?.timestamp ?? 0;
-      if (at != bt) return bt - at; // most recent first
+      if (at != bt) return bt - at; // 최신 순
       final an = a.nearby ? 0 : 1;
       final bn = b.nearby ? 0 : 1;
       if (an != bn) return an - bn;
@@ -155,10 +155,10 @@ mixin MeshFrontendState on MeshFrontend {
   }
 }
 
-/// Local file actions shared verbatim by both frontends. They act on paths in
-/// the shared app container — no mesh involved.
+/// 두 프런트엔드가 그대로 공유하는 로컬 파일 동작. 공유 앱 컨테이너 안의
+/// 경로에 대해 작동한다 — 메시는 관여하지 않는다.
 mixin LocalFileActions on MeshFrontend {
-  /// Error sink, provided by [MeshFrontendState].
+  /// 오류 싱크, [MeshFrontendState]가 제공한다.
   @protected
   void reportError(String message);
 
@@ -171,8 +171,8 @@ mixin LocalFileActions on MeshFrontend {
     }
   }
 
-  /// Save a received image/video into the device photo gallery.
-  /// Returns false (and surfaces an error) when the file kind can't go there.
+  /// 수신한 이미지/동영상을 기기 사진 갤러리에 저장한다.
+  /// 해당 파일 종류가 갤러리에 들어갈 수 없으면 false를 반환한다(그리고 오류를 표시한다).
   @override
   Future<bool> saveToGallery(ChatMessage msg) async {
     final path = msg.filePath;
@@ -184,7 +184,7 @@ mixin LocalFileActions on MeshFrontend {
       } else if (mime.startsWith('video/')) {
         await Gal.putVideo(path);
       } else {
-        return false; // not a media file — use share/Files instead
+        return false; // 미디어 파일이 아님 — 대신 공유/파일 앱을 사용
       }
       return true;
     } catch (e) {
@@ -194,7 +194,7 @@ mixin LocalFileActions on MeshFrontend {
     }
   }
 
-  /// System share sheet — covers "파일 앱에 저장", AirDrop, other apps.
+  /// 시스템 공유 시트 — "파일 앱에 저장", AirDrop, 기타 앱을 아우른다.
   @override
   Future<void> shareFile(ChatMessage msg) async {
     final path = msg.filePath;

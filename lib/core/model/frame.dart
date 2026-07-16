@@ -3,18 +3,18 @@ import 'dart:typed_data';
 
 import 'peer_id.dart';
 
-/// Message types carried in a [Frame]. See docs/ARCHITECTURE.md §6.
+/// [Frame]에 실리는 메시지 타입들. docs/ARCHITECTURE.md §6 참고.
 enum FrameType {
-  announce(0x01), // mesh-flooded presence + identity (TTL-bounded, see node)
-  text(0x02), // e2e: text message
-  fileMeta(0x03), // e2e: start of a file transfer
-  fileChunk(0x04), // e2e: a file chunk
-  ack(0x05), // e2e: delivery acknowledgement of a msgId
-  have(0x06), // link-local: store-and-forward inventory
-  want(0x07), // link-local: request specific msgIds
-  receipt(0x08), // e2e: end-to-end delivery receipt
-  fileFastOffer(0x09), // e2e: sender offers a Wi-Fi fast-lane for this transfer
-  fileFastAccept(0x0a); // e2e: receiver accepts + returns its connection info
+  announce(0x01), // 메시 플러딩되는 존재 알림 + 신원 (TTL 제한, node 참고)
+  text(0x02), // e2e: 텍스트 메시지
+  fileMeta(0x03), // e2e: 파일 전송의 시작
+  fileChunk(0x04), // e2e: 파일 청크
+  ack(0x05), // e2e: msgId에 대한 전달 확인
+  have(0x06), // link-local: store-and-forward 인벤토리
+  want(0x07), // link-local: 특정 msgId 요청
+  receipt(0x08), // e2e: 종단 간 전달 영수증
+  fileFastOffer(0x09), // e2e: 발신자가 이 전송에 Wi-Fi 패스트레인을 제안
+  fileFastAccept(0x0a); // e2e: 수신자가 수락 + 자신의 연결 정보를 반환
 
   final int code;
   const FrameType(this.code);
@@ -26,19 +26,19 @@ enum FrameType {
     throw FormatException('Unknown FrameType code: $code');
   }
 
-  /// Link-local frames hop between direct neighbours and are not relayed
-  /// nor end-to-end encrypted.
+  /// 링크-로컬 프레임은 직접 이웃 사이에서만 한 홉 이동하며, 릴레이되지도
+  /// 종단 간 암호화되지도 않는다.
   bool get isLinkLocal => this == FrameType.have || this == FrameType.want;
 }
 
-/// Bit flags in the frame header.
+/// 프레임 헤더의 비트 플래그.
 class FrameFlags {
   static const int encrypted = 0x01;
   static const int compressed = 0x02;
   static const int ackRequested = 0x04;
 }
 
-/// The msgId is a random 128-bit value used as the dedup key.
+/// msgId는 중복 제거 키로 사용되는 무작위 128비트 값이다.
 class MsgId {
   static final Random _rng = Random.secure();
 
@@ -59,19 +59,19 @@ class MsgId {
   }
 }
 
-/// A routable mesh frame. This is the unit the [Router] operates on.
+/// 라우팅 가능한 메시 프레임. [Router]가 다루는 단위이다.
 ///
-/// Wire layout (big-endian), total header = 40 bytes:
+/// 와이어 레이아웃 (big-endian), 전체 헤더 = 40바이트:
 /// ```
 /// 0   version   u8
 /// 1   type      u8
 /// 2   ttl       u8
 /// 3   flags     u8
-/// 4   msgId     16 bytes
-/// 20  srcId     8 bytes
-/// 28  dstId     8 bytes
+/// 4   msgId     16바이트
+/// 20  srcId     8바이트
+/// 28  dstId     8바이트
 /// 36  payloadLen u32
-/// 40  payload   payloadLen bytes
+/// 40  payload   payloadLen 바이트
 /// ```
 class Frame {
   static const int version1 = 1;
@@ -79,9 +79,9 @@ class Frame {
 
   final int version;
   final FrameType type;
-  int ttl; // mutable: decremented as the frame is relayed
+  int ttl; // 가변: 프레임이 릴레이될 때마다 감소한다
   final int flags;
-  final Uint8List msgId; // 16 bytes
+  final Uint8List msgId; // 16바이트
   final PeerId src;
   final PeerId dst;
   final Uint8List payload;
@@ -97,7 +97,7 @@ class Frame {
     required this.payload,
   });
 
-  /// Convenience constructor that allocates a fresh random msgId.
+  /// 새 무작위 msgId를 할당하는 편의 생성자.
   factory Frame.create({
     required FrameType type,
     required int ttl,

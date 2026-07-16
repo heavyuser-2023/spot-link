@@ -191,9 +191,9 @@ class MeTab extends StatelessWidget {
                   context.read<MeshFrontend>().setBeaconMonitoring(v),
             ),
           ),
-          // Gentle, opt-in nudge — NOT an alarm. Basic background reconnect
-          // already works on "While Using" (BLE state restoration); "Always"
-          // only adds waking after force-quit / reboot and faster wakes.
+          // 경고가 아니라, 부드럽게 권하는 선택형 안내. 기본적인 백그라운드
+          // 재연결은 "앱 사용 중"에서도 이미 동작한다(BLE 상태 복원); "항상 허용"은
+          // 강제 종료/재부팅 후 깨우기와 더 빠른 깨우기만 추가로 얹어 줄 뿐이다.
           if (c.beaconNeedsAlways) ...[
             const SizedBox(height: 8),
             Card(
@@ -233,8 +233,8 @@ class MeTab extends StatelessWidget {
     );
   }
 
-  /// Pull our installed APK out and hand it to the share sheet — Quick
-  /// Share/Bluetooth work with no internet, so the app spreads offline.
+  /// 설치된 APK를 꺼내 공유 시트에 넘긴다 — Quick Share/블루투스는 인터넷
+  /// 없이도 동작하므로, 앱이 오프라인으로 퍼져 나갈 수 있다.
   Future<void> _shareApk(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     final apk = await AppShare.apkFile();
@@ -305,10 +305,10 @@ class MeTab extends StatelessWidget {
   }
 }
 
-/// Android only: OEM battery managers (Samsung 등) silently kill background
-/// services after a while. This card shows whether SpotLink is exempted and
-/// requests the exemption — the difference between a relay that dies in an
-/// hour and one that runs for days.
+/// 안드로이드 전용: OEM 배터리 관리자(Samsung 등)는 시간이 지나면 백그라운드
+/// 서비스를 조용히 종료시킨다. 이 카드는 SpotLink가 제외되어 있는지 보여 주고
+/// 제외를 요청한다 — 한 시간 만에 죽는 중계와 며칠씩 돌아가는 중계를 가르는
+/// 차이다.
 class _BatteryExemptionCard extends StatefulWidget {
   const _BatteryExemptionCard();
 
@@ -335,7 +335,7 @@ class _BatteryExemptionCardState extends State<_BatteryExemptionCard>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Coming back from the system dialog/settings: re-check.
+    // 시스템 대화상자/설정에서 돌아왔을 때: 다시 확인한다.
     if (state == AppLifecycleState.resumed) _refresh();
   }
 
@@ -380,9 +380,9 @@ class _BatteryExemptionCardState extends State<_BatteryExemptionCard>
   }
 }
 
-/// App version footer, read from the installed package at runtime so it always
-/// matches the shipped build (no manual sync). Tapping copies it — handy when
-/// a user reports a bug and you need to know their exact version.
+/// 앱 버전 푸터. 런타임에 설치된 패키지에서 읽어 오므로 언제나 출시된 빌드와
+/// 일치한다(수동 동기화 불필요). 탭하면 복사된다 — 사용자가 버그를 제보해
+/// 정확한 버전을 알아야 할 때 편리하다.
 class _VersionFooter extends StatefulWidget {
   const _VersionFooter();
 
@@ -401,7 +401,7 @@ class _VersionFooterState extends State<_VersionFooter> {
         setState(() => _label = 'SpotLink ${info.version} (${info.buildNumber})');
       }
     }).catchError((_) {
-      // No plugin (widget tests / unsupported platform) — keep the fallback.
+      // 플러그인 없음(위젯 테스트 / 미지원 플랫폼) — 폴백 값을 유지한다.
     });
   }
 

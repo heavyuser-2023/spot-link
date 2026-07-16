@@ -5,12 +5,12 @@ import 'app/bootstrap.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // Receive port for messages from the foreground-service (headless mesh)
-  // isolate — must exist before any ping/handoff can reach us.
+  // foreground-service(headless mesh) isolate로부터 오는 메시지를 받는 포트 —
+  // 어떤 ping/핸드오프라도 우리에게 도달하기 전에 존재해야 한다.
   FlutterForegroundTask.initCommunicationPort();
-  // Flutter's defaults (1000 images / 100MB) are sized for image-heavy apps;
-  // a chat shows a handful of thumbnails. A small cache keeps our suspended
-  // footprint low — every retained MB is jetsam bait on iOS.
+  // Flutter의 기본값(이미지 1000개 / 100MB)은 이미지가 많은 앱에 맞춰져 있다;
+  // 채팅은 썸네일 몇 개만 보여준다. 작은 캐시는 서스펜드 상태의 점유량을 낮게
+  // 유지한다 — 붙들고 있는 1MB 하나하나가 iOS에서 jetsam의 먹잇감이다.
   PaintingBinding.instance.imageCache.maximumSize = 50;
   PaintingBinding.instance.imageCache.maximumSizeBytes = 32 << 20; // 32MB
   runApp(const SpotLinkApp());
@@ -19,14 +19,14 @@ void main() {
 class SpotLinkApp extends StatelessWidget {
   const SpotLinkApp({super.key});
 
-  // Refined indigo: the same brand family as before, dialed back from the
-  // electric A200 tone to a deeper, calmer accent that reads as premium
-  // rather than "default vivid" across large fills (buttons, chips, bubbles).
+  // 정제된 인디고: 이전과 같은 브랜드 계열이되, 강렬한 A200 톤에서 한 발 물러나
+  // 더 깊고 차분한 강조색으로, 큰 면적(버튼, 칩, 말풍선)에서 "기본 원색"보다는
+  // 프리미엄하게 읽힌다.
   static const _seed = Color(0xFF4457D6);
 
-  /// A deliberate type scale layered on the platform default: display/headline
-  /// weights get tighter tracking and line-height for a crafted, confident
-  /// feel; body copy gets a comfortable 1.4 line-height for Korean legibility.
+  /// 플랫폼 기본값 위에 의도적으로 얹은 타입 스케일: display/headline은 더 촘촘한
+  /// 자간과 행간으로 정교하고 자신감 있는 느낌을 주고; 본문은 한국어 가독성을 위해
+  /// 넉넉한 1.4 행간을 갖는다.
   TextTheme _text(TextTheme base) => base.copyWith(
         headlineLarge: base.headlineLarge
             ?.copyWith(fontWeight: FontWeight.w700, letterSpacing: -0.5, height: 1.12),
@@ -42,8 +42,8 @@ class SpotLinkApp extends StatelessWidget {
         labelLarge: base.labelLarge?.copyWith(fontWeight: FontWeight.w600),
       );
 
-  /// One place for the app-wide look: rounded surfaces, filled inputs,
-  /// flat elevation — consistent across every screen and both brightnesses.
+  /// 앱 전체의 룩을 한곳에 모은다: 둥근 표면, 채워진 입력 필드, 평평한 그림자 —
+  /// 모든 화면과 두 밝기 모드에 걸쳐 일관된다.
   ThemeData _theme(Brightness brightness) {
     final scheme =
         ColorScheme.fromSeed(seedColor: _seed, brightness: brightness);
@@ -108,9 +108,9 @@ class SpotLinkApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: _theme(Brightness.light),
       darkTheme: _theme(Brightness.dark),
-      // Tapping anywhere outside a text field dismisses the keyboard. Without
-      // this, focus surviving a closed dialog/route leaves an orphaned
-      // keyboard covering the tab bar — with no way to escape the screen.
+      // 텍스트 필드 바깥 아무 곳이나 탭하면 키보드가 닫힌다. 이것이 없으면, 닫힌
+      // 다이얼로그/라우트를 넘어 살아남은 포커스가 탭 바를 가리는 고아 키보드를
+      // 남기고 — 그 화면을 빠져나갈 방법이 전혀 없게 된다.
       builder: (context, child) => GestureDetector(
         behavior: HitTestBehavior.translucent,
         onTap: () => FocusManager.instance.primaryFocus?.unfocus(),

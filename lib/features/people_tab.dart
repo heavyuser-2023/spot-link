@@ -12,9 +12,9 @@ import 'scan_screen.dart';
 import 'ui_utils.dart';
 
 class PeopleTab extends StatefulWidget {
-  /// True while this tab is the visible one. Flipping false→true replays the
-  /// FAB pop-in animation (the tab lives in an IndexedStack, so it isn't
-  /// rebuilt on every switch).
+  /// 이 탭이 화면에 보이는 동안 true. false→true로 바뀌면 FAB 팝인 애니메이션이
+  /// 다시 재생된다(탭은 IndexedStack 안에 있어서 전환할 때마다 다시 빌드되지는
+  /// 않는다).
   final bool active;
   const PeopleTab({super.key, this.active = true});
 
@@ -23,9 +23,9 @@ class PeopleTab extends StatefulWidget {
 }
 
 class _PeopleTabState extends State<PeopleTab> {
-  /// True while the list is actively scrolling (drag or fling). Drives the
-  /// QR edge tab's tuck-away: content gets the space while moving, the tab
-  /// glides back the moment the list settles.
+  /// 목록이 실제로 스크롤(드래그 또는 플링)되는 동안 true. QR 가장자리 탭의
+  /// 숨김 동작을 제어한다: 움직이는 동안엔 콘텐츠가 공간을 차지하고, 목록이
+  /// 멈추는 순간 탭이 다시 미끄러져 나온다.
   bool _scrolling = false;
 
   bool _onScroll(ScrollNotification n) {
@@ -48,14 +48,14 @@ class _PeopleTabState extends State<PeopleTab> {
       ..sort((a, b) {
         final ha = c.hopsTo(a.peerHex);
         final hb = c.hopsTo(b.peerHex);
-        if (ha != hb) return ha - hb; // direct first
+        if (ha != hb) return ha - hb; // 직접 연결 우선
         return byName(a, b);
       });
     final offline = c.contacts.where((x) => !c.isNearby(x.peerHex)).toList()
       ..sort(byName);
 
-    // The QR-add affordance is an Instagram-style tab docked flush to the
-    // RIGHT EDGE (not a floating pill) — hence a Stack, not a Scaffold FAB.
+    // QR 추가 어포던스는 인스타그램 스타일 탭으로, 오른쪽 가장자리에 딱 붙어
+    // 있다(떠 있는 알약형이 아니다) — 그래서 Scaffold FAB가 아니라 Stack을 쓴다.
     return Stack(
       children: [
         Positioned.fill(
@@ -88,8 +88,8 @@ class _PeopleTabState extends State<PeopleTab> {
                   ),
                 ),
         ),
-        // Edge affordance only alongside a real list — the empty state has its
-        // own centered CTA, so a second floating QR button there is redundant.
+        // 가장자리 어포던스는 실제 목록이 있을 때만 — 빈 상태에는 자체 중앙
+        // CTA가 있어서, 거기에 두 번째 떠 있는 QR 버튼을 두면 중복이다.
         if (c.contacts.isNotEmpty)
           Positioned(
             right: 0,
@@ -122,8 +122,8 @@ class _ProximityRadar extends StatefulWidget {
 
 class _ProximityRadarState extends State<_ProximityRadar>
     with SingleTickerProviderStateMixin {
-  /// Slow sonar sweep — one revolution every 6s. Painting is cheap (a single
-  /// sweep-gradient arc), and the motion sells "지금 실제로 훑고 있다".
+  /// 느린 소나 스윕 — 6초에 한 바퀴. 그리기 비용은 저렴하고(스윕 그라디언트
+  /// 호 하나), 이 움직임이 "지금 실제로 훑고 있다"는 느낌을 준다.
   late final AnimationController _sweep = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 6),
@@ -352,8 +352,8 @@ class _PersonTile extends StatelessWidget {
             Positioned(
               right: -1,
               bottom: -1,
-              // Green = direct radio range, amber = reachable via relays.
-              // Pulsing: presence is live, and the motion says so.
+              // 초록 = 직접 무선 도달 범위, 앰버 = 중계를 거쳐 도달 가능.
+              // 깜빡임: 접속 상태가 실시간이며, 그 움직임이 이를 말해 준다.
               child: PulsingDot(
                 color: hops <= 1 ? Colors.green : Colors.amber,
                 size: 14,
@@ -525,8 +525,8 @@ class _EmptyPeople extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Same empty-state language as the Chats tab: a soft tinted disc
-            // with a tinted icon, never a heavy black glyph.
+            // Chats 탭과 동일한 빈 상태 언어: 은은하게 틴트된 원에 틴트된
+            // 아이콘, 무거운 검정 글리프는 절대 쓰지 않는다.
             CircleAvatar(
               radius: 40,
               backgroundColor: scheme.primaryContainer,

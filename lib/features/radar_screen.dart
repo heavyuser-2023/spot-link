@@ -8,11 +8,11 @@ import '../data/models.dart';
 import 'chat_screen.dart';
 import 'ui_utils.dart';
 
-/// Full-screen proximity radar for crowded rooms, with MAP-STYLE semantic
-/// zoom: pinching expands the radar SPACE (ring radii grow, so overlapping
-/// friends spread apart) while avatars and name labels keep their size —
-/// zooming a plain screenshot would only make the overlap bigger. Drag pans,
-/// double-tap (or the app-bar button) resets. Tapping an avatar opens chat.
+/// 붐비는 공간을 위한 전체 화면 근접 레이더. 지도 스타일의 시맨틱 줌을 쓴다:
+/// 핀치하면 레이더 공간이 넓어지고(링 반지름이 커져 겹쳐 있던 친구들이 서로
+/// 벌어진다), 아바타와 이름 라벨은 크기를 유지한다 — 그냥 스크린샷을 확대하면
+/// 겹침만 더 커질 뿐이다. 드래그하면 이동하고, 두 번 탭(또는 앱 바 버튼)하면
+/// 초기화된다. 아바타를 탭하면 채팅이 열린다.
 class RadarScreen extends StatefulWidget {
   const RadarScreen({super.key});
 
@@ -31,13 +31,13 @@ class _RadarScreenState extends State<RadarScreen>
     duration: const Duration(seconds: 6),
   )..repeat();
 
-  /// Zoom factor applied to DISTANCES only (not to glyphs).
+  /// 거리에만 적용되는 줌 배율(글리프에는 적용되지 않음).
   double _scale = 1.0;
 
-  /// Pan translation of the radar origin, in screen px.
+  /// 레이더 원점의 이동량, 화면 px 단위.
   Offset _offset = Offset.zero;
 
-  // Gesture-start snapshots.
+  // 제스처 시작 시점의 스냅샷.
   double _startScale = 1.0;
   Offset _startOffset = Offset.zero;
 
@@ -61,18 +61,18 @@ class _RadarScreenState extends State<RadarScreen>
     setState(() {
       final next = (_startScale * d.scale).clamp(_minScale, _maxScale);
       if (d.scale != 1.0) {
-        // Pinch: keep the world point under the fingers anchored while
-        // distances stretch around it (the anchor math already tracks the
-        // moving focal point, so no extra pan term here).
+        // 핀치: 손가락 아래의 월드 좌표를 고정한 채 그 주위로 거리를 늘린다
+        // (앵커 계산이 이미 움직이는 초점을 따라가므로, 여기에 별도의 이동
+        // 항은 필요 없다).
         final focal = d.localFocalPoint;
         final world = (focal - center - _startOffset) / _startScale;
         _offset = focal - center - world * next;
       } else {
-        // One-finger drag: plain pan.
+        // 한 손가락 드래그: 단순 이동.
         _offset += d.focalPointDelta;
       }
       _scale = next;
-      // Loose bounds so the map can't be flung away entirely.
+      // 지도가 완전히 화면 밖으로 날아가 버리지 않도록 하는 느슨한 경계.
       final lim = maxR * _scale;
       _offset = Offset(
         _offset.dx.clamp(-lim, lim),
@@ -120,7 +120,7 @@ class _RadarScreenState extends State<RadarScreen>
                       builder: (context, _) => CustomPaint(
                         painter: RadarPainter(
                           center: origin,
-                          // Semantic zoom: only the RADII stretch.
+                          // 시맨틱 줌: 반지름만 늘어난다.
                           radii: [
                             for (final f in _ringFractions) maxR * f * _scale
                           ],
@@ -179,10 +179,10 @@ class _RadarScreenState extends State<RadarScreen>
       Offset origin, double maxR) {
     final bucket =
         proximityBucket(c.rssiOf(peer.peerHex), c.hopsTo(peer.peerHex));
-    // Distance scales with the zoom; the glyph below does NOT.
+    // 거리는 줌에 따라 스케일되지만, 아래의 글리프는 그렇지 않다.
     final radius = maxR * _ringFractions[bucket.ring] * _scale;
-    // Same stable hash + golden-angle spread as the card, so a peer sits in
-    // the SAME spot in both views.
+    // 카드와 동일한 안정적 해시 + 황금각 분산을 써서, 한 피어가 두 뷰에서
+    // 같은 위치에 앉도록 한다.
     var hash = 0;
     for (final u in peer.peerHex.codeUnits) {
       hash = (hash * 31 + u) & 0x7fffffff;
@@ -240,16 +240,16 @@ class _RadarScreenState extends State<RadarScreen>
   }
 }
 
-/// Sonar rings + rotating sweep beam, shared by the People-tab card and the
-/// full-screen radar.
+/// 소나 링 + 회전하는 스윕 빔. 친구 탭 카드와 전체 화면 레이더가 함께
+/// 사용한다.
 class RadarPainter extends CustomPainter {
   final Offset center;
   final List<double> radii;
   final Color ringColor;
   final Color fillColor;
 
-  /// Current sweep-beam angle (radians). Advances continuously for the
-  /// sonar-scan effect.
+  /// 현재 스윕 빔 각도(라디안). 소나 스캔 효과를 위해 계속 이어서
+  /// 나아간다.
   final double sweep;
   RadarPainter({
     required this.center,
@@ -273,8 +273,8 @@ class RadarPainter extends CustomPainter {
           ],
         ).createShader(Rect.fromCircle(center: center, radius: radii.last)),
     );
-    // Sonar sweep beam: a ~50° trailing wedge that fades out behind the
-    // leading edge, squashed to the same 0.82 ellipse as the rings.
+    // 소나 스윕 빔: 선단 뒤로 서서히 사라지는 ~50°의 꼬리 쐐기로, 링과 동일한
+    // 0.82 타원으로 눌러 찌그러뜨린다.
     canvas.save();
     canvas.translate(center.dx, center.dy);
     canvas.scale(1, 0.82);
@@ -285,8 +285,8 @@ class RadarPainter extends CustomPainter {
             sweep - 0.9, 0.9, false)
         ..close(),
       Paint()
-        // Fixed 0→0.9rad fade rotated to the current angle (SweepGradient
-        // angles must stay inside [0, 2π]; the rotation transform doesn't).
+        // 0→0.9rad 고정 페이드를 현재 각도로 회전시킨 것(SweepGradient의
+        // 각도는 [0, 2π] 안에 있어야 하지만, 회전 변환은 그렇지 않아도 된다).
         ..shader = SweepGradient(
           startAngle: 0,
           endAngle: 0.9,

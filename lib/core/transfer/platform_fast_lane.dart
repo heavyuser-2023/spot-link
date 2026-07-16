@@ -5,51 +5,51 @@ import 'package:flutter/services.dart';
 
 import 'fast_lane.dart';
 
-/// Fast lane backed by a native P2P Wi-Fi transport over platform channels:
-/// **Android Wi-Fi Direct** and **iOS MultipeerConnectivity**. Both establish
-/// an AP-less direct link and move the file's *bytes*; the mesh still does
-/// discovery, negotiation, encryption and delivery-ACK over BLE.
+/// 플랫폼 채널을 통해 네이티브 P2P Wi-Fi 전송을 등에 업은 패스트레인:
+/// **Android Wi-Fi Direct**와 **iOS MultipeerConnectivity**. 둘 다 AP 없는
+/// 직접 링크를 수립하여 파일의 *바이트*를 옮긴다; 메시는 여전히 발견, 협상,
+/// 암호화, 전달-ACK를 BLE로 처리한다.
 ///
-/// Native contract (see android/.../FastLanePlugin.kt, ios/.../FastLane.swift):
+/// 네이티브 계약 (android/.../FastLanePlugin.kt, ios/.../FastLane.swift 참고):
 ///
 /// MethodChannel `spotlink/fastlane`:
-///  - `capabilities` → `List<String>` of kind names (e.g. `['wifiDirect']`)
-///  - `prepareInbound` `{transferId, kind}` → offer blob `Uint8List?`
-///     (null ⇒ can't; native begins advertising/listening)
-///  - `connect` `{transferId, kind, blob}` → `bool` started (result via event)
+///  - `capabilities` → 종류 이름들의 `List<String>` (예: `['wifiDirect']`)
+///  - `prepareInbound` `{transferId, kind}` → 오퍼 blob `Uint8List?`
+///     (null ⇒ 불가능; 네이티브가 광고/수신 대기를 시작)
+///  - `connect` `{transferId, kind, blob}` → 시작 여부 `bool` (결과는 이벤트로)
 ///  - `send` `{transferId, data}` → void
 ///  - `finishSending` `{transferId}` → void
 ///  - `close` `{transferId}` → void
 ///
-/// EventChannel `spotlink/fastlane/events` emits maps:
+/// EventChannel `spotlink/fastlane/events`는 맵을 방출한다:
 ///   `{transferId, event: 'connected'|'data'|'eof'|'error', data?: Uint8List}`
 ///
-/// Every call is defensive: on a platform with no native handler
-/// (MissingPluginException — desktop, tests, background isolate without the
-/// plugin) capabilities is empty and the mesh simply uses LAN/BLE.
+/// 모든 호출은 방어적이다: 네이티브 핸들러가 없는 플랫폼
+/// (MissingPluginException — 데스크톱, 테스트, 플러그인이 없는 백그라운드
+/// isolate)에서는 capabilities가 비어 있고 메시는 그냥 LAN/BLE를 사용한다.
 class PlatformFastLane implements FastLaneInterface {
   static const _method = MethodChannel('spotlink/fastlane');
   static const _events = EventChannel('spotlink/fastlane/events');
 
-  /// Shared instance the app injects; call [warmUp] once at startup so
-  /// [capabilities] is populated before the first transfer.
+  /// 앱이 주입하는 공유 인스턴스; 첫 전송 전에 [capabilities]가 채워지도록
+  /// 시작 시 [warmUp]을 한 번 호출한다.
   static final PlatformFastLane instance = PlatformFastLane._();
   PlatformFastLane._();
 
   Set<FastLaneKind> _caps = const {};
   bool _wired = false;
 
-  /// Per-transfer plumbing.
+  /// 전송별 배관(plumbing).
   final Map<String, StreamController<Uint8List>> _incoming = {};
   final Map<String, Completer<bool>> _connected = {};
 
   @override
   Set<FastLaneKind> get capabilities => _caps;
 
-  /// Query native capabilities and, only if any exist, subscribe to the event
-  /// stream. Safe to call repeatedly; never throws. On a platform with no
-  /// native handler (desktop, tests, background isolate) capabilities stays
-  /// empty and we never touch the event channel.
+  /// 네이티브 기능(capabilities)을 조회하고, 하나라도 있을 때만 이벤트 스트림을
+  /// 구독한다. 반복 호출해도 안전하며, 절대 예외를 던지지 않는다. 네이티브
+  /// 핸들러가 없는 플랫폼(데스크톱, 테스트, 백그라운드 isolate)에서는
+  /// capabilities가 비어 있고 이벤트 채널을 전혀 건드리지 않는다.
   Future<void> warmUp() async {
     try {
       final list = await _method.invokeListMethod<String>('capabilities');
@@ -60,7 +60,7 @@ class PlatformFastLane implements FastLaneInterface {
       }
       _caps = caps;
     } catch (_) {
-      _caps = const {}; // no native handler → LAN/BLE only
+      _caps = const {}; // 네이티브 핸들러 없음 → LAN/BLE 전용
     }
     if (_caps.isNotEmpty) _wireEvents();
   }
@@ -77,9 +77,9 @@ class PlatformFastLane implements FastLaneInterface {
     _wired = true;
     try {
       _events.receiveBroadcastStream().listen(_onEvent,
-          onError: (_) {}); // stream errors are non-fatal
+          onError: (_) {}); // 스트림 오류는 치명적이지 않다
     } catch (_) {
-      // No event channel (unsupported platform) — capabilities stays empty.
+      // 이벤트 채널 없음(미지원 플랫폼) — capabilities는 비어 있는 채로 유지.
     }
   }
 
@@ -131,7 +131,7 @@ class PlatformFastLane implements FastLaneInterface {
       }
       return _PlatformSession(this, transferIdHex);
     }).timeout(const Duration(seconds: 25), onTimeout: () {
-      unawaited(_close(transferIdHex)); // stop the native advertiser too
+      unawaited(_close(transferIdHex)); // 네이티브 광고도 중지
       return null;
     });
     return FastLaneInbound(FastLaneOffer(kind, blob), session);
@@ -162,7 +162,7 @@ class PlatformFastLane implements FastLaneInterface {
     final ok = await connected.future
         .timeout(const Duration(seconds: 25), onTimeout: () => false);
     if (!ok) {
-      await _close(transferIdHex); // stop the native browser too
+      await _close(transferIdHex); // 네이티브 브라우저도 중지
       return null;
     }
     return _PlatformSession(this, transferIdHex);
@@ -202,8 +202,8 @@ class _PlatformSession implements FastLaneSession {
   final String _tid;
   _PlatformSession(this._lane, this._tid);
 
-  /// Split large payloads so no single platform-channel message is huge
-  /// (a 20 MB invokeMethod would jank the platform thread and copy twice).
+  /// 단일 플랫폼 채널 메시지가 거대해지지 않도록 큰 페이로드를 분할한다
+  /// (20MB짜리 invokeMethod는 플랫폼 스레드를 버벅이게 하고 두 번 복사한다).
   static const int _chunk = 64 * 1024;
 
   @override

@@ -4,9 +4,9 @@ import 'package:provider/provider.dart';
 
 import '../app/mesh_controller.dart';
 
-/// Push [screen] with the [MeshFrontend] re-provided. Pushed routes mount
-/// on the root navigator — above the provider in Bootstrap — so without this
-/// the new screen cannot find the controller and dies with a blank page.
+/// [MeshFrontend]를 다시 제공하면서 [screen]을 push한다. push된 라우트는 루트
+/// 내비게이터 — Bootstrap의 provider 위 — 에 마운트되므로, 이것이 없으면 새
+/// 화면이 컨트롤러를 찾지 못하고 빈 페이지로 죽는다.
 Future<T?> pushWithController<T>(BuildContext context, Widget screen) {
   final c = context.read<MeshFrontend>();
   return Navigator.of(context).push<T>(MaterialPageRoute(
@@ -14,27 +14,27 @@ Future<T?> pushWithController<T>(BuildContext context, Widget screen) {
   ));
 }
 
-/// Deterministic avatar color derived from a peer's id, so each contact is
-/// visually distinguishable at a glance.
+/// 피어의 id에서 결정론적으로 만들어 내는 아바타 색상. 각 연락처를 한눈에
+/// 시각적으로 구분할 수 있게 한다.
 Color avatarColor(String key) {
   var hash = 0;
   for (final c in key.codeUnits) {
     hash = (hash * 31 + c) & 0x7fffffff;
   }
-  // Curated, gently muted palette that harmonizes with the indigo brand — no
-  // neon Material-500 primaries clashing against the UI. Still ten clearly
-  // distinct hues so contacts stay tellable apart at a glance.
+  // 인디고 브랜드와 어우러지도록 엄선해 부드럽게 톤을 낮춘 팔레트 — UI와
+  // 부딪히는 네온 Material-500 프라이머리는 쓰지 않는다. 그래도 뚜렷이 구분되는
+  // 열 가지 색조라서, 연락처를 한눈에 구별할 수 있다.
   const palette = [
-    Color(0xFF5B67CA), // indigo
-    Color(0xFF2A9D8F), // teal
-    Color(0xFFDE7356), // terracotta
-    Color(0xFF7A6FE0), // violet
-    Color(0xFF3E82C4), // ocean
-    Color(0xFF4C9A6B), // green
-    Color(0xFFB65C93), // magenta
-    Color(0xFFCB8A3E), // amber
-    Color(0xFF6E7486), // slate
-    Color(0xFFC1666B), // rose
+    Color(0xFF5B67CA), // 인디고
+    Color(0xFF2A9D8F), // 청록
+    Color(0xFFDE7356), // 테라코타
+    Color(0xFF7A6FE0), // 바이올렛
+    Color(0xFF3E82C4), // 오션블루
+    Color(0xFF4C9A6B), // 초록
+    Color(0xFFB65C93), // 마젠타
+    Color(0xFFCB8A3E), // 앰버
+    Color(0xFF6E7486), // 슬레이트
+    Color(0xFFC1666B), // 로즈
   ];
   return palette[hash % palette.length];
 }
@@ -45,8 +45,8 @@ String initialsOf(String name) {
   return t.characters.first.toUpperCase();
 }
 
-/// Short relative time for conversation lists: "지금", "5분", "3시간", "어제",
-/// weekday, or a date.
+/// 대화 목록용 짧은 상대 시간: "지금", "5분", "3시간", "어제", 요일, 또는
+/// 날짜.
 String relativeTime(int epochMs) {
   final now = DateTime.now();
   final d = DateTime.fromMillisecondsSinceEpoch(epochMs);
@@ -64,11 +64,11 @@ String relativeTime(int epochMs) {
   return DateFormat('M/d').format(d);
 }
 
-/// Clock time for message bubbles.
+/// 메시지 말풍선용 시계 시각.
 String clockTime(int epochMs) =>
     DateFormat.Hm().format(DateTime.fromMillisecondsSinceEpoch(epochMs));
 
-/// A full day label for chat date separators: "오늘", "어제", or a date.
+/// 채팅 날짜 구분선용 전체 날짜 라벨: "오늘", "어제", 또는 날짜.
 String dayLabel(int epochMs) {
   final now = DateTime.now();
   final d = DateTime.fromMillisecondsSinceEpoch(epochMs);
@@ -86,10 +86,10 @@ bool sameDay(int aMs, int bMs) {
   return a.year == b.year && a.month == b.month && a.day == b.day;
 }
 
-/// RSSI(+hop count) → coarse proximity: a user-facing label and a radar ring
-/// index (0 = innermost/closest … 3 = outermost). Absolute BLE distance is
-/// unreliable, so we only claim honest buckets; multihop peers always sit on
-/// the outer ring regardless of signal.
+/// RSSI(+홉 수) → 대략적인 근접도: 사용자에게 보이는 라벨과 레이더 링
+/// 인덱스(0 = 가장 안쪽/가장 가까움 … 3 = 가장 바깥). BLE의 절대 거리는
+/// 신뢰할 수 없어서, 정직한 구간만 주장한다; 멀티홉 피어는 신호와 무관하게
+/// 항상 바깥 링에 앉는다.
 ({String label, int ring}) proximityBucket(int? rssi, int hops) {
   if (hops > 1) return (label: '$hops홉 건너', ring: 3);
   if (rssi == null) return (label: '주변', ring: 2);
@@ -105,15 +105,15 @@ String humanSize(int bytes) {
   return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
 }
 
-/// Presence dot with a soft breathing halo — "live" markers (nearby friends,
-/// searching state) share one motion language. The core dot stays put; only
-/// a translucent ring expands and fades, so it reads as a heartbeat, not a
-/// blink.
+/// 부드럽게 숨 쉬는 후광을 두른 상태 점 — "살아 있는" 표시(주변 친구, 검색
+/// 중 상태)들이 하나의 모션 언어를 공유한다. 중심 점은 제자리에 머물고, 반투명
+/// 링만 커졌다 사라지므로, 깜빡임이 아니라 심장 박동처럼
+/// 읽힌다.
 class PulsingDot extends StatefulWidget {
   final Color color;
   final double size;
 
-  /// Ring drawn around the core dot (e.g. the avatar-badge white border).
+  /// 중심 점 둘레에 그리는 링(예: 아바타 배지의 흰색 테두리).
   final Color? borderColor;
   const PulsingDot({
     super.key,
@@ -153,7 +153,7 @@ class _PulsingDotState extends State<PulsingDot>
             clipBehavior: Clip.none,
             alignment: Alignment.center,
             children: [
-              // Expanding, fading halo.
+              // 커지면서 사라지는 후광.
               Container(
                 width: s * (1 + 1.1 * t),
                 height: s * (1 + 1.1 * t),

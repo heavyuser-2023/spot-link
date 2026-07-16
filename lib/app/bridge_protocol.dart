@@ -1,15 +1,15 @@
-/// Message-type and command names for the UI ↔ service JSON bridge
-/// ([RemoteMeshController] ↔ [MeshHost]).
+/// UI ↔ 서비스 JSON 브리지([RemoteMeshController] ↔ [MeshHost])를 위한
+/// 메시지 타입과 명령 이름.
 ///
-/// Both sides reference these constants, so adding or renaming a command is
-/// one edit here — and a typo becomes a compile error instead of a silently
-/// dropped message.
+/// 양쪽 모두 이 상수들을 참조하므로, 명령을 추가하거나 이름을 바꾸는 것은
+/// 여기 한 곳만 수정하면 된다 — 그리고 오타는 조용히 버려지는 메시지가 아니라
+/// 컴파일 오류가 된다.
 abstract final class Bridge {
-  // ---- service → UI message types (key: 't') ----
+  // ---- 서비스 → UI 메시지 타입 (key: 't') ----
   static const typeSnapshot = 'snap';
   static const typeError = 'err';
 
-  // ---- UI → service commands (key: 'c') ----
+  // ---- UI → 서비스 명령 (key: 'c') ----
   static const cmdHello = 'hello';
   static const cmdForeground = 'fg';
   static const cmdBye = 'bye';

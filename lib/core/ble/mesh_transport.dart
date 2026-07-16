@@ -10,25 +10,25 @@ import '../model/peer_id.dart';
 import 'ble_constants.dart';
 import 'framing.dart';
 
-/// BLE diagnostics logging: always on in debug builds; enable in release with
-/// `flutter build ios --release --dart-define=BLE_LOG=true`.
+/// BLE 진단 로깅: 디버그 빌드에서는 항상 켜져 있고, 릴리스에서는
+/// `flutter build ios --release --dart-define=BLE_LOG=true` 로 켠다.
 const bool _logBle = kDebugMode || bool.fromEnvironment('BLE_LOG');
 
-/// Diagnostic: scan UNFILTERED on iOS too (foreground-only builds). Splits
-/// "scanner is dead" (sees nothing at all) from "peer's advertisement lacks
-/// our UUID" (sees the world, not the peer). Never ship enabled — iOS
-/// background scanning requires the service-UUID filter.
+/// 진단용: iOS에서도 UNFILTERED로 scan한다(포그라운드 전용 빌드). "스캐너가
+/// 죽었다"(아무것도 못 봄)와 "피어의 advertisement에 우리 UUID가 없다"(세상은
+/// 다 보이는데 그 피어만 안 보임)를 구분해준다. 절대 켠 채로 출시하지 말 것 —
+/// iOS 백그라운드 scan은 service-UUID 필터가 필요하다.
 const bool _diagUnfilteredScan = bool.fromEnvironment('DIAG_UNFILTERED');
 
-/// Optional extra sink for BLE diagnostics (e.g. a file logger wired up by the
-/// app layer). Release builds drop console output on iOS, so this is the only
-/// way to diagnose BLE behaviour on a real device without a debugger.
+/// BLE 진단을 위한 선택적 추가 sink(예: 앱 계층이 연결한 파일 로거). iOS의
+/// 릴리스 빌드는 콘솔 출력을 버리므로, 디버거 없이 실기기에서 BLE 동작을
+/// 진단할 수 있는 유일한 수단이다.
 void Function(String line)? bleLogSink;
 
-/// Persistence for known-peer peripheral identifiers, wired by the app layer
-/// (a small JSON file). Lets a fresh launch — including an iOS
-/// state-restoration relaunch — re-arm pending connects to known peers
-/// without scanning.
+/// 알려진 피어의 peripheral 식별자를 저장하는 영속화 계층으로, 앱 계층이
+/// 연결한다(작은 JSON 파일). 새로 실행되는 경우 — iOS의 상태 복원(state
+/// restoration) 재실행 포함 — scan 없이도 알려진 피어에 대한 pending connect를
+/// 다시 걸 수 있게 해준다.
 Future<List<String>> Function()? knownPeersLoad;
 void Function(List<String> uuids)? knownPeersSave;
 
@@ -37,35 +37,35 @@ void _log(String msg) {
   bleLogSink?.call(msg);
 }
 
-/// Whether this node acts as GATT central or peripheral on a given link.
+/// 주어진 링크에서 이 노드가 GATT central로 동작하는지 peripheral로 동작하는지.
 enum LinkRole { central, peripheral }
 
-/// A logical, bidirectional link to one neighbour over a single BLE connection.
+/// 하나의 BLE 연결 위에서 한 이웃과 맺는 논리적 양방향 링크.
 class MeshLink {
   final String id;
   final LinkRole role;
 
-  /// Short id learned from the advertisement (central role) or ANNOUNCE.
+  /// advertisement(central 역할)이나 ANNOUNCE에서 알아낸 short id.
   PeerId? remoteShortId;
 
-  /// Last time a packet arrived on this link. Peripheral-role links get no
-  /// reliable disconnect callback on every stack — a link silent past the
-  /// ANNOUNCE heartbeat for minutes is a zombie and gets dropped.
+  /// 이 링크로 패킷이 마지막으로 도착한 시각. peripheral 역할 링크는 모든
+  /// 스택에서 신뢰할 만한 disconnect 콜백을 받지 못한다 — ANNOUNCE
+  /// heartbeat를 몇 분 넘도록 조용한 링크는 좀비이며 제거된다.
   DateTime lastActivity = DateTime.now();
 
   int maxPacketSize;
   final L2Reassembler reassembler = L2Reassembler();
 
-  // Central-role handles (we connected to a remote peripheral).
+  // central 역할 핸들(우리가 원격 peripheral에 연결한 경우).
   final Peripheral? peripheral;
-  final GATTCharacteristic? remoteTx; // we write here
-  final GATTCharacteristic? remoteRx; // we get notified here
+  final GATTCharacteristic? remoteTx; // 여기에 write 한다
+  final GATTCharacteristic? remoteRx; // 여기서 notify를 받는다
 
-  // Peripheral-role handle (a remote central connected to us).
+  // peripheral 역할 핸들(원격 central이 우리에게 연결한 경우).
   final Central? central;
   bool centralSubscribed = false;
 
-  // Packets written since the last with-response flush (central role only).
+  // 마지막 with-response flush 이후 write한 패킷 수(central 역할에서만).
   int txBurst = 0;
 
   MeshLink({
@@ -83,33 +83,33 @@ class MeshLink {
       '${remoteShortId?.short ?? "?"})';
 }
 
-/// A packet reassembled from a link, ready to be parsed into a [Frame].
+/// 링크에서 재조립되어 [Frame]으로 파싱될 준비가 된 패킷.
 class InboundPacket {
   final MeshLink link;
   final Uint8List frameBytes;
   InboundPacket(this.link, this.frameBytes);
 }
 
-/// A link coming up or going down.
+/// 올라오거나 내려가는 링크.
 class LinkEvent {
   final MeshLink link;
   final bool up;
   LinkEvent(this.link, this.up);
 }
 
-/// A signal-strength reading for a direct neighbour, from an advertisement
-/// or a connected-link RSSI poll. [peer] is null when the radio couldn't
-/// tell who it was (e.g. an iOS advertisement carries no id).
+/// 직접 이웃의 신호 세기 측정값으로, advertisement이나 연결된 링크의 RSSI
+/// 폴링에서 얻는다. 무선이 상대가 누구인지 알 수 없을 때(예: iOS
+/// advertisement에는 id가 없다) [peer]는 null이다.
 class RssiSample {
   final PeerId? peer;
-  final int rssi; // dBm, typically -30 (바로 옆) … -100 (수신 한계)
+  final int rssi; // dBm, 보통 -30 (바로 옆) … -100 (수신 한계)
   RssiSample(this.peer, this.rssi);
 }
 
-/// The packet-oriented transport contract the [MeshNode] depends on. The real
-/// implementation is [MeshTransport]; tests inject an in-memory fake.
-/// Coarse adapter status, for user-facing diagnostics ("Bluetooth is off"
-/// vs "permission missing" need different fixes by the user).
+/// [MeshNode]가 의존하는 패킷 지향 transport 계약. 실제 구현은
+/// [MeshTransport]이며, 테스트는 in-memory fake를 주입한다.
+/// 사용자에게 보여줄 진단을 위한 개략적 어댑터 상태("블루투스가 꺼짐" vs
+/// "권한 없음"은 사용자가 취해야 할 조치가 다르다).
 enum RadioStatus { ready, poweredOff, unauthorized, unknown }
 
 abstract class MeshTransportInterface {
@@ -117,83 +117,82 @@ abstract class MeshTransportInterface {
   Stream<LinkEvent> get linkEvents;
   int get linkCount;
 
-  /// Distinct connected devices (de-dupes the bidirectional C:/P: links to
-  /// one peer). For the user-facing count; [linkCount] is the raw link total.
+  /// 서로 구별되는 연결된 기기 수(한 피어에 대한 양방향 C:/P: 링크를 하나로
+  /// 중복 제거). 사용자에게 보여줄 개수용이며, [linkCount]는 순수 링크 총계다.
   int get peerCount;
 
-  /// Why the radio is (un)usable right now.
+  /// 지금 무선이 사용 가능한(또는 불가능한) 이유.
   RadioStatus get radioStatus;
 
-  /// Emits true when the radio becomes usable (permission granted / adapter
-  /// powered on) and false when it stops being usable. Must be listenable
-  /// before [start], so a failed first start can be retried.
+  /// 무선이 사용 가능해지면(권한 허용 / 어댑터 전원 켜짐) true를, 더 이상
+  /// 사용 불가능해지면 false를 내보낸다. 첫 start가 실패해도 재시도할 수
+  /// 있도록, [start] 이전에 listen이 가능해야 한다.
   Stream<bool> get availabilityChanged;
 
-  /// Signal-strength readings for direct neighbours (드러난 거리감의 원천).
+  /// 직접 이웃의 신호 세기 측정값 (드러난 거리감의 원천).
   Stream<RssiSample> get rssiSamples;
 
   Future<bool> ensureReady();
   Future<void> start();
   Future<void> stop();
 
-  /// Nudge the radio back to active discovery/advertising (e.g. the app just
-  /// returned to the foreground). No-op if already running.
+  /// 무선을 다시 능동적인 discovery/advertising 상태로 되돌린다(예: 앱이 막
+  /// 포그라운드로 복귀함). 이미 실행 중이면 no-op.
   void wake();
 
   Future<void> broadcast(Uint8List frameBytes, {String? exceptLinkId});
   Future<void> sendToLink(String linkId, Uint8List frameBytes);
 }
 
-/// Bridges the BLE central & peripheral managers into a single mesh transport:
-/// discovers neighbours, manages one link per neighbour (role decided by id
-/// comparison), and exposes a packet-oriented send/receive API.
+/// BLE central & peripheral 매니저를 하나의 mesh transport로 이어준다:
+/// 이웃을 discover하고, 이웃마다 하나의 링크를 관리하며(역할은 id 비교로
+/// 결정), 패킷 지향 send/receive API를 노출한다.
 ///
-/// The higher-level [MeshNode] sits on top and never touches BLE directly.
-/// Power profile trading battery for responsiveness. See docs/ARCHITECTURE.md
-/// §12.
+/// 상위 계층인 [MeshNode]가 그 위에 얹혀 BLE를 직접 건드리지 않는다.
+/// 배터리와 응답성을 맞바꾸는 전력 프로파일. docs/ARCHITECTURE.md §12 참고.
 enum PowerMode {
-  /// Continuous scanning + advertising. Best reachability, highest drain.
+  /// 연속 scanning + advertising. 도달성은 최고, 소모도 최고.
   active,
 
-  /// Duty-cycled scanning (scan for [_saverScanOn], idle for [_saverScanOff]).
+  /// duty-cycle 방식 scanning([_saverScanOn] 동안 scan, [_saverScanOff] 동안 idle).
   saver,
 }
 
 class MeshTransport implements MeshTransportInterface {
   final PeerId myShortId;
 
-  /// The full public bundle to expose via the INFO characteristic.
+  /// INFO characteristic으로 노출할 전체 공개 번들.
   final Uint8List infoValue;
 
-  /// Cap on concurrent links to bound battery/memory. Extra peers are ignored
-  /// until a slot frees up.
+  /// 배터리/메모리를 제한하기 위한 동시 링크 상한. 슬롯이 빌 때까지 초과된
+  /// 피어는 무시된다.
   final int maxLinks;
 
   PowerMode _powerMode = PowerMode.active;
   Timer? _dutyTimer;
   bool _scanning = false;
 
-  /// Android: scanning and connecting share one radio, and issuing
-  /// connectGatt WHILE a (LOW_LATENCY) scan runs is the classic cause of
-  /// `status 133` connect failures on Samsung — in a BLE-dense room every
-  /// dial failed and the mesh never linked. We pause the scan for the
-  /// duration of each connect handshake. [_connectDepth] refcounts concurrent
-  /// connects; [_scanPausedForConnect] makes [_startScanning] a no-op so the
-  /// self-heal / duty-cycle timers can't restart the scan mid-connect.
+  /// Android: scan과 connect는 하나의 무선을 공유하며, (LOW_LATENCY) scan이
+  /// 도는 동안 connectGatt를 호출하는 것이 삼성에서 `status 133` connect
+  /// 실패를 일으키는 전형적 원인이다 — BLE가 붐비는 방에서는 모든 dial이
+  /// 실패해 mesh가 결코 링크되지 않았다. 그래서 각 connect handshake 동안
+  /// scan을 일시정지한다. [_connectDepth]는 동시 connect를 refcount하고,
+  /// [_scanPausedForConnect]는 [_startScanning]을 no-op으로 만들어 self-heal /
+  /// duty-cycle 타이머가 connect 도중 scan을 재시작하지 못하게 한다.
   int _connectDepth = 0;
   bool _scanPausedForConnect = false;
 
   static const Duration _saverScanOn = Duration(seconds: 6);
   static const Duration _saverScanOff = Duration(seconds: 20);
 
-  /// iOS foreground scan-mode alternation. The unfiltered scan is the only
-  /// mode that finds a FOREGROUND iPhone on iOS 27 (see [_startScanning]),
-  /// but it cannot see a BACKGROUND iPhone at all — overflow-area
-  /// advertisements are only delivered to a scan filtered on the service
-  /// UUID. Neither mode covers both, so alternate: wide window for
-  /// foreground peers/Androids, short filtered window for backgrounded
-  /// iPhones (whose rotated address makes any standing pending-reconnect
-  /// stale after a relaunch — a fresh discovery is the only way back in).
+  /// iOS 포그라운드 scan 모드 교대. unfiltered scan은 iOS 27에서
+  /// 포그라운드 상태의 iPhone을 찾을 수 있는 유일한 모드지만(see
+  /// [_startScanning]), 백그라운드 상태의 iPhone은 전혀 볼 수 없다 —
+  /// overflow 영역의 advertisement은 service UUID로 필터링된 scan에만
+  /// 전달된다. 어느 모드도 둘 다 커버하지 못하므로 번갈아 쓴다: 포그라운드
+  /// 피어/Android용 wide window, 백그라운드 iPhone용 짧은 filtered window
+  /// (이 iPhone은 주소가 rotate되어 재실행 후에는 걸려 있던 pending-reconnect가
+  /// 모두 낡아버리므로 — 새로 discovery하는 것만이 다시 붙는 유일한 길이다).
   Timer? _scanModeTimer;
   bool _overflowPhase = false;
   static const Duration _wideScanWindow = Duration(seconds: 12);
@@ -210,16 +209,16 @@ class MeshTransport implements MeshTransportInterface {
   int _linklessTicks = 0;
   static const Duration _rssiPollInterval = Duration(seconds: 5);
 
-  /// Consecutive failed RSSI reads per central link — the zombie-link
-  /// detector's evidence. Reset on any successful read or teardown.
+  /// central 링크별 연속 RSSI read 실패 횟수 — 좀비 링크 탐지기의 근거.
+  /// 성공한 read나 teardown이 있으면 리셋된다.
   final Map<String, int> _rssiFails = {};
   static const int _staleRssiFailures = 3;
 
-  /// Recently linked peer peripheral identifiers, most recent last. Persisted
-  /// via [knownPeersLoad]/[knownPeersSave] so a fresh launch (including an
-  /// iOS state-restoration relaunch) can re-arm pending connects to every
-  /// known peer without needing to scan — a backgrounded peer's overflow
-  /// advertisement is invisible to a scan, but a connect-by-identifier works.
+  /// 최근에 링크된 피어의 peripheral 식별자들로, 가장 최근 것이 뒤에 온다.
+  /// [knownPeersLoad]/[knownPeersSave]로 영속화되어, 새로 실행되는 경우(iOS의
+  /// 상태 복원 재실행 포함) scan 없이도 알려진 모든 피어에 대한 pending
+  /// connect를 다시 걸 수 있다 — 백그라운드 피어의 overflow advertisement은
+  /// scan에는 보이지 않지만, 식별자로 하는 connect는 동작한다.
   final Set<String> _knownPeers = {};
   static const int _maxKnownPeers = 6;
 
@@ -232,25 +231,28 @@ class MeshTransport implements MeshTransportInterface {
     knownPeersSave?.call(_knownPeers.toList());
   }
 
-  /// Which known-peer ids to arm as pending reconnects, MOST-RECENT FIRST and
-  /// capped at [_maxPendingReconnects] (further clamped by [budget]).
+  /// 어떤 known-peer id를 pending reconnect로 걸지 결정한다. 가장 최근 것부터
+  /// (MOST-RECENT FIRST), [_maxPendingReconnects]로 상한을 둔다([budget]으로
+  /// 추가 제한).
   ///
-  /// [saved] is oldest→newest (see [_rememberPeer]). The cap matters: without
-  /// it, arming all known peers overflows the pending set, and
-  /// [_pendingReconnect] evicts the oldest-ARMED entry — which, arming
-  /// newest-first, is the freshest peer. That dropped the peer we JUST linked
-  /// with in favour of stale old ids, leaving the one connect-by-identifier
-  /// that would actually succeed un-armed. iOS 27 can't rediscover a
-  /// backgrounded peer by scan, so this pending connect is the only reconnect
-  /// path — it must target the freshest ids. Pure + static for testability.
+  /// [saved]는 오래된 것→최신 순이다(see [_rememberPeer]). 이 상한이 중요하다:
+  /// 상한이 없으면 알려진 모든 피어를 거는 순간 pending 집합이 넘치고,
+  /// [_pendingReconnect]가 가장 먼저 ARM된 항목을 밀어낸다 — 최신 것부터
+  /// 거는 방식이라 그게 바로 가장 신선한 피어다. 그 결과 방금 링크했던
+  /// 피어가 낡은 옛 id들에 밀려 버려지고, 실제로 성공할 수 있는 유일한
+  /// connect-by-identifier가 ARM되지 못한 채 남았다. iOS 27은 백그라운드
+  /// 피어를 scan으로 재발견할 수 없으므로, 이 pending connect가 유일한
+  /// reconnect 경로다 — 반드시 가장 신선한 id를 겨냥해야 한다. 테스트 용이성을
+  /// 위해 순수 함수 + static이다.
   static List<String> pendingReconnectOrder(List<String> saved, int budget) {
     final cap = budget < _maxPendingReconnects ? budget : _maxPendingReconnects;
     if (cap <= 0) return const [];
     return saved.reversed.take(cap).toList();
   }
 
-  /// iOS: stand up pending connects to every persisted peer. Capped so the
-  /// standing connects can't starve scan-driven links of [maxLinks] slots.
+  /// iOS: 영속화된 모든 피어에 대해 pending connect를 세워 둔다. 걸려 있는
+  /// connect들이 scan으로 생기는 링크의 [maxLinks] 슬롯을 굶기지 않도록
+  /// 상한을 둔다.
   Future<void> _reconnectKnownPeers() async {
     try {
       final saved = await knownPeersLoad?.call() ?? const <String>[];
@@ -266,46 +268,47 @@ class MeshTransport implements MeshTransportInterface {
           }
           _pendingReconnect(peripheral);
           armed++;
-        } catch (_) {} // malformed/unknown id — scan will find them instead
+        } catch (_) {} // 형식이 잘못됐거나 알 수 없는 id — 대신 scan이 찾아준다
       }
       if (armed > 0) _log('BLE known-peer reconnect armed x$armed');
     } catch (_) {}
   }
 
-  /// Standing pending-reconnect keys (subset of [_connecting]) and their
-  /// peripherals. iOS pending connects never time out, and Android peers
-  /// rotate their advertising address on every restart — so pendings to a
-  /// dead address would otherwise pile up forever, eat the [maxLinks] slot
-  /// budget, and silently block every NEW discovery (observed: killing the
-  /// Android peer knocked the *other* iPhone offline too). Kept out of the
-  /// discovery budget, capped, oldest-evicted.
+  /// 걸려 있는 pending-reconnect 키들([_connecting]의 부분집합)과 그
+  /// peripheral들. iOS의 pending connect는 절대 타임아웃되지 않고, Android
+  /// 피어는 재시작할 때마다 advertising 주소를 rotate한다 — 그래서 죽은
+  /// 주소로 향한 pending들이 그냥 두면 영원히 쌓여, [maxLinks] 슬롯 예산을
+  /// 잡아먹고, 새로운 discovery를 전부 조용히 막아버린다(관찰됨: Android
+  /// 피어를 죽이자 *다른* iPhone까지 오프라인이 됐다). discovery 예산에서
+  /// 빼두고, 상한을 두며, 가장 오래된 것을 밀어낸다.
   final Set<String> _pendingKeys = {};
   final Map<String, Peripheral> _pendingPeripherals = {};
   static const int _maxPendingReconnects = 4;
 
-  /// Per-pending staleness watchdog + strike counter. A pending connect that
-  /// produces no link within [_pendingStaleTimeout] is almost certainly aimed
-  /// at a rotated/dead identifier (a peer in range links in seconds). We free
-  /// the slot each time and, after two straight strikes, forget the identifier
-  /// so deep-heal/boot stop resurrecting it — the peer's live address is still
-  /// found by scan when it next appears. This is the leak fix: previously an
-  /// identifier was dropped ONLY on an `illegalArgument` throw, but the common
-  /// case is a connect that simply never completes and never throws.
+  /// pending별 낡음 감시 watchdog + strike 카운터. [_pendingStaleTimeout] 안에
+  /// 링크를 만들어내지 못한 pending connect는 거의 확실히 rotate된/죽은
+  /// 식별자를 겨냥한 것이다(범위 안의 피어라면 몇 초 만에 링크된다). 매번
+  /// 슬롯을 풀어주고, 연속 두 번 strike가 쌓이면 식별자를 잊어버려
+  /// deep-heal/부팅이 그것을 되살리지 못하게 한다 — 피어의 살아 있는 주소는
+  /// 다음에 나타날 때 scan이 여전히 찾아준다. 이것이 누수 수정이다: 이전에는
+  /// 식별자가 오직 `illegalArgument` throw에서만 버려졌지만, 흔한 경우는
+  /// connect가 그냥 절대 완료되지도, throw하지도 않는 상황이다.
   final Map<String, Timer> _pendingTimers = {};
   final Map<String, int> _pendingStaleStrikes = {};
   static const Duration _pendingStaleTimeout = Duration(seconds: 90);
 
-  /// Failed (re)connect attempts per peripheral, driving retry backoff.
-  /// A pending reconnect is one-shot on iOS: once it completes and our GATT
-  /// setup fails (e.g. the peer was republishing its service that instant),
-  /// nobody re-arms it — so we must, or the node sits link-less until the
-  /// OS suspends it and messages stop flowing entirely.
+  /// peripheral별 (재)connect 실패 횟수로, retry backoff를 이끈다.
+  /// iOS에서 pending reconnect는 일회성이다: 한번 완료되고 우리의 GATT
+  /// 셋업이 실패하면(예: 바로 그 순간 피어가 자기 service를 republish하고
+  /// 있었음), 아무도 그걸 다시 걸어주지 않는다 — 그래서 우리가 걸어야 한다.
+  /// 그렇지 않으면 노드는 OS가 자기를 suspend시킬 때까지 링크 없이 앉아
+  /// 있고 메시지 흐름이 완전히 멈춘다.
   final Map<String, int> _reconnectAttempts = {};
   final Map<String, Timer> _reconnectTimers = {};
 
-  /// Last discovery-triggered dial per key — a short cooldown that keeps a
-  /// scan burst from becoming a fail storm without letting the long
-  /// background backoff suppress a peer that is advertising right now.
+  /// 키별로 discovery가 촉발한 마지막 dial 시각 — scan 폭주가 실패 폭풍이
+  /// 되는 것을 막되, 긴 백그라운드 backoff가 지금 당장 advertising 중인
+  /// 피어를 억누르지는 않게 하는 짧은 쿨다운.
   final Map<String, DateTime> _lastDialAt = {};
 
   bool _servicePublished = false;
@@ -332,7 +335,7 @@ class MeshTransport implements MeshTransportInterface {
   final Map<String, MeshLink> _links = {};
   final Set<String> _connecting = {};
 
-  // Our local mutable RX characteristic (peripheral role notifies on it).
+  // 로컬의 mutable RX characteristic(peripheral 역할이 여기에 notify한다).
   GATTCharacteristic? _localRx;
 
   final List<StreamSubscription> _subs = [];
@@ -354,22 +357,22 @@ class MeshTransport implements MeshTransportInterface {
   @override
   int get linkCount => _links.length;
 
-  /// Distinct connected DEVICES. A peer linked both ways holds two entries
-  /// (`C:<id>` outbound + `P:<id>` inbound) with the SAME underlying id, so
-  /// stripping the 2-char `C:`/`P:` prefix and de-duping counts one device,
-  /// not two links. Drives the user-facing chip; internal logic keeps using
-  /// [linkCount].
+  /// 서로 구별되는 연결된 기기(DEVICES) 수. 양방향으로 링크된 피어는 같은
+  /// 내부 id를 가진 두 항목(`C:<id>` outbound + `P:<id>` inbound)을 가지므로,
+  /// 2글자 `C:`/`P:` 접두사를 떼고 중복 제거하면 링크 둘이 아니라 기기 하나로
+  /// 센다. 사용자에게 보여줄 chip을 구동하며, 내부 로직은 계속 [linkCount]를
+  /// 쓴다.
   @override
   int get peerCount => distinctPeerCount(_links.keys);
 
-  /// Pure de-dup of link keys (`C:<id>`/`P:<id>`) to distinct device ids.
-  /// Static + pure for testability.
+  /// 링크 키(`C:<id>`/`P:<id>`)를 서로 구별되는 기기 id로 순수하게 중복
+  /// 제거한다. 테스트 용이성을 위해 static + 순수 함수다.
   static int distinctPeerCount(Iterable<String> linkKeys) =>
       linkKeys.map((k) => k.substring(2)).toSet().length;
 
-  /// On iOS the very first launch reports `unauthorized`/`unknown` while the
-  /// permission prompt is still on screen; once the user grants it the state
-  /// flips to `poweredOn` and this emits true.
+  /// iOS에서는 맨 처음 실행 시 권한 프롬프트가 아직 화면에 떠 있는 동안
+  /// `unauthorized`/`unknown`을 보고한다; 사용자가 허용하면 상태가
+  /// `poweredOn`으로 바뀌고 이것이 true를 내보낸다.
   @override
   RadioStatus get radioStatus => switch (_central.state) {
         BluetoothLowEnergyState.poweredOn => RadioStatus.ready,
@@ -384,16 +387,16 @@ class MeshTransport implements MeshTransportInterface {
         return e.state == BluetoothLowEnergyState.poweredOn;
       });
 
-  /// Request permissions and power state; returns true if BLE is usable.
+  /// 권한과 전원 상태를 요청한다; BLE가 사용 가능하면 true를 반환한다.
   @override
   Future<bool> ensureReady() async {
-    // If the adapter already reports powered-on, permissions are granted and
-    // the radio is on — skip the interactive authorize(). This is essential
-    // for the Android HEADLESS service isolate: authorize() there calls
-    // requestPermissions() on an Activity that doesn't exist and fails, which
-    // would stop the mesh from ever starting. Permissions were already
-    // granted in a prior UI session, so the state check (Context-based, no
-    // Activity) is enough. Also spares the UI a redundant prompt.
+    // 어댑터가 이미 powered-on을 보고하면 권한이 허용됐고 무선이 켜진
+    // 것이다 — 대화형 authorize()를 건너뛴다. 이는 Android의 HEADLESS 서비스
+    // isolate에 필수적이다: 거기서 authorize()는 존재하지 않는 Activity에서
+    // requestPermissions()를 호출해 실패하는데, 그러면 mesh가 아예 시작되지
+    // 못한다. 권한은 이전 UI 세션에서 이미 허용됐으므로 상태 확인(Context
+    // 기반, Activity 불필요)만으로 충분하다. 덤으로 UI에 불필요한 프롬프트도
+    // 뜨지 않게 해준다.
     if (_central.state == BluetoothLowEnergyState.poweredOn) {
       _log('BLE ensureReady: already powered on');
       return true;
@@ -403,13 +406,13 @@ class MeshTransport implements MeshTransportInterface {
       final b = await _peripheral.authorize();
       return a && b;
     } on UnsupportedError {
-      // authorize() is unsupported on Darwin/desktop: fall back to the cached
-      // adapter state (updated via stateChanged events from the OS).
+      // authorize()는 Darwin/데스크톱에서 지원되지 않는다: 캐시된 어댑터
+      // 상태(OS의 stateChanged 이벤트로 갱신됨)로 대체한다.
       _log('BLE ensureReady: state=${_central.state}');
       return _central.state == BluetoothLowEnergyState.poweredOn;
     } catch (e) {
-      // Android in a headless isolate: authorize() throws (no Activity). Fall
-      // back to whatever the Context-based state says.
+      // headless isolate의 Android: authorize()가 throw한다(Activity 없음).
+      // Context 기반 상태가 말하는 대로 대체한다.
       _log('BLE ensureReady: authorize failed ($e), state=${_central.state}');
       return _central.state == BluetoothLowEnergyState.poweredOn;
     }
@@ -424,48 +427,47 @@ class MeshTransport implements MeshTransportInterface {
     _wireAdapterState();
     _log('BLE start: central=${_central.state} peripheral=${_peripheral.state} '
         'me=${myShortId.short}');
-    // The peripheral manager powers on independently of the central (on iOS
-    // it often lags a beat behind). Publishing the service / advertising on a
-    // not-yet-ready manager fails silently, leaving this node scanning but
-    // invisible to everyone else — so only do it when it's ready, and let the
-    // stateChanged listener pick it up otherwise.
+    // peripheral 매니저는 central과 독립적으로 전원이 켜진다(iOS에서는 흔히
+    // 한 박자 늦다). 아직 준비되지 않은 매니저에서 service를 publish하거나
+    // advertising하면 조용히 실패해, 이 노드는 scan은 하지만 다른 누구에게도
+    // 보이지 않게 된다 — 그래서 준비됐을 때만 하고, 그렇지 않으면
+    // stateChanged 리스너가 넘겨받게 한다.
     if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
       await _setupPeripheral();
-      // Boot always REPLACES the advertisement. After iOS kills the app,
-      // state restoration keeps a degraded background-class advertisement
-      // alive on our behalf; a plain start then returns "already started"
-      // and we'd keep running on that ghost — which (iOS 27) other iPhones'
-      // filtered scans cannot see at all. Two phones in this state are
-      // mutually invisible until one reinstalls (observed for hours).
-      // On Android a fresh engine has no prior advertisement, so the extra
-      // stop is a no-op — no address-rotation concern at boot.
+      // 부팅 시에는 항상 advertisement을 교체(REPLACE)한다. iOS가 앱을 죽인
+      // 뒤 상태 복원이 우리 대신 격이 낮은 background-class advertisement을
+      // 살려두는데; 그냥 start하면 "already started"를 반환해 우리는 그 유령
+      // 위에서 계속 도는 셈이 된다 — 그것은 (iOS 27) 다른 iPhone의 filtered
+      // scan에 전혀 보이지 않는다. 이 상태의 두 폰은 한쪽이 재설치할 때까지
+      // 서로 보이지 않는다(몇 시간 동안 관찰됨).
+      // Android에서는 새 엔진에 이전 advertisement이 없으므로, 이 추가 stop은
+      // no-op이다 — 부팅 시 주소 rotation을 걱정할 필요가 없다.
       await _startAdvertising(restart: true);
     }
     await _startScanning();
     _beginScanModeCycle();
-    // iOS: also stand up pending connects to every peer we've linked before —
-    // a backgrounded iPhone is invisible to the scan but reachable by a
-    // connect-by-identifier, and after a state-restoration relaunch this is
-    // what stitches the mesh back together.
+    // iOS: 이전에 링크했던 모든 피어에 대해서도 pending connect를 세워 둔다 —
+    // 백그라운드 iPhone은 scan에는 보이지 않지만 식별자로 하는 connect로는
+    // 도달 가능하고, 상태 복원 재실행 후에는 이것이 mesh를 다시 꿰매준다.
     if (Platform.isIOS) {
       unawaited(_reconnectKnownPeers());
     }
-    // Poll connected links for signal strength so the UI can show how close
-    // each neighbour is even after advertisements stop (connected peers
-    // usually stop advertising).
+    // 연결된 링크의 신호 세기를 폴링해, advertisement이 멈춘 뒤에도 UI가 각
+    // 이웃이 얼마나 가까운지 보여줄 수 있게 한다(연결된 피어는 보통
+    // advertising을 멈춘다).
     _rssiTimer = Timer.periodic(_rssiPollInterval, (_) => _pollRssi());
-    // Self-heal: a start that failed mid-race (engine handoff, adapter busy)
-    // used to leave the node running but mute. While we have no links at
-    // all, periodically re-assert advertising + scanning — both calls are
-    // idempotent ("already started" is harmless).
+    // Self-heal: 경쟁 상태 도중 실패한 start(엔진 handoff, 어댑터 바쁨)는
+    // 노드를 실행 중이지만 벙어리 상태로 남겨두곤 했다. 링크가 하나도 없는
+    // 동안, advertising + scanning을 주기적으로 다시 확립한다 — 두 호출 모두
+    // 멱등이다("already started"는 무해하다).
     _selfHealTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!_started) return;
-      // Zombie peripheral links: no stack fires a reliable "central left"
-      // callback everywhere, and a dead P-link both lies to the UI and can
-      // wedge the GATT server against NEW incoming connections (seen on
-      // Samsung: fresh centrals time out with CBError 6 while a stale link
-      // sits around). ANNOUNCE heartbeats land every ~15s, so minutes of
-      // silence means the central is gone.
+      // 좀비 peripheral 링크: 어떤 스택도 모든 곳에서 신뢰할 만한 "central
+      // 이 떠남" 콜백을 쏘지 않으며, 죽은 P-링크는 UI에 거짓말을 하는 동시에
+      // 새로 들어오는 연결에 대해 GATT 서버를 막아버릴 수 있다(삼성에서
+      // 관찰됨: 낡은 링크가 남아 있는 동안 새 central들이 CBError 6으로
+      // 타임아웃난다). ANNOUNCE heartbeat은 약 15초마다 도착하므로, 몇 분간의
+      // 침묵은 central이 떠났다는 뜻이다.
       for (final link in _links.values.toList()) {
         if (link.role == LinkRole.peripheral &&
             DateTime.now().difference(link.lastActivity) >
@@ -480,17 +482,16 @@ class MeshTransport implements MeshTransportInterface {
       }
       _linklessTicks++;
       _log('BLE self-heal: no links — re-asserting radio');
-      // Deep heal: linkless for ~3 minutes straight → republish the GATT
-      // service too. A wedged/stale server (engine handoff leftovers) makes
-      // every incoming connect time out; removeAll+add gives the stack a
-      // fresh one.
-      // Light heal (advertise/scan re-kick) every 15s tick; the heavier GATT
-      // republish only every ~2 min so it doesn't disrupt a peer mid-connect.
+      // Deep heal: 약 3분 연속 링크 없음 → GATT service도 republish한다.
+      // 막히거나 낡은 서버(엔진 handoff 잔여물)는 들어오는 모든 connect를
+      // 타임아웃나게 만든다; removeAll+add로 스택에 새 것을 준다.
+      // 가벼운 heal(advertise/scan 재가동)은 15초 tick마다; 더 무거운 GATT
+      // republish는 약 2분마다만 해서 connect 중인 피어를 방해하지 않게 한다.
       final deep = _linklessTicks % 8 == 0;
       if (deep && _pendingKeys.isNotEmpty) {
-        // Linkless for minutes with standing pendings: they're likely aimed
-        // at dead rotated addresses. Cancel them all — scan/probe will find
-        // the peers' live addresses instead.
+        // 걸려 있는 pending들이 있는데도 몇 분간 링크 없음: 그것들은 죽은
+        // rotate된 주소를 겨냥하고 있을 가능성이 높다. 전부 취소한다 —
+        // 대신 scan/probe가 피어들의 살아 있는 주소를 찾아준다.
         _log('BLE deep heal: cancelling ${_pendingKeys.length} stale '
             'pending reconnects');
         for (final k in _pendingKeys.toList()) {
@@ -499,10 +500,10 @@ class MeshTransport implements MeshTransportInterface {
             unawaited(_central.disconnect(p).then((_) {}, onError: (_) {}));
           }
         }
-        // Re-arm from the persisted list once the cancels settle. Cancelling
-        // alone left the node with NO standing connects at all — if the peer
-        // came back on its old identifier (backgrounded, same session) there
-        // was nothing waiting for it anymore.
+        // 취소가 정리되고 나면 영속화된 목록에서 다시 건다. 취소만 해두면
+        // 노드에 걸려 있는 connect가 전혀 없는 상태가 됐다 — 피어가 예전
+        // 식별자로 돌아온다면(백그라운드, 같은 세션) 더 이상 그것을 기다리는
+        // 게 아무것도 없었던 것이다.
         Timer(const Duration(seconds: 3), () {
           if (_started && Platform.isIOS) unawaited(_reconnectKnownPeers());
         });
@@ -517,15 +518,15 @@ class MeshTransport implements MeshTransportInterface {
         }
       }
       if (_powerMode == PowerMode.active) {
-        // Recycle, don't just re-assert: the OS can quietly stop delivering
-        // scan results while our _scanning flag stays true (seen on iOS
-        // after long foreground sessions — a fresh app instantly discovered
-        // peers the old one had gone blind to). stop→start forces a real
-        // new scan.
+        // 그냥 다시 확립하지 말고 재활용(recycle)한다: 우리의 _scanning
+        // 플래그가 true로 남아 있는 동안 OS가 조용히 scan 결과 전달을 멈출 수
+        // 있다(iOS에서 긴 포그라운드 세션 후 관찰됨 — 새로 뜬 앱이 기존 앱은
+        // 눈멀어 있던 피어들을 즉시 discover했다). stop→start가 진짜 새 scan을
+        // 강제한다.
         unawaited(_stopScanning().then((_) => _startScanning()));
       }
-      // Let a previously-missed Apple device be probed again sooner when we
-      // have nothing at all.
+      // 아무것도 없을 때는 이전에 miss했던 Apple 기기를 더 빨리 다시 probe할
+      // 수 있게 한다.
       if (_linklessTicks >= 4) {
         _probeMisses.clear();
         _probeBackoff.clear();
@@ -536,17 +537,17 @@ class MeshTransport implements MeshTransportInterface {
   @override
   void wake() {
     if (!_started) return;
-    // Re-assert advertising and scanning. iOS suspends both while the app is
-    // backgrounded; on resume this makes us visible / discovering again
-    // without waiting for the next duty cycle. Do NOT republish the GATT
-    // service here: removeAll+add tears the service down for a moment, and a
-    // peer running discoverGATT in that window sees "service not found" and
-    // fails its (re)connect. The service survives foreground/background — it
-    // only needs publishing once per peripheral power-on.
+    // advertising과 scanning을 다시 확립한다. iOS는 앱이 백그라운드인 동안
+    // 둘 다 suspend한다; 복귀 시 이것이 다음 duty cycle을 기다리지 않고 다시
+    // 우리를 보이게/discover하게 만든다. 여기서 GATT service를 republish하지
+    // 말 것: removeAll+add는 잠깐 service를 허물고, 그 창(window) 사이에
+    // discoverGATT를 돌리는 피어는 "service not found"를 보고 (재)connect에
+    // 실패한다. service는 포그라운드/백그라운드를 견뎌낸다 — peripheral 전원이
+    // 켜질 때마다 한 번만 publish하면 된다.
     if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
       if (_servicePublished) {
-        // Real restart: iOS advertising degrades while backgrounded and only
-        // a stop+start restores the full foreground advertisement.
+        // 진짜 재시작: iOS advertising은 백그라운드인 동안 격이 떨어지며,
+        // stop+start만이 완전한 포그라운드 advertisement을 복원한다.
         unawaited(_startAdvertising(restart: true));
       } else {
         unawaited(
@@ -554,7 +555,7 @@ class MeshTransport implements MeshTransportInterface {
       }
     }
     if (_powerMode == PowerMode.active) {
-      _beginScanModeCycle(); // reset to the wide phase before (re)scanning
+      _beginScanModeCycle(); // (재)scan 전에 wide phase로 리셋
       unawaited(_startScanning());
     } else {
       _beginDutyCycle();
@@ -574,10 +575,10 @@ class MeshTransport implements MeshTransportInterface {
         }
       } catch (_) {
         if (_disposed || !_links.containsKey(link.id)) return;
-        // A half-dead GATT connection (peer walked away mid-suspend, stack
-        // wedged) can eat frames for minutes without ever reporting a
-        // disconnect. Three straight failed reads ≈ 15s of silence — cut the
-        // link ourselves; the disconnect path re-arms the pending reconnect.
+        // 반쯤 죽은 GATT 연결(suspend 도중 피어가 떠남, 스택 막힘)은
+        // disconnect를 전혀 보고하지 않은 채 몇 분간 프레임을 삼킬 수 있다.
+        // 연속 세 번의 read 실패 ≈ 15초의 침묵 — 우리가 직접 링크를 끊는다;
+        // disconnect 경로가 pending reconnect를 다시 걸어준다.
         final fails = (_rssiFails[link.id] ?? 0) + 1;
         _rssiFails[link.id] = fails;
         if (fails >= _staleRssiFailures) {
@@ -586,8 +587,8 @@ class MeshTransport implements MeshTransportInterface {
           try {
             await _central.disconnect(link.peripheral!);
           } catch (_) {
-            // The radio refused even the disconnect — tear down locally and
-            // arm the reconnect by hand (no disconnect event will come).
+            // 무선이 disconnect마저 거부했다 — 로컬에서 teardown하고
+            // reconnect를 직접 손으로 건다(disconnect 이벤트는 오지 않는다).
             _tearDown(link.id);
             _pendingReconnect(link.peripheral!);
           }
@@ -596,9 +597,9 @@ class MeshTransport implements MeshTransportInterface {
     }
   }
 
-  /// Recover automatically when the user toggles Bluetooth off and back on:
-  /// re-publish the service, re-advertise and re-scan on power-on; drop stale
-  /// links on power-off.
+  /// 사용자가 블루투스를 껐다 다시 켤 때 자동으로 복구한다: 전원이 켜지면
+  /// service를 다시 publish하고 다시 advertise/scan하며; 전원이 꺼지면 낡은
+  /// 링크를 버린다.
   void _wireAdapterState() {
     _subs.add(_central.stateChanged.listen((e) async {
       if (!_started) return;
@@ -610,8 +611,9 @@ class MeshTransport implements MeshTransportInterface {
           _beginDutyCycle();
         }
       } else if (e.state == BluetoothLowEnergyState.poweredOff) {
-        // Stop the saver duty-cycle chain, otherwise it keeps re-flipping
-        // _scanning and issuing doomed startDiscovery calls on a dead adapter.
+        // saver duty-cycle 체인을 멈춘다. 그러지 않으면 _scanning을 계속
+        // 뒤집으며 죽은 어댑터에 대고 실패가 뻔한 startDiscovery 호출을
+        // 계속 날린다.
         _dutyTimer?.cancel();
         _dutyTimer = null;
         _scanModeTimer?.cancel();
@@ -624,18 +626,18 @@ class MeshTransport implements MeshTransportInterface {
       }
     }));
 
-    // Publish the GATT service and advertise only once the peripheral manager
-    // itself is powered on — its lifecycle is separate from the central's.
+    // peripheral 매니저 자체의 전원이 켜졌을 때만 GATT service를 publish하고
+    // advertise한다 — 그 생명주기는 central의 것과 별개다.
     _subs.add(_peripheral.stateChanged.listen((e) async {
       _log('BLE peripheral state: ${e.state}');
       if (!_started) return;
       if (e.state == BluetoothLowEnergyState.poweredOn) {
         await _setupPeripheral();
-        // Same ghost-replacement as in start(): this is the boot path when
-        // the peripheral manager powers on late (iOS state restoration).
+        // start()에서와 같은 유령 교체(ghost-replacement): peripheral 매니저의
+        // 전원이 늦게 켜질 때(iOS 상태 복원)의 부팅 경로다.
         await _startAdvertising(restart: true);
       } else {
-        // Power-off wipes the published GATT database.
+        // 전원 off는 publish된 GATT 데이터베이스를 지운다.
         _servicePublished = false;
       }
     }));
@@ -686,21 +688,21 @@ class MeshTransport implements MeshTransportInterface {
   }
 
   // ---------------------------------------------------------------------------
-  // Sending
+  // 전송
   // ---------------------------------------------------------------------------
 
-  /// Send an encoded frame to every current neighbour except [exceptLinkId].
+  /// 인코딩된 프레임을 [exceptLinkId]를 제외한 현재의 모든 이웃에게 보낸다.
   @override
   Future<void> broadcast(Uint8List frameBytes, {String? exceptLinkId}) async {
     final targets = _links.values.where((l) => l.id != exceptLinkId).toList();
-    // Per-link sends run CONCURRENTLY: a marginal long-range link whose
-    // withResponse flushes crawl must not stall delivery to every other
-    // neighbour (serially, one slow hop delayed the whole relay fan-out).
-    // _sendTo never throws — failures tear down their own link.
+    // 링크별 전송은 동시에(CONCURRENTLY) 돈다: withResponse flush가 기어가는
+    // 아슬아슬한 원거리 링크 하나가 다른 모든 이웃으로의 전달을 막아서는 안
+    // 된다(직렬로 하면 느린 hop 하나가 relay fan-out 전체를 지연시켰다).
+    // _sendTo는 절대 throw하지 않는다 — 실패는 각자 자신의 링크를 teardown한다.
     await Future.wait(targets.map((link) => _sendTo(link, frameBytes)));
   }
 
-  /// Send an encoded frame to a single link.
+  /// 인코딩된 프레임을 단일 링크로 보낸다.
   @override
   Future<void> sendToLink(String linkId, Uint8List frameBytes) async {
     final link = _links[linkId];
@@ -708,7 +710,7 @@ class MeshTransport implements MeshTransportInterface {
   }
 
   Future<void> _sendTo(MeshLink link, Uint8List frameBytes) async {
-    // Never let a too-small/negotiating MTU produce an invalid split.
+    // 너무 작거나 아직 협상 중인 MTU가 잘못된 split을 만들지 못하게 한다.
     final size = link.maxPacketSize < BleConstants.minUsablePacketSize
         ? BleConstants.minUsablePacketSize
         : link.maxPacketSize;
@@ -716,16 +718,16 @@ class MeshTransport implements MeshTransportInterface {
     try {
       packets = L2Framing.split(frameBytes, size);
     } catch (_) {
-      return; // frame too large to frame on this link
+      return; // 이 링크에서 framing하기엔 프레임이 너무 큼
     }
     for (final p in packets) {
       try {
         if (link.role == LinkRole.central) {
-          // iOS silently drops write-without-response packets once its queue
-          // fills (the plugin completes immediately without checking
-          // readiness), which evaporates long file-chunk bursts. Every few
-          // packets write WITH response: the ATT round-trip drains the queue
-          // before we continue.
+          // iOS는 큐가 차면 write-without-response 패킷을 조용히 버린다
+          // (플러그인이 readiness를 확인하지 않고 즉시 완료 처리한다). 그래서
+          // 긴 파일 청크 폭주가 증발해버린다. 그래서 몇 패킷마다 한 번씩
+          // response를 받는(WITH response) write를 한다: ATT 왕복이 다음으로
+          // 넘어가기 전에 큐를 비워준다.
           link.txBurst++;
           final flush = link.txBurst >= 6;
           if (flush) link.txBurst = 0;
@@ -746,7 +748,7 @@ class MeshTransport implements MeshTransportInterface {
           );
         }
       } catch (e) {
-        // A failed write usually means the link died; tear it down.
+        // write 실패는 보통 링크가 죽었다는 뜻이다; teardown한다.
         _tearDown(link.id);
         return;
       }
@@ -754,7 +756,7 @@ class MeshTransport implements MeshTransportInterface {
   }
 
   // ---------------------------------------------------------------------------
-  // Peripheral role setup
+  // peripheral 역할 셋업
   // ---------------------------------------------------------------------------
 
   Future<void> _setupPeripheral() async {
@@ -798,9 +800,10 @@ class MeshTransport implements MeshTransportInterface {
     }
   }
 
-  /// "Already advertising" from either stack — the advertisement is alive,
-  /// which is exactly what a re-assert wants; treat as success.
-  /// (Darwin: "Advertising has already started"; Android: error code 3 =
+  /// 어느 스택에서든 나오는 "Already advertising" — advertisement이 살아
+  /// 있다는 뜻이고, 그것이 바로 재확립(re-assert)이 원하는 것이므로; 성공으로
+  /// 취급한다.
+  /// (Darwin에서는 "Advertising has already started"; Android에서는 error code 3 =
   /// ADVERTISE_FAILED_ALREADY_STARTED.)
   static bool _isAlreadyAdvertising(Object e) {
     final s = e.toString();
@@ -808,29 +811,30 @@ class MeshTransport implements MeshTransportInterface {
   }
 
   Future<void> _startAdvertising({bool restart = false}) async {
-    // Restart ONLY on explicit request (foreground wake, GATT republish).
-    // A stop+start is NOT a harmless refresh on Android: each start
-    // allocates a fresh random address (RPA), and the linkless self-heal
-    // re-asserts every 15s — restarting each time made this node hop
-    // addresses faster than a *backgrounded* iPhone can finish a dial
-    // (background discovery→connect loses the 15s race every time), so two
-    // idle phones could never re-link until one was foregrounded. The
-    // default path leaves a live advertisement untouched.
+    // 재시작은 오직 명시적 요청일 때만(포그라운드 wake, GATT republish).
+    // Android에서 stop+start는 무해한 refresh가 아니다: start할 때마다 새
+    // 랜덤 주소(RPA)를 할당하고, 링크 없음 self-heal은 15초마다 재확립한다 —
+    // 매번 재시작하면 이 노드가 *백그라운드* 상태의 iPhone이 dial을 끝낼 수
+    // 있는 것보다 더 빠르게 주소를 갈아치우게 되고(백그라운드
+    // discovery→connect는 매번 15초 경쟁에서 진다), 그래서 idle 상태의 두 폰은
+    // 한쪽이 포그라운드로 오기 전까지 결코 다시 링크할 수 없었다. 기본 경로는
+    // 살아 있는 advertisement을 건드리지 않고 둔다.
     if (restart) {
       try {
         await _peripheral.stopAdvertising();
       } catch (_) {}
     }
-    // Advertise NAME + service UUID only. We used to also pack our short id
-    // into manufacturer data, but a 128-bit service UUID (18B) + name (4B) +
-    // flags (3B) already nearly fill a legacy 31-byte advertisement, so the
-    // extra 12B of manufacturer data pushed Android over the limit and every
-    // startAdvertising failed with DATA_TOO_LARGE (error code 1) — the node
-    // then fell back to this exact packet anyway. Peers learn our short id
-    // from the ANNOUNCE sent the instant a link comes up, so nothing is lost;
-    // the service UUID stays because an iOS peer's BACKGROUND scan is filtered
-    // on it (its only way to discover us), and the name drives iOS foreground
-    // discovery. (Darwin never supported manufacturer-data advertising.)
+    // NAME + service UUID만 advertise한다. 예전에는 short id도 manufacturer
+    // data에 넣어 보냈지만, 128비트 service UUID(18B) + 이름(4B) + flags(3B)만
+    // 으로 이미 레거시 31바이트 advertisement을 거의 다 채우기 때문에,
+    // manufacturer data 12B가 더해지자 Android가 한계를 넘겨 모든
+    // startAdvertising이 DATA_TOO_LARGE(error code 1)로 실패했다 — 그러면
+    // 노드는 어차피 정확히 이 패킷으로 fallback했다. 피어는 링크가 올라오는
+    // 순간 보내는 ANNOUNCE에서 우리 short id를 알게 되므로 잃는 것은 없다;
+    // service UUID를 남기는 이유는 iOS 피어의 백그라운드 scan이 그것으로
+    // 필터링되기 때문이며(우리를 discover하는 유일한 수단), 이름은 iOS
+    // 포그라운드 discovery를 이끈다. (Darwin은 manufacturer-data advertising을
+    // 지원한 적이 없다.)
     try {
       await _peripheral.startAdvertising(Advertisement(
         name: BleConstants.advertisedName,
@@ -845,7 +849,7 @@ class MeshTransport implements MeshTransportInterface {
 
   void _wirePeripheral() {
     _subs.add(_peripheral.characteristicWriteRequested.listen((e) async {
-      // A remote central wrote a packet to our TX characteristic.
+      // 원격 central이 우리의 TX characteristic에 패킷을 write했다.
       if (e.characteristic.uuid != BleConstants.txCharacteristicUuid) {
         try {
           await _peripheral.respondWriteRequestWithError(e.request,
@@ -862,12 +866,12 @@ class MeshTransport implements MeshTransportInterface {
 
     _subs.add(_peripheral.characteristicNotifyStateChanged.listen((e) async {
       if (e.characteristic.uuid != BleConstants.rxCharacteristicUuid) return;
-      // Creates + emits link-up on first contact (see _peripheralLinkFor).
+      // 첫 접촉 시 링크를 생성하고 link-up을 내보낸다(see _peripheralLinkFor).
       final link = _peripheralLinkFor(e.central);
       link.centralSubscribed = e.state;
       if (e.state) {
-        // Learn how much we can push per notification so peripheral-role links
-        // don't stay stuck at the tiny default packet size.
+        // notification 하나당 얼마나 밀어넣을 수 있는지 알아내, peripheral
+        // 역할 링크가 작은 기본 패킷 크기에 갇혀 있지 않게 한다.
         try {
           final maxNotify =
               await _peripheral.getMaximumNotifyLength(e.central);
@@ -881,7 +885,7 @@ class MeshTransport implements MeshTransportInterface {
       }
     }));
 
-    // Android-only: track central disconnects to clean up links.
+    // Android 전용: central disconnect를 추적해 링크를 정리한다.
     try {
       _subs.add(_peripheral.connectionStateChanged.listen((e) {
         if (e.state == ConnectionState.disconnected) {
@@ -889,8 +893,8 @@ class MeshTransport implements MeshTransportInterface {
         }
       }));
     } on UnsupportedError {
-      // iOS/macOS: no peripheral connection callbacks; links time out via
-      // failed writes instead.
+      // iOS/macOS: peripheral 연결 콜백이 없다; 대신 링크는 write 실패로
+      // 타임아웃된다.
     }
   }
 
@@ -898,12 +902,12 @@ class MeshTransport implements MeshTransportInterface {
     final id = _peripheralLinkId(central);
     final existing = _links[id];
     if (existing != null) return existing;
-    // First contact from this central (subscribe OR write). Emit link-up so
-    // the mesh sends its ANNOUNCE/HAVE back and — crucially — [_links] becomes
-    // non-empty, which stops the linkless self-heal from republishing the
-    // GATT service and tearing this very connection down (the "central is
-    // attached but we think we're linkless" loop that left iPhone↔Android
-    // one-directional).
+    // 이 central로부터의 첫 접촉(subscribe 또는 write). link-up을 내보내
+    // mesh가 자기 ANNOUNCE/HAVE를 돌려보내게 하고 — 결정적으로 — [_links]가
+    // 비어 있지 않게 만들어, 링크 없음 self-heal이 GATT service를 republish하며
+    // 바로 이 연결을 허물어버리는 것을 막는다("central이 붙어 있는데도 우리는
+    // 링크가 없다고 여기는" 루프로, iPhone↔Android를 단방향으로 만들었던
+    // 원인이다).
     final link = MeshLink(id: id, role: LinkRole.peripheral, central: central);
     _links[id] = link;
     _emitUp(link);
@@ -913,28 +917,27 @@ class MeshTransport implements MeshTransportInterface {
   String _peripheralLinkId(Central central) => 'P:${central.uuid}';
 
   // ---------------------------------------------------------------------------
-  // Central role setup
+  // central 역할 셋업
   // ---------------------------------------------------------------------------
 
   Future<void> _startScanning() async {
-    // Held off while a connect handshake is in flight (Android 133 fix) — the
-    // connect's finally-block resumes scanning.
+    // connect handshake가 진행 중인 동안은 미뤄둔다(Android 133 수정) —
+    // connect의 finally 블록이 scanning을 재개한다.
     if (_scanPausedForConnect) return;
     if (_scanning) return;
     _scanning = true;
     try {
-      // Scan UNFILTERED whenever the OS allows it, and match SpotLink in
-      // software (see [_isSpotLink]):
-      // - Android: its hardware service-UUID filter can't match an iPhone's
-      //   overflow-area advertisement at all (Results=0).
-      // - iOS FOREGROUND: on iOS 27 (beta 24A5380h) another iPhone's 128-bit
-      //   service UUID is neither matched by the filter nor surfaced in the
-      //   parsed advertisement (observed: unfiltered scan sees the peer as a
-      //   name-'SL'-only packet while the filtered scan logs "0
-      //   advertisements delivered" in bluetoothd). Name matching is what
-      //   actually finds iPhone peers there.
-      // - iOS BACKGROUND: an unfiltered scan delivers nothing (OS rule), so
-      //   the UUID filter is required — [setForeground] swaps modes.
+      // OS가 허용하는 한 언제나 UNFILTERED로 scan하고, SpotLink 여부는
+      // 소프트웨어에서 매칭한다(see [_isSpotLink]):
+      // - Android: 하드웨어 service-UUID 필터가 iPhone의 overflow 영역
+      //   advertisement을 아예 매칭하지 못한다(Results=0).
+      // - iOS 포그라운드: iOS 27(beta 24A5380h)에서는 다른 iPhone의 128비트
+      //   service UUID가 필터에 매칭되지도, 파싱된 advertisement에 드러나지도
+      //   않는다(관찰됨: unfiltered scan은 그 피어를 name-'SL'만 있는 패킷으로
+      //   보는 반면, filtered scan은 bluetoothd에 "0 advertisements delivered"를
+      //   남긴다). 거기서 iPhone 피어를 실제로 찾아내는 것은 이름 매칭이다.
+      // - iOS 백그라운드: unfiltered scan은 아무것도 전달하지 않으므로(OS
+      //   규칙) UUID 필터가 필요하다 — [setForeground]가 모드를 바꿔준다.
       final unfiltered = Platform.isAndroid ||
           _diagUnfilteredScan ||
           (Platform.isIOS && _foregroundScan && !_overflowPhase);
@@ -943,9 +946,9 @@ class MeshTransport implements MeshTransportInterface {
       );
       _log('BLE scanning started (${unfiltered ? 'unfiltered' : 'filtered'})');
     } catch (e) {
-      // Leave the flag down so the next attempt actually retries — a wedged
-      // "true" here after a failed start (e.g. the adapter was mid-handoff
-      // between the headless and UI engines) silenced the radio forever.
+      // 다음 시도가 실제로 재시도되도록 플래그를 내려둔다 — 실패한 start
+      // 이후 여기서 "true"에 막혀 있으면(예: 어댑터가 headless 엔진과 UI 엔진
+      // 사이에서 handoff 중이었음) 무선이 영원히 벙어리가 됐다.
       _scanning = false;
       _log('BLE startDiscovery failed: $e');
     }
@@ -959,9 +962,9 @@ class MeshTransport implements MeshTransportInterface {
     } catch (_) {}
   }
 
-  /// Android: stop the scan for the duration of a connect handshake so the
-  /// radio isn't split between scanning and connecting (the `status 133`
-  /// cause). Refcounted so overlapping connects pause once and resume once.
+  /// Android: connect handshake 동안 scan을 멈춰, 무선이 scanning과
+  /// connecting으로 갈라지지 않게 한다(`status 133`의 원인). refcount 방식이라
+  /// 겹치는 connect들이 한 번만 pause하고 한 번만 resume한다.
   Future<void> _pauseScanForConnect() async {
     _connectDepth++;
     if (_connectDepth == 1) {
@@ -982,15 +985,14 @@ class MeshTransport implements MeshTransportInterface {
     }
   }
 
-  /// Whether the app is foregrounded — gates the iOS unfiltered scan mode.
-  /// Defaults true (normal launches are foreground); a background relaunch
-  /// sets it false via [setForeground] right after start.
+  /// 앱이 포그라운드인지 여부 — iOS unfiltered scan 모드의 게이트 역할.
+  /// 기본값은 true(보통의 실행은 포그라운드다); 백그라운드 재실행은 start
+  /// 직후 [setForeground]로 이를 false로 설정한다.
   bool _foregroundScan = true;
 
-  /// iOS: swap between the wide foreground scan (unfiltered + software
-  /// match — the only mode that reliably finds another iPhone on iOS 27)
-  /// and the filtered background scan (required by the OS). No-op on
-  /// Android, which always scans unfiltered.
+  /// iOS: wide 포그라운드 scan(unfiltered + 소프트웨어 매칭 — iOS 27에서 다른
+  /// iPhone을 안정적으로 찾는 유일한 모드)과 filtered 백그라운드 scan(OS가
+  /// 요구)을 서로 바꾼다. 항상 unfiltered로 scan하는 Android에서는 no-op.
   void setForeground(bool foreground) {
     if (_foregroundScan == foreground) return;
     _foregroundScan = foreground;
@@ -1004,7 +1006,7 @@ class MeshTransport implements MeshTransportInterface {
     }
   }
 
-  /// Switch power profile at runtime (e.g. user toggles "battery saver").
+  /// 런타임에 전력 프로파일을 전환한다(예: 사용자가 "배터리 절약"을 토글).
   void setPowerMode(PowerMode mode) {
     if (_powerMode == mode) return;
     _powerMode = mode;
@@ -1024,26 +1026,26 @@ class MeshTransport implements MeshTransportInterface {
 
   PowerMode get powerMode => _powerMode;
 
-  /// Android scan mode: 0=LOW_POWER, 1=BALANCED, 2=LOW_LATENCY. LOW_LATENCY
-  /// (the vendor default) scans near-continuously and is the single biggest
-  /// battery drain; BALANCED still discovers within a few seconds at roughly
-  /// half the power. Adaptive power (see MeshController) picks the tier.
+  /// Android scan 모드: 0=LOW_POWER, 1=BALANCED, 2=LOW_LATENCY. LOW_LATENCY
+  /// (벤더 기본값)는 거의 연속으로 scan하며 단일 요소로는 가장 큰 배터리
+  /// 소모원이다; BALANCED는 대략 절반의 전력으로도 여전히 몇 초 안에
+  /// discover한다. 적응형 전력(see MeshController)이 등급을 고른다.
   static const _scanPowerChannel = MethodChannel('spotlink/scan_power');
   int _scanModeCode = 2;
 
-  /// Set the Android BLE scan mode and re-scan to apply it (no-op elsewhere).
+  /// Android BLE scan 모드를 설정하고 다시 scan해 적용한다(그 외에서는 no-op).
   Future<void> setScanMode(int code) async {
     if (!Platform.isAndroid || _scanModeCode == code) return;
     _scanModeCode = code;
     try {
       await _scanPowerChannel.invokeMethod('setScanMode', code);
-    } catch (_) {} // fork without the channel: keeps the vendor default
+    } catch (_) {} // 이 채널이 없는 포크: 벤더 기본값을 유지한다
     _log('BLE scan mode -> ${const {
           0: 'low-power',
           1: 'balanced',
           2: 'low-latency'
         }[code]}');
-    // The scanner reads the new mode on its next startScan, so bounce it.
+    // 스캐너는 다음 startScan 때 새 모드를 읽으므로, 한 번 껐다 켠다.
     if (_started && _scanning) {
       await _stopScanning();
       await _startScanning();
@@ -1052,7 +1054,7 @@ class MeshTransport implements MeshTransportInterface {
 
   void _beginDutyCycle() {
     _dutyTimer?.cancel();
-    // Scan window, then idle window, repeating.
+    // scan window, 그다음 idle window, 반복.
     Future<void> onTick() async {
       await _startScanning();
       _dutyTimer = Timer(_saverScanOn, () async {
@@ -1064,9 +1066,9 @@ class MeshTransport implements MeshTransportInterface {
     onTick();
   }
 
-  /// (Re)start the iOS foreground scan-mode alternation, beginning with the
-  /// wide window. See [_scanModeTimer]. No-op outside iOS/foreground/active
-  /// (the saver duty cycle and the background filtered scan cover the rest).
+  /// iOS 포그라운드 scan 모드 교대를 wide window로 시작하며 (재)시작한다.
+  /// See [_scanModeTimer]. iOS/포그라운드/active가 아니면 no-op(saver duty
+  /// cycle과 백그라운드 filtered scan이 나머지를 커버한다).
   void _beginScanModeCycle() {
     _scanModeTimer?.cancel();
     _scanModeTimer = null;
@@ -1099,12 +1101,12 @@ class MeshTransport implements MeshTransportInterface {
         final hadLink = _links.containsKey('C:$key');
         _tearDown('C:$key');
         _connecting.remove(key);
-        // iOS: with both apps backgrounded, scan-based rediscovery is blind —
-        // a backgrounded peripheral's advertisement moves to the overflow
-        // area, which only *foreground* scanners can see. But a pending
-        // connect() to a known peripheral never times out and completes in
-        // the background as soon as the peer is back in range, so re-arm one
-        // whenever an established link drops.
+        // iOS: 두 앱이 모두 백그라운드면 scan 기반 재발견은 눈이 먼다 —
+        // 백그라운드 peripheral의 advertisement은 overflow 영역으로 옮겨가고,
+        // 그건 *포그라운드* 스캐너만 볼 수 있다. 하지만 알려진 peripheral로
+        // 향한 pending connect()는 절대 타임아웃되지 않고 피어가 범위 안으로
+        // 돌아오는 즉시 백그라운드에서 완료되므로, 확립된 링크가 끊길 때마다
+        // 하나 다시 걸어둔다.
         if (hadLink) _pendingReconnect(e.peripheral);
       }
     }));
@@ -1116,50 +1118,50 @@ class MeshTransport implements MeshTransportInterface {
     }));
   }
 
-  /// An unfiltered Android scan surfaces every BLE device nearby — accept a
-  /// peripheral only if it's actually SpotLink: our service UUID in the scan
-  /// record, or (for iOS peers whose UUID hid in the overflow area) our
-  /// advertised local name 'SL'.
+  /// unfiltered Android scan은 근처의 모든 BLE 기기를 드러낸다 — peripheral이
+  /// 실제로 SpotLink일 때만 받아들인다: scan 레코드에 우리 service UUID가
+  /// 있거나, (UUID가 overflow 영역에 숨은 iOS 피어의 경우) 우리가 advertise한
+  /// local name 'SL'이 있을 때.
   bool _isSpotLink(Advertisement adv) {
     if (adv.serviceUUIDs.contains(BleConstants.serviceUuid)) return true;
     if (adv.name == BleConstants.advertisedName) return true;
-    // Deliberately NOT matching on manufacturer id: ours is 0xFFFF (the
-    // reserved/test id), which random gadgets also emit — a KT GiGA Genie
-    // speaker matched and got dialled as a "SpotLink peer" (observed). A real
-    // SpotLink advertisement always carries the service UUID and/or name;
-    // manufacturer data is only the shortId hint once already matched.
+    // 일부러 manufacturer id로는 매칭하지 않는다: 우리 것은 0xFFFF(예약/테스트
+    // id)인데, 잡다한 기기들도 이를 내보낸다 — KT GiGA Genie 스피커가
+    // 매칭되어 "SpotLink 피어"로 dial됐다(관찰됨). 진짜 SpotLink
+    // advertisement은 언제나 service UUID 그리고/또는 이름을 담는다;
+    // manufacturer data는 이미 매칭된 뒤의 shortId 힌트일 뿐이다.
     return false;
   }
 
-  /// A *backgrounded* iPhone hides both its service UUID (overflow area) and
-  /// its local name, so nothing in the advertisement says "SpotLink". The one
-  /// thing iOS can't hide is Apple's own continuity beacon (manufacturer id
-  /// 0x004C). On Android we probe-connect to very-near Apple devices and let
-  /// GATT discovery decide: SpotLink service present → real link; absent →
-  /// remember the miss and leave it alone for a while.
+  /// *백그라운드* 상태의 iPhone은 자기 service UUID(overflow 영역)와 local
+  /// name을 둘 다 숨겨서, advertisement 어디에도 "SpotLink"라고 나오지 않는다.
+  /// iOS가 숨길 수 없는 단 하나는 Apple 자체의 continuity beacon(manufacturer
+  /// id 0x004C)이다. Android에서는 아주 가까운 Apple 기기에 probe-connect해서
+  /// GATT discovery가 판정하게 한다: SpotLink service가 있으면 → 진짜 링크;
+  /// 없으면 → miss를 기억해두고 한동안 내버려 둔다.
   static const int _appleManufacturerId = 0x004C;
   static const Duration _probeMissTtl = Duration(minutes: 10);
   final Map<String, DateTime> _probeMisses = {};
 
-  /// Short cooldown after a probe dial FAILS to connect (status 133 etc.). A
-  /// dense room (office full of AirPods/Macs/iPhones) otherwise re-dials the
-  /// same failing gadget every 12s, and each doomed connectGatt starves the
-  /// real peer. Distinct from [_probeMisses] (10 min, "connected but not
-  /// SpotLink") — this is kept short so a genuinely-SpotLink iPhone that hit a
-  /// transient failure is retried soon.
+  /// probe dial이 connect에 실패한(status 133 등) 뒤의 짧은 쿨다운. 그러지
+  /// 않으면 붐비는 방(AirPods/Mac/iPhone으로 가득 찬 사무실)에서는 같은
+  /// 실패하는 기기를 12초마다 다시 dial하고, 실패가 뻔한 connectGatt마다
+  /// 진짜 피어를 굶긴다. [_probeMisses](10분, "connect됐지만 SpotLink 아님")와는
+  /// 구별된다 — 이건 짧게 유지해서, 일시적 실패를 맞은 진짜 SpotLink iPhone은
+  /// 곧 재시도되게 한다.
   static const Duration _probeFailBackoff = Duration(seconds: 90);
   final Map<String, DateTime> _probeBackoff = {};
 
-  /// Keys of probe dials currently in flight. Bounded so a room full of
-  /// Apple gadgets (TV, AirPods, other iPhones) can't fire a storm of
-  /// concurrent connectGatt calls that exhausts the Android GATT client pool
-  /// and starves the ONE real peer we're trying to reach.
+  /// 현재 진행 중인 probe dial의 키들. 상한을 두어, Apple 기기(TV, AirPods,
+  /// 다른 iPhone)로 가득 찬 방이 동시 connectGatt 호출을 폭풍처럼 쏟아내
+  /// Android GATT 클라이언트 풀을 고갈시키고 우리가 도달하려는 유일한 진짜
+  /// 피어를 굶기지 못하게 한다.
   final Set<String> _activeProbes = {};
   static const int _maxConcurrentProbes = 1;
 
   bool _isIosProbeCandidate(DiscoveredEventArgs e) {
     if (!Platform.isAndroid) return false;
-    if (e.rssi < -70) return false; // only close-by devices are worth a dial
+    if (e.rssi < -70) return false; // 가까운 기기만 dial할 가치가 있다
     if (_activeProbes.length >= _maxConcurrentProbes) return false;
     final uuid = e.peripheral.uuid.toString();
     final missedAt = _probeMisses[uuid];
@@ -1185,38 +1187,40 @@ class MeshTransport implements MeshTransportInterface {
           'mfr=${a.manufacturerSpecificData.length} rssi=${e.rssi} '
           'match=${_isSpotLink(a)}');
     }
-    // Filtered out in hardware on iOS; done in software on Android's
-    // unfiltered scan so we never dial random headphones/beacons. Very-near
-    // Apple devices get a probe dial instead: a backgrounded iPhone's
-    // advertisement carries no SpotLink marker at all (see
-    // [_isIosProbeCandidate]) — GATT discovery is the only way to tell.
+    // iOS에서는 하드웨어에서 필터링되고, Android의 unfiltered scan에서는
+    // 소프트웨어에서 처리되어 잡다한 헤드폰/beacon을 절대 dial하지 않는다.
+    // 아주 가까운 Apple 기기는 대신 probe dial을 받는다: 백그라운드 iPhone의
+    // advertisement에는 SpotLink 표식이 전혀 없으므로(see
+    // [_isIosProbeCandidate]) — GATT discovery만이 판별할 수 있는 유일한
+    // 방법이다.
     final probe = !_isSpotLink(e.advertisement);
     if (probe && !_isIosProbeCandidate(e)) return;
 
     final remoteId = _shortIdFromAdvertisement(e.advertisement);
 
-    // Never connect to our own advertisement (can happen with some stacks).
+    // 우리 자신의 advertisement에는 절대 연결하지 않는다(일부 스택에서 발생할 수 있다).
     if (remoteId != null && remoteId == myShortId) return;
 
-    // Advertisements carry a live signal-strength reading — surface it for
-    // the proximity UI (peer is null when the adv has no manufacturer id).
+    // advertisement은 실시간 신호 세기 측정값을 담고 있다 — 이를 근접 UI로
+    // 드러낸다(adv에 manufacturer id가 없으면 peer는 null이다).
     if (!_disposed) _rssiSamples.add(RssiSample(remoteId, e.rssi));
 
-    // We deliberately do NOT tie-break here. Cross-platform discovery is
-    // asymmetric: iOS strips manufacturer data and puts 128-bit service UUIDs
-    // in an overflow area that Android frequently cannot parse, so an iOS
-    // advertiser may be invisible to Android. If we skipped connecting when
-    // "our id is larger", an Android<->iOS pair could end up with NO link.
-    // Instead every node connects to any SpotLink peripheral it can discover.
-    // A redundant reverse link (e.g. between two Android devices) is harmless:
-    // the router dedups by msgId, so nothing is delivered twice — it only
-    // costs one extra connection. See docs/ARCHITECTURE.md §11.
+    // 여기서는 일부러 tie-break을 하지 않는다. 크로스 플랫폼 discovery는
+    // 비대칭이다: iOS는 manufacturer data를 벗겨내고 128비트 service UUID를
+    // Android가 자주 파싱하지 못하는 overflow 영역에 넣으므로, iOS advertiser는
+    // Android에게 보이지 않을 수 있다. "우리 id가 더 크다"는 이유로 connect를
+    // 건너뛰면, Android<->iOS 쌍이 아예 링크 없는 상태로 끝날 수 있다.
+    // 대신 모든 노드는 자기가 discover할 수 있는 모든 SpotLink peripheral에
+    // 연결한다. 중복되는 역방향 링크(예: 두 Android 기기 사이)는 무해하다:
+    // 라우터가 msgId로 중복 제거하므로 무엇도 두 번 전달되지 않는다 — 그저
+    // 연결 하나가 더 드는 것뿐이다. docs/ARCHITECTURE.md §11 참고.
 
-    // Respect the link cap to bound battery/memory usage. Count in-flight
-    // connections too, or a discovery burst can overshoot the cap (every
-    // event sees _links still empty before any connect completes) — but NOT
-    // standing pending-reconnects: a pending to a dead rotated address must
-    // never starve a live discovery (it silently knocked every peer offline).
+    // 배터리/메모리 사용을 제한하기 위해 링크 상한을 지킨다. 진행 중인
+    // (in-flight) 연결도 함께 센다. 그러지 않으면 discovery 폭주가 상한을 넘길
+    // 수 있다(어떤 connect도 완료되기 전에는 모든 이벤트가 _links를 여전히 빈
+    // 상태로 본다) — 다만 걸려 있는 pending-reconnect는 세지 않는다: 죽은 rotate된
+    // 주소로 향한 pending이 살아 있는 discovery를 굶겨서는 절대 안 된다(그것이
+    // 조용히 모든 피어를 오프라인으로 만들었다).
     if (_links.length + (_connecting.length - _pendingKeys.length) >=
         maxLinks) {
       return;
@@ -1224,12 +1228,12 @@ class MeshTransport implements MeshTransportInterface {
 
     final key = e.peripheral.uuid.toString();
     if (_links.containsKey('C:$key') || _connecting.contains(key)) return;
-    // Rate-limit per key so a discovery burst can't become a fail storm —
-    // but do NOT let the escalating background backoff (up to 5 min) suppress
-    // this path: a discovery means the peer is physically present RIGHT NOW,
-    // so a short cooldown is enough. (This was the "kill the bridge and
-    // everyone stays offline for 5 minutes" bug.) Acting now supersedes the
-    // scheduled retry, so cancel it.
+    // discovery 폭주가 실패 폭풍이 되지 않도록 키별로 rate-limit한다 — 다만
+    // 점점 커지는 백그라운드 backoff(최대 5분)가 이 경로를 억누르게 두지는
+    // 않는다: discovery는 피어가 지금 당장 물리적으로 존재한다는 뜻이므로,
+    // 짧은 쿨다운이면 충분하다. (이것이 "브리지를 죽이면 모두가 5분간 오프라인이
+    // 되는" 버그였다.) 지금 당장 행동하는 것이 예약된 재시도를 대체하므로,
+    // 그것을 취소한다.
     final last = _lastDialAt[key];
     if (last != null &&
         DateTime.now().difference(last) < const Duration(seconds: 12)) {
@@ -1244,26 +1248,27 @@ class MeshTransport implements MeshTransportInterface {
     await _establishLink(e.peripheral, key, remoteId: remoteId, probe: probe);
   }
 
-  /// Re-arm a background-proof connection to a peer we were linked with.
-  /// iOS-only: elsewhere the (foreground-service) scanner reconnects fine,
-  /// and Android's connect() can block a radio slot while it retries.
-  /// The pending attempt occupies a [_connecting] slot so discovery won't
-  /// race it; it resolves whenever the peer reappears — minutes later is fine.
+  /// 링크된 적 있는 피어에 대해 백그라운드에서도 견디는 연결을 다시 걸어둔다.
+  /// iOS 전용이다: 다른 곳에서는 (포그라운드 서비스) 스캐너가 문제없이
+  /// reconnect하고, Android의 connect()는 재시도하는 동안 무선 슬롯을 막을 수
+  /// 있다. pending 시도는 [_connecting] 슬롯을 하나 차지해 discovery가 이와
+  /// 경쟁하지 않게 한다; 피어가 다시 나타나면 언제든 완료된다 — 몇 분 뒤여도
+  /// 괜찮다.
   void _pendingReconnect(Peripheral peripheral) {
     if (!Platform.isIOS) return;
     if (_disposed || !_started) return;
     final key = peripheral.uuid.toString();
     if (_links.containsKey('C:$key') || _connecting.contains(key)) return;
-    // Cap the standing pendings, evicting the oldest — rotated (dead)
-    // addresses are the common case and the newest one is likeliest alive.
+    // 걸려 있는 pending들에 상한을 두고, 가장 오래된 것을 밀어낸다 — rotate된
+    // (죽은) 주소가 흔한 경우이고, 가장 최신 것이 살아 있을 가능성이 가장 높다.
     while (_pendingKeys.length >= _maxPendingReconnects) {
       final oldest = _pendingKeys.first;
       _pendingKeys.remove(oldest);
       final old = _pendingPeripherals.remove(oldest);
       _log('BLE pending reconnect evicted $oldest');
       if (old != null) {
-        // Cancelling makes its connect() throw; the establishLink cleanup
-        // then releases the _connecting slot.
+        // 취소하면 그것의 connect()가 throw하게 되고; 그러면 establishLink
+        // 정리 과정이 _connecting 슬롯을 풀어준다.
         unawaited(_central.disconnect(old).then((_) {}, onError: (_) {}));
       }
     }
@@ -1276,14 +1281,14 @@ class MeshTransport implements MeshTransportInterface {
     unawaited(_establishLink(peripheral, key));
   }
 
-  /// See [_pendingTimers]. Fired when a standing pending connect has gone
-  /// [_pendingStaleTimeout] without linking: free the slot, and after two
-  /// strikes forget the identifier so it stops being re-armed at every
-  /// deep-heal / boot.
+  /// [_pendingTimers] 참고. 걸려 있는 pending connect가 링크를 만들지 못한 채
+  /// [_pendingStaleTimeout]을 넘겼을 때 발동한다: 슬롯을 풀어주고, strike가 두
+  /// 번 쌓이면 식별자를 잊어버려 매번의 deep-heal / 부팅에서 다시 ARM되지 않게
+  /// 한다.
   void _expireStalePending(String key) {
     _pendingTimers.remove(key);
-    if (_links.containsKey('C:$key')) return; // connected in the meantime
-    if (!_pendingKeys.contains(key)) return; // already resolved / evicted
+    if (_links.containsKey('C:$key')) return; // 그 사이에 연결됨
+    if (!_pendingKeys.contains(key)) return; // 이미 해소됨 / 밀려남
     final strikes = (_pendingStaleStrikes[key] ?? 0) + 1;
     _pendingStaleStrikes[key] = strikes;
     if (strikes >= 2 && _knownPeers.remove(key)) {
@@ -1296,32 +1301,33 @@ class MeshTransport implements MeshTransportInterface {
     }
     final p = _pendingPeripherals[key];
     if (p != null) {
-      // Cancels the awaiting connect() → its establishLink finally frees the
-      // _connecting / _pendingKeys slots.
+      // 대기 중인 connect()를 취소한다 → 그것의 establishLink가 finally에서
+      // _connecting / _pendingKeys 슬롯을 풀어준다.
       unawaited(_central.disconnect(p).then((_) {}, onError: (_) {}));
     }
   }
 
-  /// Connect to a SpotLink peripheral and bring up the GATT link. The caller
-  /// must have added [key] to [_connecting]; it is removed here when done.
+  /// SpotLink peripheral에 연결하고 GATT 링크를 올린다. 호출자는 [key]를
+  /// [_connecting]에 추가해 두었어야 한다; 완료되면 여기서 제거된다.
   Future<void> _establishLink(Peripheral peripheral, String key,
       {PeerId? remoteId, bool probe = false}) async {
     final linkId = 'C:$key';
-    var connected = false; // did _central.connect succeed?
-    var serviceMissing = false; // connected, but no SpotLink service
+    var connected = false; // _central.connect가 성공했는가?
+    var serviceMissing = false; // 연결됐지만 SpotLink service가 없음
     if (probe) _activeProbes.add(key);
     final pauseScan = Platform.isAndroid;
     try {
-      // Android: pause scanning across the connect so the radio isn't split
-      // between scan + connect (status 133). iOS keeps scanning — its pending
-      // reconnects are long-lived by design and CoreBluetooth arbitrates.
+      // Android: connect 동안 scanning을 멈춰, 무선이 scan + connect로 갈라지지
+      // 않게 한다(status 133). iOS는 계속 scan한다 — 그 pending reconnect는
+      // 설계상 오래 사는 것이고 CoreBluetooth가 중재해준다.
       if (pauseScan) await _pauseScanForConnect();
       try {
-        // Probe dials to random Apple devices must not hang for Android's full
-        // ~30s connectGatt timeout while holding a GATT client slot — bound
-        // them. Android non-probe connects are also bounded so a wedged dial
-        // can't hold the scan paused forever; iOS non-probe connects stay
-        // unbounded (pending reconnects resolve minutes later by design).
+        // 무작위 Apple 기기로 향한 probe dial이 GATT 클라이언트 슬롯을 쥔 채
+        // Android의 꽉 찬 ~30초 connectGatt 타임아웃 동안 매달려 있어서는 안
+        // 된다 — 그래서 상한을 둔다. Android의 non-probe connect에도 상한을 둬,
+        // 막힌 dial이 scan을 영원히 일시정지된 채로 붙들지 못하게 한다; iOS의
+        // non-probe connect는 상한 없이 둔다(pending reconnect는 설계상 몇 분 뒤에
+        // 완료된다).
         if (probe) {
           await _central.connect(peripheral).timeout(const Duration(seconds: 8));
         } else if (Platform.isAndroid) {
@@ -1333,25 +1339,23 @@ class MeshTransport implements MeshTransportInterface {
         if (pauseScan) _resumeScanForConnect();
       }
       connected = true;
-      // Everything after the OS-level connect is bounded: a single lost
-      // response frame (discovery response, CCCD ack) used to hang this
-      // await chain FOREVER — the _connecting slot stayed occupied, so the
-      // peer could never be redialed until an app restart (observed: two
-      // idle phones mutually wedged mid-establish for 20+ minutes). The
-      // connect() above intentionally stays unbounded on the non-probe
-      // path — iOS pending reconnects resolve minutes later by design.
+      // OS 레벨 connect 이후의 모든 것에는 상한이 있다: 응답 프레임 하나(discovery
+      // 응답, CCCD ack)만 유실돼도 예전에는 이 await 체인이 영원히 매달렸다 —
+      // _connecting 슬롯이 계속 점유된 채라, 앱을 재시작하기 전까지는 그 피어를
+      // 다시 dial할 수 없었다(관찰됨: idle 상태의 두 폰이 establish 도중 서로 20분
+      // 넘게 막혀 있었다). 위의 connect()는 non-probe 경로에서 일부러 상한 없이
+      // 둔다 — iOS의 pending reconnect는 설계상 몇 분 뒤에 완료된다.
       final (tx, rx, maxPacket) = await () async {
         var services = await _central.discoverGATT(peripheral);
         var hasSvc = services.any((s) => s.uuid == BleConstants.serviceUuid);
-        // A SpotLink advertiser with no SpotLink service is almost always an
-        // iOS app mid-relaunch: when iOS kills the app in the background,
-        // state restoration keeps ADVERTISING on its behalf, but the GATT
-        // service only returns once the relaunched app republishes it —
-        // seconds after our connect (which is the very event that wakes it).
-        // Hanging up instantly re-suspends the app and loops forever
-        // ("connect → service not found → disconnect" every 15s, observed
-        // for hours). Staying connected grants the app background runtime:
-        // wait and look again before giving up.
+        // SpotLink service가 없는 SpotLink advertiser는 거의 언제나 재실행
+        // 도중인 iOS 앱이다: iOS가 백그라운드에서 앱을 죽이면, 상태 복원이 앱
+        // 대신 계속 advertising하지만, GATT service는 재실행된 앱이 그것을 다시
+        // publish해야만 돌아온다 — 우리의 connect(바로 그 앱을 깨우는 이벤트)
+        // 몇 초 뒤에 말이다. 즉시 연결을 끊으면 앱을 곧바로 다시 suspend시켜
+        // 영원히 루프를 돈다("connect → service not found → disconnect"를 15초마다,
+        // 몇 시간 동안 관찰됨). 연결을 유지하면 앱에 백그라운드 실행 시간을
+        // 준다: 포기하기 전에 기다렸다 다시 살펴본다.
         if (!hasSvc && !probe) {
           for (var attempt = 0; attempt < 2 && !hasSvc; attempt++) {
             await Future<void>.delayed(const Duration(seconds: 4));
@@ -1394,8 +1398,8 @@ class MeshTransport implements MeshTransportInterface {
       }()
           .timeout(const Duration(seconds: 25));
 
-      // We may have been stopped/disposed while awaiting the connection. Don't
-      // resurrect _links or emit on a closed controller — just disconnect.
+      // 연결을 기다리는 동안 stop/dispose됐을 수 있다. _links를 되살리거나 닫힌
+      // 컨트롤러에 emit하지 말고 — 그냥 disconnect한다.
       if (!_started) {
         try {
           await _central.disconnect(peripheral);
@@ -1416,7 +1420,7 @@ class MeshTransport implements MeshTransportInterface {
       if (probe) _log('BLE probe hit: $key is a SpotLink peer');
       _reconnectAttempts.remove(key);
       _reconnectTimers.remove(key)?.cancel();
-      _pendingStaleStrikes.remove(key); // linked → identifier proven live
+      _pendingStaleStrikes.remove(key); // 링크 성립 → 식별자가 살아있음이 입증됨
       _probeMisses.remove(key);
       _probeBackoff.remove(key);
       _rememberPeer(key);
@@ -1426,36 +1430,36 @@ class MeshTransport implements MeshTransportInterface {
       } catch (_) {}
       if (probe) {
         if (connected && serviceMissing) {
-          // Definitively NOT SpotLink (connected, no service) — block it for
-          // the full TTL so we stop dialing this Apple gadget.
+          // 확정적으로 SpotLink가 아님(연결됐지만 service 없음) — 이 Apple
+          // 기기를 더 이상 dial하지 않도록 TTL 전체 동안 차단한다.
           _probeMisses[key] = DateTime.now();
           _log('BLE probe miss $key (not SpotLink)');
         } else {
-          // Connect itself failed — a real SpotLink iPhone hits transient
-          // timeouts constantly (CBError 6). Do NOT blocklist for 10 min, but
-          // apply a short backoff so a dense room can't re-dial this same
-          // gadget every 12s and starve the real peer with status-133 storms.
+          // connect 자체가 실패함 — 진짜 SpotLink iPhone도 일시적 타임아웃을
+          // 끊임없이 만난다(CBError 6). 10분간 blocklist하지는 말되, 짧은
+          // backoff를 걸어, 붐비는 방이 이 같은 기기를 12초마다 다시 dial해
+          // status-133 폭풍으로 진짜 피어를 굶기지 못하게 한다.
           _probeBackoff[key] = DateTime.now();
           _log('BLE probe connect failed $key: $err (backoff ${_probeFailBackoff.inSeconds}s)');
         }
       } else {
         _log('BLE connect failed $key: $err');
         if (_isUnknownIdentifier(err)) {
-          // Darwin threw illegalArgument: the identifier is not in the
-          // system's peripheral cache (rotated/forgotten address — typical
-          // for a restarted Android peer). No retry can ever succeed until a
-          // live scan rediscovers the peer, so drop the standing retry AND
-          // the persisted identifier that keeps resurrecting it at launch.
+          // Darwin이 illegalArgument를 throw함: 식별자가 시스템의 peripheral
+          // 캐시에 없다(rotate된/잊힌 주소 — 재시작한 Android 피어의 전형적
+          // 사례). 살아 있는 scan이 피어를 다시 발견하기 전까지는 어떤 재시도도
+          // 결코 성공할 수 없으므로, 걸려 있는 재시도와, 실행 때마다 그것을
+          // 되살리는 영속화된 식별자를 함께 버린다.
           _reconnectAttempts.remove(key);
           if (_knownPeers.remove(key)) {
             knownPeersSave?.call(_knownPeers.toList());
             _log('BLE forgetting dead peer identifier $key');
           }
         } else {
-          // Transient failures happen (the peer republishing its GATT
-          // database, radio contention). Keep trying with backoff — a
-          // SpotLink peer that stays silent is worth a standing reconnect
-          // on iOS.
+          // 일시적 실패는 일어난다(피어가 자기 GATT 데이터베이스를 다시
+          // publish 중, 무선 경합). backoff를 두고 계속 시도한다 — 조용히
+          // 침묵하는 SpotLink 피어는 iOS에서 걸려 있는 reconnect를 유지할 만한
+          // 가치가 있다.
           _scheduleReconnect(peripheral, key);
         }
       }
@@ -1463,20 +1467,20 @@ class MeshTransport implements MeshTransportInterface {
       _connecting.remove(key);
       _pendingKeys.remove(key);
       _pendingPeripherals.remove(key);
-      _pendingTimers.remove(key)?.cancel(); // resolved → watchdog no longer needed
+      _pendingTimers.remove(key)?.cancel(); // 해소됨 → watchdog가 더는 필요 없음
       if (probe) {
         _activeProbes.remove(key);
-        // A probe that timed out (not a clean disconnect) leaves a pending
-        // connectGatt — force-release it so the GATT client slot is freed.
+        // 타임아웃된 probe(깨끗한 disconnect가 아님)는 pending connectGatt를
+        // 남긴다 — GATT 클라이언트 슬롯이 풀리도록 강제로 해제한다.
         unawaited(_central.disconnect(peripheral).then((_) {}, onError: (_) {}));
       }
     }
   }
 
-  /// Darwin's connect() throws `illegalArgument` when the peripheral
-  /// identifier is unknown to the system cache — a permanent failure for that
-  /// identifier, not a transient radio error. (Matched on the string to keep
-  /// this file free of a flutter/services dependency.)
+  /// Darwin의 connect()는 peripheral 식별자가 시스템 캐시에 알려져 있지 않을 때
+  /// `illegalArgument`를 throw한다 — 그 식별자에 대한 영구적 실패이지, 일시적
+  /// 무선 오류가 아니다. (이 파일이 flutter/services 의존성을 갖지 않도록
+  /// 문자열로 매칭한다.)
   bool _isUnknownIdentifier(Object err) =>
       Platform.isIOS && err.toString().contains('illegalArgument');
 
@@ -1491,7 +1495,7 @@ class MeshTransport implements MeshTransportInterface {
   }
 
   // ---------------------------------------------------------------------------
-  // Shared
+  // 공용
   // ---------------------------------------------------------------------------
 
   void _ingest(MeshLink link, Uint8List packet) {
@@ -1511,8 +1515,8 @@ class MeshTransport implements MeshTransportInterface {
 
   void _tearDown(String linkId) {
     _rssiFails.remove(linkId);
-    // Clear the dial cooldown for this peer so it can be re-dialled promptly
-    // the moment its advertisement reappears (linkId is 'C:<key>').
+    // 이 피어의 dial 쿨다운을 지워, 그 advertisement이 다시 나타나는 즉시 곧바로
+    // 다시 dial될 수 있게 한다(linkId는 'C:<key>'이다).
     if (linkId.startsWith('C:')) _lastDialAt.remove(linkId.substring(2));
     final link = _links.remove(linkId);
     if (link != null && !_disposed) {

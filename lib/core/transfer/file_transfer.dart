@@ -5,27 +5,27 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as classic;
 
-/// Streaming SHA-256 of a file on disk — never holds more than one 64KB
-/// read buffer, so hashing a 500MB video costs no meaningful memory.
+/// 디스크에 있는 파일의 스트리밍 SHA-256 — 한 번에 64KB 읽기 버퍼 하나보다
+/// 많이 들고 있지 않으므로, 500MB 동영상을 해시해도 메모리를 거의 쓰지 않는다.
 Future<Uint8List> sha256OfFile(String path) async {
   final digest = await classic.sha256.bind(File(path).openRead()).first;
   return Uint8List.fromList(digest.bytes);
 }
 
-/// File-transfer application payloads carried inside (encrypted) frames.
+/// (암호화된) 프레임 안에 실려 전달되는 파일 전송 애플리케이션 페이로드.
 ///
-/// A transfer is identified by a random 16-byte transferId. The sender emits
-/// one FILE_META followed by N FILE_CHUNK payloads. The receiver reassembles
-/// by seq, verifies the SHA-256, and ACKs missing chunks so the sender can
-/// retransmit only the gaps. See docs/ARCHITECTURE.md §8.
+/// 하나의 전송은 무작위 16바이트 transferId로 식별된다. 발신자는 FILE_META
+/// 하나를 보낸 뒤 N개의 FILE_CHUNK 페이로드를 이어서 보낸다. 수신자는 seq
+/// 순서로 재조립하고, SHA-256을 검증하며, 누락된 청크를 ACK로 알려 발신자가
+/// 빠진 부분만 재전송하도록 한다. docs/ARCHITECTURE.md §8 참고.
 
-/// Metadata describing a file transfer.
+/// 파일 전송을 설명하는 메타데이터.
 class FileMeta {
-  final Uint8List transferId; // 16 bytes
+  final Uint8List transferId; // 16바이트
   final int fileSize;
   final int chunkSize;
   final int totalChunks;
-  final Uint8List sha256; // 32 bytes
+  final Uint8List sha256; // 32바이트
   final String name;
   final String mime;
 
@@ -90,7 +90,7 @@ class FileMeta {
   String get transferIdHex => _hex(transferId);
 }
 
-/// A single file chunk payload: transferId(16) | seq(u32) | data.
+/// 단일 파일 청크 페이로드: transferId(16) | seq(u32) | data.
 class FileChunk {
   final Uint8List transferId;
   final int seq;
@@ -114,8 +114,8 @@ class FileChunk {
   }
 }
 
-/// An acknowledgement of a file transfer's progress.
-/// Layout: transferId(16) | complete(u8) | missingCount(u16) | seqs(u32 each).
+/// 파일 전송 진행 상황에 대한 확인 응답(ACK).
+/// 레이아웃: transferId(16) | complete(u8) | missingCount(u16) | seqs(각 u32).
 class FileAck {
   final Uint8List transferId;
   final bool complete;
@@ -154,17 +154,17 @@ class FileAck {
   String get transferIdHex => _hex(transferId);
 }
 
-/// Serves file chunks for (re)transmission based on ACKs.
+/// ACK를 기반으로 (재)전송할 파일 청크를 공급한다.
 ///
-/// Two backings: in-memory bytes (tests, tiny payloads) or a file on disk —
-/// the disk backing keeps a multi-minute BLE transfer of a large file from
-/// pinning the whole file in RAM (a prime jetsam target on iOS).
+/// 두 가지 백킹을 지원한다: 인메모리 바이트(테스트, 아주 작은 페이로드)와
+/// 디스크의 파일 — 디스크 백킹은 큰 파일을 여러 분에 걸쳐 BLE로 전송하는 동안
+/// 파일 전체를 RAM에 붙들어 두지 않게 한다(iOS에서 jetsam의 주요 표적).
 class FileSender {
   final Uint8List? _bytes;
   final RandomAccessFile? _raf;
 
-  /// Path of the disk backing, if any — lets the app resend after a failure
-  /// without re-copying.
+  /// 디스크 백킹의 경로(있는 경우) — 실패 후 다시 복사하지 않고도 앱이 재전송할
+  /// 수 있게 한다.
   final String? path;
   final FileMeta meta;
 
@@ -200,8 +200,8 @@ class FileSender {
     return FileSender._(bytes, null, null, meta);
   }
 
-  /// Disk-backed sender: streams the hash up front, then reads each chunk
-  /// from the file on demand. RAM cost is one chunk (~4KB), not the file.
+  /// 디스크 백킹 발신자: 먼저 해시를 스트리밍으로 계산한 뒤, 각 청크를 필요할 때
+  /// 파일에서 읽는다. RAM 비용은 파일 전체가 아니라 청크 하나(~4KB)뿐이다.
   static Future<FileSender> forPath({
     required String path,
     required String name,
@@ -244,16 +244,16 @@ class FileSender {
     }
   }
 
-  /// Given an ACK, the chunks that still need to be (re)sent.
+  /// ACK가 주어지면, 아직 (재)전송해야 하는 청크들.
   List<FileChunk> chunksToResend(FileAck ack) =>
       ack.missing.map(chunk).toList();
 
-  /// The whole payload — used only by the fast lane, whose whole-file GCM
-  /// needs it in one piece (transiently).
+  /// 페이로드 전체 — 패스트레인에서만 사용되며, 파일 전체 GCM이 이를 한 덩어리로
+  /// (일시적으로) 필요로 한다.
   Future<Uint8List> readAll() async =>
       _bytes ?? await File(path!).readAsBytes();
 
-  /// Release the disk backing (transfer finished or cancelled).
+  /// 디스크 백킹을 해제한다(전송 완료 또는 취소됨).
   void close() {
     try {
       _raf?.closeSync();
@@ -261,18 +261,18 @@ class FileSender {
   }
 }
 
-/// Accumulates chunks for one incoming transfer and verifies integrity.
+/// 들어오는 하나의 전송에 대한 청크를 모으고 무결성을 검증한다.
 ///
-/// Chunks are written straight to a partial file on disk at their seq
-/// offset; memory holds only the set of received seqs. The old in-memory
-/// map held the ENTIRE file and then assemble() built a second full copy —
-/// a 2× fileSize RAM spike right when a big transfer completed, which is
-/// exactly when iOS jetsam went hunting.
+/// 청크는 디스크의 부분 파일(partial file)에 자신의 seq 오프셋 위치로 바로
+/// 기록되며, 메모리에는 수신한 seq 집합만 담긴다. 예전의 인메모리 맵은 파일
+/// 전체를 들고 있다가 assemble()이 두 번째 전체 복사본을 만들었다 — 큰 전송이
+/// 막 완료되는 바로 그 순간에 fileSize의 2배에 달하는 RAM 급증이 생겼고, 그때가
+/// 바로 iOS jetsam이 사냥에 나서는 시점이었다.
 class FileReceiver {
   final FileMeta meta;
 
-  /// Where the partial file is written. The caller owns naming/cleanup of
-  /// the final destination; [finalize] returns this path on success.
+  /// 부분 파일이 기록되는 위치. 최종 목적지의 이름 지정/정리는 호출자가 책임지며,
+  /// [finalize]는 성공 시 이 경로를 반환한다.
   final String partPath;
 
   final Set<int> _have = {};
@@ -282,14 +282,14 @@ class FileReceiver {
     final f = File(partPath);
     f.parent.createSync(recursive: true);
     _raf = f.openSync(mode: FileMode.write);
-    // Preallocate so out-of-order chunk writes land inside the file.
+    // 순서가 뒤섞인 청크 기록이 파일 안쪽에 안착하도록 미리 공간을 할당한다.
     _raf!.truncateSync(meta.fileSize);
   }
 
-  /// Returns true if this chunk was new (not a duplicate).
+  /// 이 청크가 새것(중복이 아님)이면 true를 반환한다.
   bool offer(FileChunk chunk) {
     final raf = _raf;
-    if (raf == null) return false; // finalized/discarded
+    if (raf == null) return false; // 완료됨/폐기됨
     if (chunk.seq >= meta.totalChunks) return false;
     if (_have.contains(chunk.seq)) return false;
     raf.setPositionSync(chunk.seq * meta.chunkSize);
@@ -311,8 +311,8 @@ class FileReceiver {
     return missing;
   }
 
-  /// [maxMissing] bounds the ACK frame size for huge transfers: the sender
-  /// fills the reported gaps first and later ACKs cover the rest.
+  /// [maxMissing]는 아주 큰 전송에서 ACK 프레임 크기를 제한한다: 발신자가 먼저
+  /// 보고된 빈 곳을 채우고, 이후의 ACK들이 나머지를 다룬다.
   FileAck buildAck({int? maxMissing}) {
     if (isComplete) return FileAck(meta.transferId, true, const []);
     var missing = missingSeqs();
@@ -322,11 +322,11 @@ class FileReceiver {
     return FileAck(meta.transferId, false, missing);
   }
 
-  /// Fast-lane path: accept the whole plaintext at once (arrived out-of-band,
-  /// already decrypted). Verifies the manifest hash BEFORE touching receiver
-  /// state — a mismatch must leave the chunk map empty so BLE recovery can
-  /// still re-pull the file — then writes it to the part file and marks every
-  /// chunk present so [buildAck] reports a genuine complete.
+  /// 패스트레인 경로: 평문 전체를 한 번에 받는다(대역 외로 도착했고, 이미
+  /// 복호화됨). 수신자 상태를 건드리기 전에 매니페스트 해시를 먼저 검증한다 —
+  /// 불일치 시 청크 맵을 비워 두어야 BLE 복구가 파일을 다시 당겨올 수 있다 —
+  /// 그런 다음 부분 파일에 기록하고 모든 청크를 존재하는 것으로 표시하여
+  /// [buildAck]가 진짜 완료를 보고하게 한다.
   void seedAssembled(Uint8List bytes) {
     if (bytes.length != meta.fileSize) {
       throw StateError('size mismatch: ${bytes.length} != ${meta.fileSize}');
@@ -344,9 +344,9 @@ class FileReceiver {
     }
   }
 
-  /// Complete the transfer: close the part file, verify its hash by
-  /// streaming, and return its path. Throws if incomplete or on mismatch
-  /// (the corrupt part file is deleted).
+  /// 전송을 완료한다: 부분 파일을 닫고, 스트리밍으로 해시를 검증한 뒤,
+  /// 그 경로를 반환한다. 미완성이거나 불일치면 예외를 던진다(손상된 부분
+  /// 파일은 삭제된다).
   Future<String> finalize() async {
     if (!isComplete) {
       throw StateError(
@@ -365,7 +365,7 @@ class FileReceiver {
     return partPath;
   }
 
-  /// Abort: close and delete the partial file.
+  /// 중단: 부분 파일을 닫고 삭제한다.
   void discard() {
     try {
       _raf?.closeSync();
