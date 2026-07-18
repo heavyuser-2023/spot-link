@@ -248,10 +248,21 @@ class FileSender {
   List<FileChunk> chunksToResend(FileAck ack) =>
       ack.missing.map(chunk).toList();
 
-  /// 페이로드 전체 — 패스트레인에서만 사용되며, 파일 전체 GCM이 이를 한 덩어리로
-  /// (일시적으로) 필요로 한다.
+  /// 페이로드 전체 — 패스트레인 **레거시** 형식(구버전 수신자)에서만 사용된다.
+  /// 신버전끼리는 [readRange] 기반 세그먼트 스트리밍을 쓴다.
   Future<Uint8List> readAll() async =>
       _bytes ?? await File(path!).readAsBytes();
+
+  /// 패스트레인 세그먼트 경로: [offset]부터 [length]바이트를 읽는다 —
+  /// RAM에는 호출당 세그먼트 하나만 존재한다.
+  Future<Uint8List> readRange(int offset, int length) async {
+    if (_bytes != null) {
+      return Uint8List.sublistView(_bytes, offset, offset + length);
+    }
+    final raf = _raf!;
+    raf.setPositionSync(offset);
+    return raf.readSync(length);
+  }
 
   /// 디스크 백킹을 해제한다(전송 완료 또는 취소됨).
   void close() {
@@ -339,6 +350,29 @@ class FileReceiver {
     if (raf == null) throw StateError('receiver already closed');
     raf.setPositionSync(0);
     raf.writeFromSync(bytes);
+    for (var i = 0; i < meta.totalChunks; i++) {
+      _have.add(i);
+    }
+  }
+
+  /// 패스트레인 세그먼트 경로: 복호화된 세그먼트 평문을 파일의 [offset]
+  /// 위치에 바로 기록한다. 청크 맵은 건드리지 않는다 — 전체가 도착하면
+  /// [sealSeeded]로 채우고 [finalize]가 스트리밍 해시로 무결성을 검증한다.
+  /// 중간 실패 시 맵이 빈 채로 남아 BLE 복구가 파일을 다시 당겨올 수 있다.
+  void seedSegment(int offset, Uint8List plain) {
+    final raf = _raf;
+    if (raf == null) throw StateError('receiver already closed');
+    if (offset + plain.length > meta.fileSize) {
+      throw StateError('segment overflow: $offset+${plain.length} '
+          '> ${meta.fileSize}');
+    }
+    raf.setPositionSync(offset);
+    raf.writeFromSync(plain);
+  }
+
+  /// 세그먼트 스트리밍 완료 시 모든 청크를 수신된 것으로 표시한다 —
+  /// [buildAck]가 진짜 완료를 보고하고 [finalize]가 통과할 수 있게.
+  void sealSeeded() {
     for (var i = 0; i < meta.totalChunks; i++) {
       _have.add(i);
     }

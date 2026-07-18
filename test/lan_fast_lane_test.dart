@@ -80,6 +80,99 @@ void main() {
     await b.node.dispose();
   });
 
+  test('fast lane streams multi-segment files without whole-file RAM',
+      () async {
+    // 세그먼트 크기를 줄여 500KB 파일이 4+개 세그먼트로 쪼개지게 한다 —
+    // 매직/길이/종료 마커 파싱과 세그먼트 오프셋 기록을 실 TCP로 검증.
+    final savedSeg = MeshNode.fastLaneSegmentBytes;
+    MeshNode.fastLaneSegmentBytes = 96 * 1024;
+    addTearDown(() => MeshNode.fastLaneSegmentBytes = savedSeg);
+
+    LanSocketFastLane lan() => LanSocketFastLane(
+          bindHost: InternetAddress.loopbackIPv4,
+          localAddresses: () async => [InternetAddress.loopbackIPv4],
+        );
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = TestNode(MeshNode(
+        identity: idA,
+        displayName: 'A',
+        transport: radio.create(idA.peerId),
+        fastLane: lan()));
+    final b = TestNode(MeshNode(
+        identity: idB,
+        displayName: 'B',
+        transport: radio.create(idB.peerId),
+        fastLane: lan()));
+    await a.node.start();
+    await b.node.start();
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    final rnd = Random(77);
+    final fileBytes = Uint8List.fromList(
+        List.generate(500 * 1024 + 123, (_) => rnd.nextInt(256)));
+    await a.node.sendFile(idB.peerId,
+        bytes: fileBytes, name: 'video.mp4', mime: 'video/mp4');
+
+    final got = await waitFor<FileReceived>(b, (e) => true);
+    expect(File(got.path).readAsBytesSync(), fileBytes);
+    // 실제로 fast lane(wifi)으로 갔는지 확인 — BLE 폴백이면 회귀다.
+    expect(
+        b.events.whereType<TransferLane>().any((e) => e.lane == 'wifi'), isTrue);
+
+    await a.node.dispose();
+    await b.node.dispose();
+  });
+
+  test('legacy single-blob fast lane format still delivers (구버전 호환)',
+      () async {
+    // 구버전 송신자 시뮬레이션: 수신자가 세그먼트를 지원해도 레거시 형식 사용.
+    MeshNode.debugForceLegacyFastLane = true;
+    addTearDown(() => MeshNode.debugForceLegacyFastLane = false);
+
+    LanSocketFastLane lan() => LanSocketFastLane(
+          bindHost: InternetAddress.loopbackIPv4,
+          localAddresses: () async => [InternetAddress.loopbackIPv4],
+        );
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = TestNode(MeshNode(
+        identity: idA,
+        displayName: 'A',
+        transport: radio.create(idA.peerId),
+        fastLane: lan()));
+    final b = TestNode(MeshNode(
+        identity: idB,
+        displayName: 'B',
+        transport: radio.create(idB.peerId),
+        fastLane: lan()));
+    await a.node.start();
+    await b.node.start();
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    final rnd = Random(9);
+    final fileBytes = Uint8List.fromList(
+        List.generate(400 * 1024, (_) => rnd.nextInt(256)));
+    await a.node.sendFile(idB.peerId,
+        bytes: fileBytes, name: 'old.jpg', mime: 'image/jpeg');
+
+    final got = await waitFor<FileReceived>(b, (e) => true);
+    expect(File(got.path).readAsBytesSync(), fileBytes);
+    expect(
+        b.events.whereType<TransferLane>().any((e) => e.lane == 'wifi'), isTrue);
+
+    await a.node.dispose();
+    await b.node.dispose();
+  });
+
   test('LAN fast lane with no network address stays on BLE', () async {
     // localAddresses empty ⇒ capabilities empty ⇒ never attempts fast lane.
     final noNet = LanSocketFastLane(localAddresses: () async => []);

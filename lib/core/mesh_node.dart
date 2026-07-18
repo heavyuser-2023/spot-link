@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'ble/mesh_transport.dart';
@@ -326,6 +328,18 @@ class MeshNode {
 
   /// 전송 측이 BLE 청킹으로 폴백하기 전에 fast-lane ACCEPT를 얼마나 기다리는지.
   static const Duration fastLaneNegotiateWindow = Duration(seconds: 5);
+
+  /// fast-lane 와이어의 세그먼트 모드 매직. 레거시 형식의 첫 u32는 파일 전체
+  /// 암호문 길이(u32 fileSize + GCM 오버헤드)라 이 값이 나올 수 없다.
+  static const int fastLaneMagicSegmented = 0xFFFFFFFF;
+
+  /// fast-lane 세그먼트 평문 크기 — 전송 중 RAM 상주 상한을 정한다.
+  /// 테스트 전용으로 축소 가능(멀티 세그먼트 경로 검증).
+  static int fastLaneSegmentBytes = 4 * 1024 * 1024;
+
+  /// 테스트 전용: 수신자가 세그먼트를 지원해도 레거시 한 덩어리 형식으로
+  /// 보낸다(구버전 송신자 시뮬레이션).
+  static bool debugForceLegacyFastLane = false;
 
   /// 대기 중인 fast-lane accept들, transferId를 키로 하며, 수신 측의 ACCEPT
   /// 프레임이 도착하면 완료된다(전송 측).
@@ -940,13 +954,29 @@ class MeshNode {
       // 덮는다.
       bleLogSink?.call('FT fast connected: ${accept.offer.kind.name}');
       _events.add(TransferLane(tid, 'wifi'));
-      // 파일 전체를 하나의 암호화된, 길이 접두(length-prefixed) blob으로 보낸다.
-      // 파일 전체 GCM은 평문+암호문이 이 호출 동안에만 RAM에 존재한다는 뜻이다 —
-      // 설계상 일시적이다; BLE 경로는 파일을 아예 메모리에 올리지 않는다.
-      final cipher = await crypto.encrypt(await sender.readAll(), kex);
-      final header = ByteData(4)..setUint32(0, cipher.length, Endian.big);
-      session.add(header.buffer.asUint8List());
-      session.add(cipher);
+      if (accept.segmented && !debugForceLegacyFastLane) {
+        // 세그먼트 스트리밍: [매직 u32][segLen u32][seg GCM]…[0 u32].
+        // RAM에는 세그먼트 하나(기본 4MB)의 평문+암호문만 머문다 — 예전의
+        // 파일 전체 GCM은 대용량에서 파일 크기 2배의 순간 점유로 jetsam을
+        // 불렀다. 세그먼트별 암호문은 순서 조작 시 조립 결과가 달라질 뿐이고,
+        // 무결성은 finalize의 매니페스트 SHA-256이 파일 전체로 검증한다.
+        session.add(_u32be(fastLaneMagicSegmented));
+        final size = sender.meta.fileSize;
+        for (var off = 0; off < size; off += fastLaneSegmentBytes) {
+          final len = min(fastLaneSegmentBytes, size - off);
+          final cipher =
+              await crypto.encrypt(await sender.readRange(off, len), kex);
+          session.add(_u32be(cipher.length));
+          session.add(cipher);
+        }
+        session.add(_u32be(0)); // 종료 마커
+      } else {
+        // 레거시 수신자(ACCEPT에 flags 없음): 파일 전체를 하나의 암호화된
+        // 길이 접두 blob으로 보낸다 — 구버전 호환 경로.
+        final cipher = await crypto.encrypt(await sender.readAll(), kex);
+        session.add(_u32be(cipher.length));
+        session.add(cipher);
+      }
       await session.finishSending();
       // 전송 계층이 아직 큐에 쌓인 바이트를 내보내는 중일 수 있다 — Multipeer는
       // .reliable 전송을 비동기로 큐잉하므로, 지금 연결을 끊으면 아직 라디오를
@@ -1592,6 +1622,9 @@ class MeshNode {
   static int _lanePreference(FastLaneKind k) =>
       k == FastLaneKind.lanSocket ? 1 : 2;
 
+  static Uint8List _u32be(int v) =>
+      Uint8List(4)..buffer.asByteData().setUint32(0, v, Endian.big);
+
   Future<void> _handleFastOffer(PeerId from, Uint8List payload) async {
     if (fastLane == null || fastLane!.capabilities.isEmpty) return; // → BLE
     if (payload.length < 17) return;
@@ -1637,13 +1670,16 @@ class MeshNode {
     bleLogSink?.call('FT fast offer accepted: ${chosen.name} (tid $tid)');
 
     _fastActive.add(tid);
-    // ACCEPT: transferId(16) + chosenKind(1) + offerLen(2) + offerBlob.
+    // ACCEPT: transferId(16) + chosenKind(1) + offerLen(2) + offerBlob
+    //         + flags(1, bit0: 세그먼트 스트리밍 수신 지원).
+    // 구버전 송신자는 blob 뒤의 여분 바이트를 무시하고 레거시 형식으로 보낸다.
     final blob = inbound.offer.blob;
-    final accept = Uint8List(16 + 1 + 2 + blob.length);
+    final accept = Uint8List(16 + 1 + 2 + blob.length + 1);
     accept.setRange(0, 16, transferId);
     accept[16] = chosen.code;
     ByteData.view(accept.buffer).setUint16(17, blob.length, Endian.big);
     accept.setRange(19, 19 + blob.length, blob);
+    accept[19 + blob.length] = 0x01;
     await _dispatch(
       router.originate(
         type: FrameType.fileFastAccept,
@@ -1674,56 +1710,131 @@ class MeshNode {
       }
       bleLogSink?.call('FT fast recv connected, reading…');
       _events.add(TransferLane(tid, 'wifi'));
-      // 4바이트 길이 접두를 읽은 뒤 그만큼의 암호문 바이트를 읽는다. 조각들은
-      // 두 번만 조립되므로(헤더 파싱 + 완료), 100MB 전송이 복사에서 O(n²)이 되지
-      // 않는다.
-      final buf = BytesBuilder(copy: false);
-      int? total; // 4 + 암호문 길이, 헤더가 도착하면 알 수 있다
+      // 와이어 형식(첫 u32로 구분):
+      //  - 세그먼트(매직 0xFFFFFFFF): [segLen u32][seg GCM]… [0 u32] — 세그먼트를
+      //    도착 즉시 복호화해 부분 파일에 기록하므로 RAM에는 세그먼트 하나만
+      //    머문다. 파일 전체 무결성은 finalize의 매니페스트 해시가 검증한다.
+      //  - 레거시: [cipherLen u32][파일 전체 GCM] — 구버전 송신자 호환.
+      final q = ListQueue<Uint8List>();
+      var qLen = 0;
+      // 큐 앞에서 정확히 n바이트를 꺼낸다(각 바이트는 한 번만 복사됨).
+      Uint8List take(int n) {
+        final out = Uint8List(n);
+        var off = 0;
+        while (off < n) {
+          final head = q.removeFirst();
+          final want = n - off;
+          if (head.length <= want) {
+            out.setRange(off, off + head.length, head);
+            off += head.length;
+          } else {
+            out.setRange(off, n, Uint8List.sublistView(head, 0, want));
+            q.addFirst(Uint8List.sublistView(head, want));
+            off = n;
+          }
+        }
+        qLen -= n;
+        return out;
+      }
+
+      int u32(Uint8List b) =>
+          ByteData.view(b.buffer, b.offsetInBytes).getUint32(0, Endian.big);
+
+      // 완료 공통 경로: manifest 해시 검증(finalize) 후 서명된 "complete" ACK로
+      // 전송 측을 멈추고 그쪽 말풍선을 전달됨으로 바꾼다(BLE 경로 재사용).
+      Future<void> completeReceive(FileReceiver receiver) async {
+        final path = await receiver.finalize();
+        bleLogSink?.call('FT fast recv complete: ${receiver.meta.name}');
+        _events.add(FileProgress(tid, 1.0, false));
+        _events.add(FileReceived(from, receiver.meta, path));
+        _completeReceiver(tid);
+        _rememberCompleted(tid);
+        final completeAck = receiver.buildAck();
+        await _sendFileAck(from, completeAck);
+        _repeatCompletionAck(from, completeAck);
+      }
+
+      bool? segmented; // 첫 u32를 읽으면 결정된다
+      int? need; // 다음에 기대하는 바이트 수(레거시: 전체, 세그먼트: 하나)
+      var plainOff = 0; // 세그먼트 모드: 지금까지 기록한 평문 오프셋
       var lastPct = 0;
       await for (final part in session.incoming) {
-        buf.add(part);
+        q.add(part);
+        qLen += part.length;
         _rxLastChunk[tid] = DateTime.now(); // idle 감시 타이머에 먹여준다
-        if (total == null && buf.length >= 4) {
-          final head = buf.takeBytes();
-          total = ByteData.view(head.buffer, head.offsetInBytes)
-                  .getUint32(0, Endian.big) +
-              4;
-          buf.add(head);
-          bleLogSink?.call('FT fast recv expecting ${total}B');
-        }
-        if (total == null) continue;
-        final pct = (buf.length * 100) ~/ total;
-        if (pct >= lastPct + 5 && buf.length < total) {
-          lastPct = pct;
-          _events.add(FileProgress(tid, buf.length / total, false));
-        }
-        if (buf.length >= total) {
-          final all = buf.takeBytes();
-          final cipher = Uint8List.sublistView(all, 4, total);
+        while (true) {
+          if (segmented == null) {
+            if (qLen < 4) break;
+            final v = u32(take(4));
+            if (v == fastLaneMagicSegmented) {
+              segmented = true;
+            } else {
+              segmented = false;
+              need = v;
+              bleLogSink?.call('FT fast recv expecting ${v}B (legacy)');
+            }
+            continue;
+          }
+          if (segmented) {
+            if (need == null) {
+              if (qLen < 4) break;
+              need = u32(take(4));
+              if (need == 0) {
+                // 종료 마커 — 모든 세그먼트가 부분 파일에 기록됐다.
+                // BLE 청크가 이미 finalize로 몰고 갔다면 건너뛴다(이중 방지).
+                final receiver = _receivers[tid];
+                if (receiver == null || !_finalizing.add(tid)) return;
+                try {
+                  if (plainOff != receiver.meta.fileSize) {
+                    throw StateError('segmented size mismatch: '
+                        '$plainOff != ${receiver.meta.fileSize}');
+                  }
+                  receiver.sealSeeded();
+                  await completeReceive(receiver);
+                } finally {
+                  _finalizing.remove(tid);
+                }
+                return;
+              }
+              continue;
+            }
+            if (qLen < need) break;
+            final segCipher = take(need);
+            need = null;
+            final plain = await crypto.decrypt(segCipher, kex);
+            // decrypt를 기다리는 동안 BLE 경로가 완주했을 수 있다 — 재확인.
+            final receiver = _receivers[tid];
+            if (receiver == null) return;
+            receiver.seedSegment(plainOff, plain);
+            plainOff += plain.length;
+            final pct = (plainOff * 100) ~/ receiver.meta.fileSize;
+            if (pct >= lastPct + 5 && plainOff < receiver.meta.fileSize) {
+              lastPct = pct;
+              _events.add(
+                  FileProgress(tid, plainOff / receiver.meta.fileSize, false));
+            }
+            continue;
+          }
+          // 레거시: 파일 전체 암호문이 모일 때까지 누적한 뒤 한 번에 복호화.
+          if (qLen < need!) break;
+          final cipher = take(need);
           final receiver = _receivers[tid];
-          // BLE 청크가 이미 이 전송을 finalize로 몰고 갔다면 건너뛴다
-          // ([_handleFileChunk]와 공유하는 가드); 이중 finalize를 방지한다.
           if (receiver == null || !_finalizing.add(tid)) return;
           try {
             final bytes = await crypto.decrypt(cipher, kex);
-            // 평문을 부분 파일에 쓰고 manifest 해시를 검증한다(finalize). 그래야
-            // 아래의 ACK가 진짜 완료가 된다.
             receiver.seedAssembled(bytes);
-            final path = await receiver.finalize();
-            bleLogSink?.call('FT fast recv complete: ${receiver.meta.name}');
-            _events.add(FileProgress(tid, 1.0, false));
-            _events.add(FileReceived(from, receiver.meta, path));
-            _completeReceiver(tid);
-            _rememberCompleted(tid);
-            // BLE 완료 경로를 그대로 재사용한다: 서명된 "complete" ACK가 전송
-            // 측을 멈추고 그쪽 말풍선을 전달됨으로 바꾼다.
-            final completeAck = receiver.buildAck();
-            await _sendFileAck(from, completeAck);
-            _repeatCompletionAck(from, completeAck);
+            await completeReceive(receiver);
           } finally {
             _finalizing.remove(tid);
           }
           return;
+        }
+        if (segmented == false && need != null) {
+          final pct = (qLen * 100) ~/ need;
+          if (pct >= lastPct + 5) {
+            lastPct = pct;
+            _events.add(FileProgress(tid, qLen / need, false));
+          }
         }
       }
     } catch (e) {
@@ -1749,7 +1860,10 @@ class MeshNode {
     ).getUint16(17, Endian.big);
     if (payload.length < 19 + blobLen) return;
     final blob = Uint8List.fromList(payload.sublist(19, 19 + blobLen));
-    waiter.complete(_FastAccept(FastLaneOffer(kind, blob)));
+    // blob 뒤 flags 바이트(신버전 수신자) — 없으면 0(레거시).
+    final flagsOff = 19 + blobLen;
+    final flags = payload.length > flagsOff ? payload[flagsOff] : 0;
+    waiter.complete(_FastAccept(FastLaneOffer(kind, blob), flags));
   }
 
   Future<void> _handleFileChunk(PeerId from, Uint8List payload) async {
@@ -1971,5 +2085,11 @@ class _PendingText {
 /// 수신 측의 fast-lane ACCEPT. 대기 중인 전송 측에게 전달된다.
 class _FastAccept {
   final FastLaneOffer offer;
-  _FastAccept(this.offer);
+
+  /// ACCEPT 꼬리의 기능 비트(bit0: 세그먼트 스트리밍 수신 지원).
+  /// 구버전 수신자의 ACCEPT에는 없다 → 0 → 레거시 한 덩어리 형식.
+  final int flags;
+  _FastAccept(this.offer, [this.flags = 0]);
+
+  bool get segmented => flags & 0x01 != 0;
 }
