@@ -105,10 +105,12 @@ class LanSocketFastLane implements FastLaneInterface {
       ..[4] = (server.port >> 8) & 0xff
       ..[5] = server.port & 0xff;
 
-    // 정확히 하나의 연결만 수락한 뒤, 수신 대기를 멈춘다.
+    // 정확히 하나의 연결만 수락한 뒤, 수신 대기를 멈춘다. 대기 창은 플랫폼
+    // 레인(25초)과 정렬 — 예전 8초는 ACCEPT가 혼잡한 BLE(멀티홉)를 건너는
+    // 동안 리스너가 먼저 닫혀, 송신자가 도착해 보면 아무도 없는 꼴이었다.
     final completer = Completer<FastLaneSession?>();
     late final StreamSubscription sub;
-    final timeout = Timer(const Duration(seconds: 8), () {
+    final timeout = Timer(const Duration(seconds: 22), () {
       if (!completer.isCompleted) {
         completer.complete(null);
         sub.cancel();

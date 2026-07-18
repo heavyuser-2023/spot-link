@@ -349,6 +349,10 @@ class MeshNode {
   /// 대한 병행 BLE 청크 경로를 억제한다.
   final Set<String> _fastActive = {};
 
+  /// 피어별 마지막 관측 홉 수(announce의 TTL 기반). fast-lane 협상 창을
+  /// 멀티홉 왕복 시간에 맞춰 늘리는 데 쓴다.
+  final Map<String, int> _lastHops = {};
+
   /// 수신 측: ACCEPT를 보내고 송신자의 연결을 기다리는 중인 수단.
   /// 송신자가 그 수단의 연결에 실패해 마스크에서 빼고 재오퍼하면, 이 값으로
   /// "대기 중인 수단이 버려졌음"을 알아채고 남은 교집합으로 재협상한다.
@@ -941,8 +945,14 @@ class MeshNode {
         persist: false,
       );
 
+      // 협상 창: OFFER/ACCEPT 왕복은 BLE(때로 멀티홉)를 타므로 홉 수에
+      // 비례해 늘린다 — 직접 5초, 홉당 +2초, 상한 11초. 고정 5초는 2홉
+      // 혼잡 상황에서 ACCEPT가 오는 중인데도 BLE로 포기하게 만들었다.
+      final hops = _lastHops[dst.hex] ?? 1;
+      final window = fastLaneNegotiateWindow +
+          Duration(seconds: 2 * (hops - 1).clamp(0, 3));
       try {
-        accept = await waiter.future.timeout(fastLaneNegotiateWindow);
+        accept = await waiter.future.timeout(window);
       } catch (_) {
         _fastAcceptWaiters.remove(tid);
         return false; // 제때 ACCEPT 없음 → BLE
@@ -1363,6 +1373,7 @@ class MeshNode {
           // 하나 = announceTtl-1, … 다른 origin TTL을 쓰는 피어(구버전은 ttl 1로
           // announce함)의 프레임에 대비해 clamp한다.
           final hops = (announceTtl - frame.ttl + 1).clamp(1, announceTtl);
+          _lastHops[contact.peerId.hex] = hops;
           _events.add(
               PeerAnnounced(contact, hops: hops, via: via, avatar: ann.avatar));
           // 그들의 키가, 그들을 알기 전에 보관해둔 메시지를 열어줄 수 있다.
