@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../core/model/peer_id.dart';
 import '../data/models.dart';
+import '../l10n/l10n.dart';
 import 'mesh_frontend.dart';
 
 /// 두(BOTH) [MeshFrontend] 구현 — 실제 [MeshController](iOS UI isolate /
@@ -33,6 +34,22 @@ mixin MeshFrontendState on MeshFrontend {
   final Map<String, int> lastSeenAt = {}; // peerHex -> announce 시각의 epoch ms
   @protected
   final Map<String, int> lastHopCount = {}; // peerHex -> 메시 거리
+
+  /// peerHex -> 마지막 announce를 건네준 직접 이웃의 peerHex (멀티홉일 때만
+  /// 기록). 레이더의 중계 경로 표시용 — 직접(1홉) 피어는 항목이 없다.
+  final Map<String, String> lastViaHex = {};
+
+  /// 진행 중/최근 파일 전송의 실제 경로(msgId → 'wifi'|'ble'). DB 반영
+  /// 전에도 말풍선이 경로 칩을 즉시 그릴 수 있게 하는 세션 캐시.
+  final Map<String, String> liveLanes = {};
+
+  /// 현재 열린 대화의 리액션 캐시(msgId → 목록). 대화를 열거나 다시 읽을 때
+  /// DB에서 채워지고, 리액션 송수신 시 즉시 갱신된다.
+  final Map<String, List<Reaction>> reactionCache = {};
+
+  @override
+  List<Reaction> reactionsOf(String msgId) =>
+      reactionCache[msgId] ?? const [];
   @protected
   final Map<String, double> rssiSmoothed = {}; // peerHex -> EMA dBm
   @protected
@@ -92,6 +109,15 @@ mixin MeshFrontendState on MeshFrontend {
 
   @override
   int hopsTo(String peerHex) => lastHopCount[peerHex] ?? 1;
+
+  @override
+  String? viaOf(String peerHex) => lastViaHex[peerHex];
+
+  @override
+  String? laneOf(String msgId) => liveLanes[msgId];
+
+  @override
+  bool hasChat(String peerHex) => lastMessages.containsKey(peerHex);
 
   /// 직접 이웃에 대한 평활화된 RSSI(dBm), 또는 최신 측정값이 없을 때 null
   /// (멀티홉 피어이거나 무선이 조용해진 경우).
@@ -188,7 +214,7 @@ mixin LocalFileActions on MeshFrontend {
       }
       return true;
     } catch (e) {
-      reportError('갤러리 저장 실패: $e');
+      reportError(systemS.errGallerySave('$e'));
       notifyListeners();
       return false;
     }

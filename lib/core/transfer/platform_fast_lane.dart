@@ -202,7 +202,15 @@ class PlatformFastLane implements FastLaneInterface {
 
   Future<void> _close(String tid) async {
     try {
-      await _method.invokeMethod('close', {'transferId': tid});
+      // 상한 필수: 이 await는 fast-lane 직렬화 락 안에서 불린다 — 네이티브
+      // 응답이 유실되면(서스펜드 직전 응답, MC 내부 정지) 락 체인 전체가
+      // 영구 정지해 뒤의 모든 파일이 매달린다(2026-07-17 22:22 관찰 의심).
+      await _method
+          .invokeMethod('close', {'transferId': tid}).timeout(
+              const Duration(seconds: 3), onTimeout: () {
+        logSink?.call('FT close timed out (native unresponsive) tid=$tid');
+        return null;
+      });
     } catch (_) {}
     _teardown(tid);
   }

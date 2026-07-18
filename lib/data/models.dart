@@ -37,6 +37,11 @@ class ChatMessage {
   /// 텍스트가 작성된 지 한참 뒤에 도착하면 [timestamp]와 눈에 띄게 달라진다.
   final int? sentTs;
 
+  /// 파일 전용: 바이트가 실제로 이동한 경로 — 'wifi'(Wi-Fi 직결 fast lane)
+  /// 또는 'ble'(블루투스 청킹). 전송이 경로를 확정하는 순간 기록되고 완료
+  /// 후에도 남아, 말풍선이 "무엇으로 전달됐는지"를 계속 말해준다.
+  final String? lane;
+
   ChatMessage({
     this.id,
     required this.peerHex,
@@ -50,6 +55,7 @@ class ChatMessage {
     required this.status,
     required this.timestamp,
     this.sentTs,
+    this.lane,
   });
 
   ChatMessage copyWith({String? msgId, MsgStatus? status, String? filePath}) =>
@@ -66,6 +72,7 @@ class ChatMessage {
         status: status ?? this.status,
         timestamp: timestamp,
         sentTs: sentTs,
+        lane: lane,
       );
 
   ChatMessage withId(int id) => ChatMessage(
@@ -81,6 +88,7 @@ class ChatMessage {
         status: status,
         timestamp: timestamp,
         sentTs: sentTs,
+        lane: lane,
       );
 
   Map<String, Object?> toMap() => {
@@ -96,6 +104,7 @@ class ChatMessage {
         'status': status.index,
         'timestamp': timestamp,
         'sent_ts': sentTs,
+        'lane': lane,
       };
 
   static ChatMessage fromMap(Map<String, Object?> m) => ChatMessage(
@@ -111,7 +120,17 @@ class ChatMessage {
         status: MsgStatus.values[m['status'] as int],
         timestamp: m['timestamp'] as int,
         sentTs: m['sent_ts'] as int?,
+        lane: m['lane'] as String?,
       );
+}
+
+/// 메시지에 달린 이모지 리액션 하나. (msgId, emoji, fromMe)가 자연 키 —
+/// 1:1 대화라 "누가"는 fromMe 불리언으로 충분하다.
+class Reaction {
+  final String msgId;
+  final String emoji;
+  final bool fromMe;
+  Reaction({required this.msgId, required this.emoji, required this.fromMe});
 }
 
 /// 영구 저장된 연락처 (알려진 원격 신원).
@@ -121,6 +140,10 @@ class Contact {
   final String kexPublicB64;
   final String displayName;
   final bool verified;
+
+  /// 파츠 아바타 레시피(compact, [AvatarCodec] 형식) — 상대의 ANNOUNCE에서
+  /// 학습한다. null이면 이니셜 아바타.
+  final String? avatar;
 
   /// 사용자가 이 연락처의 이름을 직접 바꾼 순간 true가 된다. 잠긴 이름은
   /// 피어가 스스로 알린 이름(MeshController._rememberAnnounced 참조)이나
@@ -134,6 +157,7 @@ class Contact {
     required this.kexPublicB64,
     required this.displayName,
     required this.verified,
+    this.avatar,
     this.nameLocked = false,
     this.lastSeen = 0,
   });
@@ -146,6 +170,7 @@ class Contact {
         'kex_pub': kexPublicB64,
         'display_name': displayName,
         'verified': verified ? 1 : 0,
+        'avatar': avatar,
         'name_locked': nameLocked ? 1 : 0,
         'last_seen': lastSeen,
       };
@@ -156,6 +181,7 @@ class Contact {
         kexPublicB64: m['kex_pub'] as String,
         displayName: m['display_name'] as String,
         verified: (m['verified'] as int) == 1,
+        avatar: m['avatar'] as String?,
         nameLocked: (m['name_locked'] as int? ?? 0) == 1,
         lastSeen: (m['last_seen'] as int?) ?? 0,
       );
@@ -163,6 +189,7 @@ class Contact {
   Contact copyWith(
           {String? displayName,
           bool? verified,
+          String? avatar,
           bool? nameLocked,
           int? lastSeen}) =>
       Contact(
@@ -171,6 +198,7 @@ class Contact {
         kexPublicB64: kexPublicB64,
         displayName: displayName ?? this.displayName,
         verified: verified ?? this.verified,
+        avatar: avatar ?? this.avatar,
         nameLocked: nameLocked ?? this.nameLocked,
         lastSeen: lastSeen ?? this.lastSeen,
       );

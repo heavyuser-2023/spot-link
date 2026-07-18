@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../app/mesh_controller.dart';
 import '../data/models.dart';
+import '../l10n/l10n.dart';
 import 'chat_screen.dart';
 import 'scan_screen.dart';
 import 'ui_utils.dart';
@@ -37,6 +38,7 @@ class _ConversationTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final c = context.watch<MeshFrontend>();
     final unread = summary.unread > 0;
     final last = summary.lastMessage;
 
@@ -44,10 +46,11 @@ class _ConversationTile extends StatelessWidget {
       leading: Stack(
         clipBehavior: Clip.none,
         children: [
-          CircleAvatar(
-            backgroundColor: avatarColor(summary.peerHex),
-            foregroundColor: Colors.white,
-            child: Text(initialsOf(summary.displayName)),
+          PersonAvatar(
+            avatar: c.contactByHex(summary.peerHex)?.avatar,
+            displayName: summary.displayName,
+            colorKey: summary.peerHex,
+            radius: 20,
           ),
           if (summary.nearby)
             Positioned(
@@ -81,7 +84,7 @@ class _ConversationTile extends StatelessWidget {
           if (last != null) ...[
             const SizedBox(width: 6),
             Text(
-              relativeTime(last.timestamp),
+              relativeTime(context, last.timestamp),
               style: theme.textTheme.labelSmall?.copyWith(
                 color: unread ? theme.colorScheme.primary : theme.hintColor,
                 fontWeight: unread ? FontWeight.bold : FontWeight.normal,
@@ -94,7 +97,7 @@ class _ConversationTile extends StatelessWidget {
         children: [
           Expanded(
             child: Text(
-              _preview(last),
+              _preview(context, last),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodyMedium?.copyWith(
@@ -126,11 +129,12 @@ class _ConversationTile extends StatelessWidget {
     );
   }
 
-  String _preview(ChatMessage? m) {
-    if (m == null) return '대화를 시작해보세요';
-    final prefix = m.direction == MsgDirection.outgoing ? '나: ' : '';
+  String _preview(BuildContext context, ChatMessage? m) {
+    if (m == null) return context.s.chatsEmptyPreview;
+    final prefix =
+        m.direction == MsgDirection.outgoing ? context.s.chatsMePrefix : '';
     if (m.kind == MsgKind.file) {
-      return '$prefix📎 ${m.fileName ?? '파일'}';
+      return '$prefix📎 ${m.fileName ?? context.s.chatsFileFallback}';
     }
     return '$prefix${m.text ?? ''}';
   }
@@ -156,11 +160,11 @@ class _EmptyChats extends StatelessWidget {
                   size: 40, color: scheme.onPrimaryContainer),
             ),
             const SizedBox(height: 20),
-            Text('아직 대화가 없어요',
+            Text(context.s.chatsEmptyTitle,
                 style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
             Text(
-              '인터넷 없이, 주변 친구와 바로 대화할 수 있어요.',
+              context.s.chatsEmptyBody,
               textAlign: TextAlign.center,
               style: Theme.of(context)
                   .textTheme
@@ -171,14 +175,14 @@ class _EmptyChats extends StatelessWidget {
             FilledButton.icon(
               onPressed: onFindPeople,
               icon: const Icon(Icons.people_alt_outlined),
-              label: const Text('주변 친구 보기'),
+              label: Text(context.s.chatsFindPeople),
             ),
             const SizedBox(height: 8),
             OutlinedButton.icon(
               onPressed: () =>
                   pushWithController(context, const ScanScreen()),
               icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('QR로 친구 추가'),
+              label: Text(context.s.chatsAddFriendQr),
             ),
           ],
         ),

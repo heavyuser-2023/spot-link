@@ -14,7 +14,9 @@ enum FrameType {
   want(0x07), // link-local: 특정 msgId 요청
   receipt(0x08), // e2e: 종단 간 전달 영수증
   fileFastOffer(0x09), // e2e: 발신자가 이 전송에 Wi-Fi 패스트레인을 제안
-  fileFastAccept(0x0a); // e2e: 수신자가 수락 + 자신의 연결 정보를 반환
+  fileFastAccept(0x0a), // e2e: 수신자가 수락 + 자신의 연결 정보를 반환
+  reaction(0x0b), // e2e: 메시지에 대한 이모지 리액션 추가/제거
+  verify(0x0c); // e2e: QR 논스 반환 — 상호 인증 증명(스캔한 쪽 → 스캔당한 쪽)
 
   final int code;
   const FrameType(this.code);
@@ -56,6 +58,15 @@ class MsgId {
       sb.write(b.toRadixString(16).padLeft(2, '0'));
     }
     return sb.toString();
+  }
+
+  /// [hex]의 역변환 (16바이트 msgId 전용).
+  static Uint8List fromHex(String hexStr) {
+    final out = Uint8List(hexStr.length ~/ 2);
+    for (var i = 0; i < out.length; i++) {
+      out[i] = int.parse(hexStr.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    return out;
   }
 }
 

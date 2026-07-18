@@ -14,6 +14,7 @@ import '../data/identity_store.dart';
 import '../features/guide_screen.dart';
 import '../features/home_screen.dart';
 import '../features/onboarding_screen.dart';
+import '../l10n/l10n.dart';
 import 'background_service.dart';
 import 'beacon_wake.dart';
 import 'mesh_controller.dart';
@@ -81,12 +82,16 @@ class _BootstrapState extends State<Bootstrap> {
     }
 
     // 재방문 사용자: 서비스 + 권한을 먼저 올린 뒤 실행한다.
-    await _step('알림 준비', () async {
+    // 앞선 await 뒤라 mounted 확인 후 라벨을 캡처한다.
+    if (!mounted) return;
+    final stepNotif = context.s.bootStepNotifications;
+    final stepPerm = context.s.bootStepPermissions;
+    await _step(stepNotif, () async {
       await BackgroundService.init();
       await NotificationService.init();
     });
     await _step(
-        '권한 요청',
+        stepPerm,
         () => Permissions.request()
             .timeout(const Duration(seconds: 45), onTimeout: () => false));
     await _startMesh(stored);
@@ -99,7 +104,7 @@ class _BootstrapState extends State<Bootstrap> {
       await body();
     } catch (e) {
       bleLogSink?.call('bootstrap step "$label" failed: $e');
-      if (mounted) setState(() => _bootError = '$label 실패: $e');
+      if (mounted) setState(() => _bootError = context.s.bootStepFailed(label, '$e'));
     }
   }
 
@@ -120,7 +125,7 @@ class _BootstrapState extends State<Bootstrap> {
         if (!mounted) return;
         // 무엇이 잘못됐는지 스플래시에 바로 보여줘서, 멈춘 폰을 화면을 읽는 것만으로
         // 진단할 수 있게 한다.
-        setState(() => _bootError = '시작 실패 (${attempt + 1}회): $e');
+        setState(() => _bootError = context.s.bootLaunchFailed(attempt + 1, '$e'));
         await Future<void>.delayed(Duration(seconds: attempt < 6 ? 10 : 60));
         if (!mounted) return;
       }
@@ -131,13 +136,16 @@ class _BootstrapState extends State<Bootstrap> {
     await _identityStore.setDisplayName(name);
     if (mounted) setState(() => _stage = _Stage.loading);
     // 이제 사용자에게 이름이 생겼으니, 서비스를 올리고 메시가 필요로 하는 OS 권한을
-    // 요청한 뒤 시작한다.
-    await _step('알림 준비', () async {
+    // 요청한 뒤 시작한다. (앞선 await 뒤라 mounted 확인 후 캡처.)
+    if (!mounted) return;
+    final stepNotif = context.s.bootStepNotifications;
+    final stepPerm = context.s.bootStepPermissions;
+    await _step(stepNotif, () async {
       await BackgroundService.init();
       await NotificationService.init();
     });
     await _step(
-        '권한 요청',
+        stepPerm,
         () => Permissions.request()
             .timeout(const Duration(seconds: 45), onTimeout: () => false));
     await _startMesh(name);
@@ -317,7 +325,7 @@ class _Splash extends StatelessWidget {
               if (error != null) ...[
                 const SizedBox(height: 24),
                 Text(
-                  '$error\n자동으로 다시 시도합니다',
+                  context.s.bootRetrying(error!),
                   textAlign: TextAlign.center,
                   style: TextStyle(
                       color: scheme.onPrimary.withValues(alpha: 0.9),

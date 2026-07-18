@@ -12,8 +12,20 @@ import '../app/app_share.dart';
 import '../app/background_service.dart';
 import '../app/build_flags.dart';
 import '../app/mesh_controller.dart';
+import '../l10n/l10n.dart';
+import 'avatar_builder_screen.dart';
 import 'guide_screen.dart';
 import 'ui_utils.dart';
+
+/// 아바타 커스텀 유도 카드의 세션 단위 '나중에' 상태. 콜드 스타트마다
+/// 초기화되므로 넛지가 "실행 주기"라는 자연스러운 리듬으로 재등장한다 —
+/// 빌더에서 한 번 저장하면(avatarCustomized) 영구히 사라진다.
+class AvatarNudge {
+  static bool dismissedThisSession = false;
+
+  static bool shouldShow(MeshFrontend c) =>
+      !c.avatarCustomized && !dismissedThisSession;
+}
 
 class MeTab extends StatelessWidget {
   const MeTab({super.key});
@@ -27,15 +39,50 @@ class MeTab extends StatelessWidget {
       padding: const EdgeInsets.all(24),
       children: [
         const SizedBox(height: 8),
+        // 아바타를 탭하면 파츠 조합 빌더로 — 편집 가능함을 연필 배지로 알린다.
         Center(
-          child: CircleAvatar(
-            radius: 36,
-            backgroundColor: avatarColor(c.myId.hex),
-            foregroundColor: Colors.white,
-            child: Text(initialsOf(c.displayName),
-                style: const TextStyle(fontSize: 28)),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () =>
+                pushWithController(context, const AvatarBuilderScreen()),
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                PersonAvatar(
+                  avatar: c.myAvatar,
+                  displayName: c.displayName,
+                  colorKey: c.myId.hex,
+                  radius: 36,
+                ),
+                Positioned(
+                  right: -2,
+                  bottom: -2,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primaryContainer,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                          color: Theme.of(context).colorScheme.surface,
+                          width: 1.5),
+                    ),
+                    child: Icon(Icons.edit,
+                        size: 13,
+                        color:
+                            Theme.of(context).colorScheme.onPrimaryContainer),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
+        // 커스텀 유도 카드: 미커스텀 + 이번 세션에 '나중에' 안 눌렀을 때만.
+        // 모달·푸시가 아니라 제자리(아바타 바로 아래)의 조용한 카드다.
+        if (AvatarNudge.shouldShow(c))
+          Padding(
+            padding: const EdgeInsets.only(top: 14),
+            child: _AvatarNudgeCard(),
+          ),
         const SizedBox(height: 12),
         Center(
           child: InkWell(
@@ -64,11 +111,11 @@ class MeTab extends StatelessWidget {
             onPressed: () {
               Clipboard.setData(ClipboardData(text: c.myId.hex));
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('ID를 복사했습니다')),
+                SnackBar(content: Text(context.s.meIdCopied)),
               );
             },
             icon: const Icon(Icons.copy, size: 14),
-            label: Text('ID ${c.myId.short}',
+            label: Text(context.s.meIdLabel(c.myId.short),
                 style: TextStyle(color: hint, fontSize: 12)),
           ),
         ),
@@ -92,7 +139,7 @@ class MeTab extends StatelessWidget {
         const SizedBox(height: 12),
         Center(
           child: Text(
-            '친구가 이 코드를 스캔하면 안전하게 추가됩니다.\n키는 암호화되지 않은 채로 기기를 떠나지 않습니다.',
+            context.s.meQrGuide,
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodySmall,
           ),
@@ -101,15 +148,15 @@ class MeTab extends StatelessWidget {
         Center(
           child: FilledButton.tonalIcon(
             onPressed: () => SharePlus.instance.share(ShareParams(
-                text: c.myQrPayload, subject: 'SpotLink에서 저를 추가하세요')),
+                text: c.myQrPayload, subject: context.s.meShareSubject)),
             icon: const Icon(Icons.share),
-            label: const Text('초대 코드 공유'),
+            label: Text(context.s.meShareInvite),
           ),
         ),
         const SizedBox(height: 28),
         Padding(
           padding: const EdgeInsets.only(left: 4, bottom: 6),
-          child: Text('설정',
+          child: Text(context.s.meSettingsTitle,
               style: Theme.of(context)
                   .textTheme
                   .labelLarge
@@ -118,10 +165,8 @@ class MeTab extends StatelessWidget {
         Card(
           child: SwitchListTile(
             secondary: const Icon(Icons.battery_saver),
-            title: const Text('배터리 절약 (항상)'),
-            subtitle: const Text(
-                '평소엔 충전·배터리·연결 상태에 맞춰 자동 조절됩니다. '
-                '켜면 항상 최대 절전으로 고정합니다 (검색이 느려짐).'),
+            title: Text(context.s.meBatterySaverTitle),
+            subtitle: Text(context.s.meBatterySaverSubtitle),
             value: c.powerSaver,
             onChanged: (v) => context.read<MeshFrontend>().setPowerSaver(v),
           ),
@@ -130,20 +175,19 @@ class MeTab extends StatelessWidget {
         Card(
           child: ListTile(
             leading: const Icon(Icons.move_to_inbox_outlined),
-            title: const Text('중계 보관함'),
+            title: Text(context.s.meRelayStoreTitle),
             subtitle: Text(
               c.relayStoreCount == 0
-                  ? '보관 중인 중계 메시지가 없습니다.'
-                  : '전달 대기 메시지 ${c.relayStoreCount}개 · '
-                      '${humanSize(c.relayStoreBytes)}\n'
-                      '수신자를 만나면 자동 전달되고 지워집니다.',
+                  ? context.s.meRelayStoreEmpty
+                  : context.s.meRelayStorePending(
+                      c.relayStoreCount, humanSize(c.relayStoreBytes)),
             ),
             isThreeLine: c.relayStoreCount > 0,
             trailing: c.relayStoreCount == 0
                 ? null
                 : TextButton(
                     onPressed: () => _confirmClearRelay(context, c),
-                    child: const Text('비우기'),
+                    child: Text(context.s.meRelayClear),
                   ),
           ),
         ),
@@ -151,8 +195,8 @@ class MeTab extends StatelessWidget {
         Card(
           child: ListTile(
             leading: const Icon(Icons.menu_book_outlined),
-            title: const Text('사용법과 동작 원리'),
-            subtitle: const Text('첫 실행 때 본 안내를 다시 볼 수 있습니다.'),
+            title: Text(context.s.meGuideTitle),
+            subtitle: Text(context.s.meGuideSubtitle),
             onTap: () =>
                 pushWithController(context, const GuideScreen()),
           ),
@@ -163,10 +207,8 @@ class MeTab extends StatelessWidget {
             Card(
               child: ListTile(
                 leading: const Icon(Icons.android),
-                title: const Text('앱 공유 (오프라인 배포)'),
-                subtitle: const Text(
-                    '설치 파일(APK)을 꺼내 공유합니다 — 스토어·인터넷 없이 '
-                    'Quick Share·블루투스 등으로 전달할 수 있습니다.'),
+                title: Text(context.s.meShareApkTitle),
+                subtitle: Text(context.s.meShareApkSubtitle),
                 isThreeLine: true,
                 onTap: () => _shareApk(context),
               ),
@@ -180,11 +222,8 @@ class MeTab extends StatelessWidget {
           Card(
             child: SwitchListTile(
               secondary: const Icon(Icons.wifi_tethering),
-              title: const Text('꺼진 뒤에도 깨어나기 (비콘)'),
-              subtitle: const Text(
-                  '주변 SpotLink 기기의 비콘을 감지하면 앱이 종료됐어도 '
-                  'iOS가 깨워서 메시지를 받습니다. 위치 권한(항상 허용)이 '
-                  '필요합니다.'),
+              title: Text(context.s.meBeaconTitle),
+              subtitle: Text(context.s.meBeaconSubtitle),
               isThreeLine: true,
               value: c.beaconMonitoring,
               onChanged: (v) =>
@@ -200,15 +239,12 @@ class MeTab extends StatelessWidget {
               color: Theme.of(context).colorScheme.surfaceContainerHighest,
               child: ListTile(
                 leading: const Icon(Icons.lightbulb_outline),
-                title: const Text('연결이 더 잘 되게 하려면'),
-                subtitle: const Text(
-                    '위치 권한이 "앱을 사용하는 동안"입니다. "항상 허용"으로 바꾸면 '
-                    '앱을 완전히 종료했거나 폰을 재부팅한 뒤에도 자동으로 다시 '
-                    '연결됩니다. (지금도 백그라운드 연결은 됩니다.)'),
+                title: Text(context.s.meBeaconAlwaysTitle),
+                subtitle: Text(context.s.meBeaconAlwaysSubtitle),
                 isThreeLine: true,
                 trailing: TextButton(
                   onPressed: () => openAppSettings(),
-                  child: const Text('설정'),
+                  child: Text(context.s.meOpenSettings),
                 ),
               ),
             ),
@@ -217,11 +253,8 @@ class MeTab extends StatelessWidget {
           Card(
             child: ListTile(
               leading: const Icon(Icons.info_outline),
-              title: const Text('실시간 수신 안내'),
-              subtitle: const Text(
-                  '앱을 위로 밀어 완전히 종료하면 실시간 수신이 멈춥니다. '
-                  '홈으로 나가 백그라운드에 두면 계속 받을 수 있고, 놓친 '
-                  '메시지도 다시 만나면 자동으로 도착합니다.'),
+              title: Text(context.s.meLiveReceiveTitle),
+              subtitle: Text(context.s.meLiveReceiveSubtitle),
               isThreeLine: true,
             ),
           ),
@@ -237,15 +270,17 @@ class MeTab extends StatelessWidget {
   /// 없이도 동작하므로, 앱이 오프라인으로 퍼져 나갈 수 있다.
   Future<void> _shareApk(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
+    // await 이전에 문구를 캡처한다 — 비동기 틈 뒤의 context 사용 금지.
+    final failedMsg = context.s.meShareApkFailed;
+    final subject = context.s.meShareApkSubject;
     final apk = await AppShare.apkFile();
     if (apk == null) {
-      messenger.showSnackBar(
-          const SnackBar(content: Text('설치 파일을 꺼내지 못했습니다')));
+      messenger.showSnackBar(SnackBar(content: Text(failedMsg)));
       return;
     }
     await SharePlus.instance.share(ShareParams(
       files: [XFile(apk.path, mimeType: AppShare.apkMime)],
-      subject: 'SpotLink 설치 파일',
+      subject: subject,
     ));
   }
 
@@ -253,18 +288,15 @@ class MeTab extends StatelessWidget {
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('중계 보관함 비우기'),
-        content: const Text(
-            '상대에게 전달되기를 기다리는 메시지를 모두 삭제합니다.\n'
-            '삭제하면 이 기기를 통해서는 전달되지 않습니다 (다른 중계 기기가 '
-            '갖고 있다면 그쪽으로는 전달될 수 있음).'),
+        title: Text(context.s.meRelayClearTitle),
+        content: Text(context.s.meRelayClearBody),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('취소')),
+              child: Text(context.s.commonCancel)),
           FilledButton(
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('비우기')),
+              child: Text(context.s.meRelayClear)),
         ],
       ),
     );
@@ -277,21 +309,21 @@ class MeTab extends StatelessWidget {
       final name = await showDialog<String>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          title: const Text('이름 변경'),
+          title: Text(context.s.meEditNameTitle),
           content: TextField(
             controller: controller,
             autofocus: true,
             maxLength: 32,
-            decoration: const InputDecoration(labelText: '표시 이름'),
+            decoration: InputDecoration(labelText: context.s.meDisplayNameLabel),
           ),
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(dialogContext),
-                child: const Text('취소')),
+                child: Text(context.s.commonCancel)),
             FilledButton(
               onPressed: () =>
                   Navigator.pop(dialogContext, controller.text.trim()),
-              child: const Text('저장'),
+              child: Text(context.s.commonSave),
             ),
           ],
         ),
@@ -356,14 +388,13 @@ class _BatteryExemptionCardState extends State<_BatteryExemptionCard>
               : Icons.battery_alert_outlined,
           color: exempted == true ? Colors.green : scheme.error,
         ),
-        title: const Text('백그라운드 항상 실행'),
+        title: Text(context.s.meBatteryExemptTitle),
         subtitle: Text(
           exempted == null
-              ? '확인 중…'
+              ? context.s.meBatteryChecking
               : exempted
-                  ? '배터리 최적화에서 제외되어 있습니다. 화면을 꺼도 메시가 유지됩니다.'
-                  : '배터리 최적화가 켜져 있어 시스템이 수신을 중단시킬 수 '
-                      '있습니다. 항상 받으려면 허용해 주세요.',
+                  ? context.s.meBatteryExemptOn
+                  : context.s.meBatteryExemptOff,
         ),
         isThreeLine: exempted == false,
         trailing: exempted == false
@@ -372,7 +403,7 @@ class _BatteryExemptionCardState extends State<_BatteryExemptionCard>
                   await BackgroundService.requestIgnoreBatteryOptimization();
                   await _refresh();
                 },
-                child: const Text('허용'),
+                child: Text(context.s.meBatteryAllow),
               )
             : null,
       ),
@@ -414,7 +445,7 @@ class _VersionFooterState extends State<_VersionFooter> {
         onPressed: () {
           Clipboard.setData(ClipboardData(text: label));
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('버전을 복사했습니다')),
+            SnackBar(content: Text(context.s.meVersionCopied)),
           );
         },
         child: Text(label,
@@ -422,6 +453,70 @@ class _VersionFooterState extends State<_VersionFooter> {
                 .textTheme
                 .bodySmall
                 ?.copyWith(color: hint)),
+      ),
+    );
+  }
+}
+
+/// "지금은 무작위 아바타" 커스텀 유도 카드. 디자인 시스템의 틴트 카드
+/// 언어(primaryContainer)를 따르고, 행동 두 개만 준다: 만들기 / 나중에.
+class _AvatarNudgeCard extends StatefulWidget {
+  @override
+  State<_AvatarNudgeCard> createState() => _AvatarNudgeCardState();
+}
+
+class _AvatarNudgeCardState extends State<_AvatarNudgeCard> {
+  bool _hidden = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_hidden) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          const Text('🎲', style: TextStyle(fontSize: 22)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              context.s.meAvatarNudgeText,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: scheme.onPrimaryContainer, height: 1.35),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Column(
+            children: [
+              FilledButton(
+                style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 12)),
+                onPressed: () => pushWithController(
+                    context, const AvatarBuilderScreen()),
+                child: Text(context.s.meAvatarNudgeCreate),
+              ),
+              TextButton(
+                style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact),
+                onPressed: () {
+                  AvatarNudge.dismissedThisSession = true; // 세션 동안 침묵
+                  setState(() => _hidden = true);
+                },
+                child: Text(context.s.meAvatarNudgeLater,
+                    style: TextStyle(
+                        color:
+                            scheme.onPrimaryContainer.withValues(alpha: 0.7))),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

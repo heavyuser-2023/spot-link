@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,6 +13,7 @@ import '../app/mesh_controller.dart';
 import '../core/ble/mesh_transport.dart' show bleLogSink;
 import '../core/model/peer_id.dart';
 import '../data/models.dart';
+import '../l10n/l10n.dart';
 import 'ui_utils.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -71,7 +73,7 @@ class _ChatScreenState extends State<ChatScreen> {
       bleLogSink?.call('chat send failed: $e\n$st');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('전송 실패: $e')),
+          SnackBar(content: Text(context.s.chatSendFailed('$e'))),
         );
       }
     }
@@ -93,8 +95,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     Theme.of(sheet).colorScheme.primaryContainer,
                 child: const Icon(Icons.photo_library_outlined),
               ),
-              title: const Text('사진·동영상'),
-              subtitle: const Text('갤러리에서 선택 (여러 장 가능)'),
+              title: Text(context.s.chatAttachMedia),
+              subtitle: Text(context.s.chatAttachMediaSubtitle),
               onTap: () => Navigator.pop(sheet, _AttachSource.gallery),
             ),
             ListTile(
@@ -103,8 +105,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     Theme.of(sheet).colorScheme.secondaryContainer,
                 child: const Icon(Icons.insert_drive_file_outlined),
               ),
-              title: const Text('파일'),
-              subtitle: const Text('문서·압축 등 모든 파일'),
+              title: Text(context.s.chatAttachFile),
+              subtitle: Text(context.s.chatAttachFileSubtitle),
               onTap: () => Navigator.pop(sheet, _AttachSource.file),
             ),
             if (Platform.isAndroid && !kStoreBuild)
@@ -114,8 +116,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       Theme.of(sheet).colorScheme.tertiaryContainer,
                   child: const Icon(Icons.android),
                 ),
-                title: const Text('SpotLink 앱 보내기'),
-                subtitle: const Text('설치 파일(APK)을 전달 — 스토어 없이 설치'),
+                title: Text(context.s.chatAttachApk),
+                subtitle: Text(context.s.chatAttachApkSubtitle),
                 onTap: () => Navigator.pop(sheet, _AttachSource.apk),
               ),
             const SizedBox(height: 8),
@@ -135,7 +137,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // withData: false — 피커가 경로를 넘겨주고, 디스크 기반 전송은 페이로드를
     // RAM에 절대 올리지 않는다(예전에는 선택한 동영상이 몇 분에 걸친 전송
     // 내내 Dart 힙에 상주했다).
-    final result = await FilePicker.platform.pickFiles(
+    final result = await FilePicker.pickFiles(
       type: source == _AttachSource.gallery ? FileType.media : FileType.any,
       allowMultiple: source == _AttachSource.gallery,
       withData: false,
@@ -143,6 +145,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (result == null || result.files.isEmpty) return;
     if (!mounted) return;
     final controller = context.read<MeshFrontend>();
+    var skipped = 0;
     for (final f in result.files) {
       final mime = lookupMimeType(f.name) ?? 'application/octet-stream';
       if (f.path != null) {
@@ -160,7 +163,17 @@ class _ChatScreenState extends State<ChatScreen> {
           name: f.name,
           mime: mime,
         );
+      } else {
+        // 피커가 경로도 바이트도 못 준 항목(전형: iCloud에 올라가 있고 기기엔
+        // 원본이 없는 사진). 예전엔 소리 없이 버려져 "6개 보냈는데 4개만
+        // 간다"는 미스터리를 만들었다 — 반드시 사용자에게 알린다.
+        skipped++;
       }
+    }
+    if (skipped > 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(context.s.chatSkippedAttachments(skipped)),
+      ));
     }
     _animateToBottom();
   }
@@ -170,10 +183,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _sendApk() async {
     final messenger = ScaffoldMessenger.of(context);
     final controller = context.read<MeshFrontend>();
+    final extractFailedMsg = context.s.chatApkExtractFailed;
     final apk = await AppShare.apkFile();
     if (apk == null) {
-      messenger.showSnackBar(
-          const SnackBar(content: Text('설치 파일을 꺼내지 못했습니다')));
+      messenger.showSnackBar(SnackBar(content: Text(extractFailedMsg)));
       return;
     }
     // 디스크 기반: ~76MB APK를 RAM에 읽어 들이는 것 자체가 jetsam을 유발했다.
@@ -238,11 +251,11 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
 
-    final items = _buildItems(messages);
+    final items = _buildItems(context, messages);
 
     final presence = nearby
-        ? (hops <= 1 ? '주변에 있음' : '주변 · $hops홉 경유')
-        : '오프라인 · 전달 대기';
+        ? (hops <= 1 ? context.s.chatPresenceNearby : context.s.chatPresenceNearbyHops(hops))
+        : context.s.chatPresenceOffline;
 
     return Scaffold(
       appBar: AppBar(
@@ -254,12 +267,11 @@ class _ChatScreenState extends State<ChatScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
             child: Row(
               children: [
-                CircleAvatar(
+                PersonAvatar(
+                  avatar: c.contactByHex(widget.peerHex)?.avatar,
+                  displayName: name,
+                  colorKey: widget.peerHex,
                   radius: 17,
-                  backgroundColor: avatarColor(widget.peerHex),
-                  foregroundColor: Colors.white,
-                  child: Text(initialsOf(name),
-                      style: const TextStyle(fontSize: 14)),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -352,7 +364,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                               .colorScheme
                                               .onPrimary),
                                       const SizedBox(width: 6),
-                                      Text('새 메시지',
+                                      Text(context.s.chatNewMessage,
                                           style: TextStyle(
                                               color: Theme.of(context)
                                                   .colorScheme
@@ -377,7 +389,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 children: [
                   IconButton(
                     icon: const Icon(Icons.add_circle_outline),
-                    tooltip: '파일 첨부',
+                    tooltip: context.s.chatAttachTooltip,
                     onPressed: _attach,
                   ),
                   Expanded(
@@ -388,7 +400,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       textInputAction: TextInputAction.send,
                       onSubmitted: (_) => _send(),
                       decoration: InputDecoration(
-                        hintText: '메시지',
+                        hintText: context.s.chatMessageHint,
                         isDense: true,
                         filled: true,
                         fillColor: Theme.of(context)
@@ -411,7 +423,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   const SizedBox(width: 6),
                   IconButton.filled(
                     icon: const Icon(Icons.arrow_upward),
-                    tooltip: '보내기',
+                    tooltip: context.s.chatSendTooltip,
                     onPressed: _send,
                   ),
                 ],
@@ -436,12 +448,11 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircleAvatar(
+              PersonAvatar(
+                avatar: contact?.avatar,
+                displayName: name,
+                colorKey: widget.peerHex,
                 radius: 32,
-                backgroundColor: avatarColor(widget.peerHex),
-                foregroundColor: Colors.white,
-                child: Text(initialsOf(name),
-                    style: const TextStyle(fontSize: 26)),
               ),
               const SizedBox(height: 10),
               Row(
@@ -472,7 +483,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
                   child: Text(
-                    '아직 QR로 인증하지 않은 상대입니다.\n만나면 서로의 QR을 스캔해 신원을 확인하세요.',
+                    context.s.chatUnverifiedNotice,
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
@@ -483,11 +494,11 @@ class _ChatScreenState extends State<ChatScreen> {
                       text: PeerId.fromHex(widget.peerHex).hex));
                   Navigator.pop(sheetContext);
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('ID를 복사했습니다')),
+                    SnackBar(content: Text(context.s.chatIdCopied)),
                   );
                 },
                 icon: const Icon(Icons.copy, size: 16),
-                label: Text('ID ${PeerId.fromHex(widget.peerHex).short} 복사'),
+                label: Text(context.s.chatCopyId(PeerId.fromHex(widget.peerHex).short)),
               ),
             ],
           ),
@@ -496,12 +507,12 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  List<_Item> _buildItems(List<ChatMessage> messages) {
+  List<_Item> _buildItems(BuildContext context, List<ChatMessage> messages) {
     final items = <_Item>[];
     int? lastDay;
     for (final m in messages) {
       if (lastDay == null || !sameDay(lastDay, m.timestamp)) {
-        items.add(_DateItem(dayLabel(m.timestamp)));
+        items.add(_DateItem(dayLabel(context, m.timestamp)));
         lastDay = m.timestamp;
       }
       items.add(_MsgItem(m));
@@ -579,7 +590,9 @@ class _Bubble extends StatelessWidget {
       bottomRight: Radius.circular(_isMe ? 5 : 18),
     );
 
-    return Align(
+    final reactions = controller.reactionsOf(message.msgId);
+
+    final bubble = Align(
       alignment: _isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
         onTap: () => _onTap(context),
@@ -606,7 +619,7 @@ class _Bubble extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(_timeLabel(),
+                  Text(_timeLabel(context),
                       style: TextStyle(
                           color: (failed ? scheme.onErrorContainer : fg)
                               .withValues(alpha: 0.7),
@@ -621,7 +634,7 @@ class _Bubble extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
                   child: Text(
-                      _isMe ? '탭하여 다시 시도' : '수신이 중단되었습니다',
+                      _isMe ? context.s.chatTapRetry : context.s.chatReceiveInterrupted,
                       style: TextStyle(
                           color: scheme.onErrorContainer, fontSize: 11)),
                 ),
@@ -636,7 +649,7 @@ class _Bubble extends StatelessWidget {
                       Icon(Icons.warning_amber_rounded,
                           size: 13, color: scheme.error),
                       const SizedBox(width: 3),
-                      Text('아직 전달 안 됨 · 탭하여 다시 보내기',
+                      Text(context.s.chatUndelivered,
                           style: TextStyle(
                               color: scheme.error,
                               fontSize: 11,
@@ -649,11 +662,77 @@ class _Bubble extends StatelessWidget {
                   message.status == MsgStatus.queued)
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
-                  child: Text('상대를 만나면 자동 전달',
+                  child: Text(context.s.chatQueuedHint,
                       style: TextStyle(
                           color: fg.withValues(alpha: 0.7), fontSize: 11)),
                 ),
             ],
+          ),
+        ),
+      ),
+    );
+
+    if (reactions.isEmpty) return bubble;
+    // 슬랙처럼 말풍선 밖 아래에 리액션 칩을 단다 — 말풍선 색과 분리된
+    // 중립 배경이라 어느 방향이든 동일한 문법으로 읽힌다.
+    return Column(
+      crossAxisAlignment:
+          _isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        bubble,
+        Padding(
+          padding: const EdgeInsets.only(top: 1, bottom: 3),
+          child: _reactionChips(context, reactions),
+        ),
+      ],
+    );
+  }
+
+  /// 이모지별로 묶은 리액션 칩(슬랙 스타일): 이모지 + 개수, 내가 누른 칩은
+  /// 시드색 테두리로 강조. 탭하면 내 리액션 토글.
+  Widget _reactionChips(BuildContext context, List<Reaction> reactions) {
+    final scheme = Theme.of(context).colorScheme;
+    final byEmoji = <String, List<Reaction>>{};
+    for (final r in reactions) {
+      (byEmoji[r.emoji] ??= []).add(r);
+    }
+    return Wrap(
+      spacing: 4,
+      runSpacing: 4,
+      children: [
+        for (final e in byEmoji.entries)
+          _reactionChip(
+              context, scheme, e.key, e.value.length,
+              mine: e.value.any((r) => r.fromMe)),
+      ],
+    );
+  }
+
+  Widget _reactionChip(BuildContext context, ColorScheme scheme, String emoji,
+      int count,
+      {required bool mine}) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () =>
+          controller.toggleReaction(message.peerHex, message.msgId, emoji),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: mine
+              ? scheme.primaryContainer.withValues(alpha: 0.55)
+              : scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: mine ? scheme.primary : scheme.outlineVariant,
+            width: mine ? 1.2 : 1,
+          ),
+        ),
+        child: Text(
+          '$emoji $count',
+          style: TextStyle(
+            fontSize: 13,
+            color: mine ? scheme.onPrimaryContainer : scheme.onSurfaceVariant,
+            fontWeight: mine ? FontWeight.w600 : FontWeight.w400,
           ),
         ),
       ),
@@ -664,7 +743,7 @@ class _Bubble extends StatelessWidget {
   /// 이 시각이 도착 시각과 유의미하게 다르면(>1분 — 즉 메시지가 한동안
   /// store-and-forward를 거친 경우) 둘 다 표시해, 수신자가 작성 시점과 도착
   /// 시점을 구분할 수 있게 한다.
-  String _timeLabel() {
+  String _timeLabel(BuildContext context) {
     final sent = message.sentTs;
     if (_isMe || sent == null) return clockTime(message.timestamp);
     // 보낸 사람 시계가 우리보다 앞선 경우(시계 오차): "도착보다 늦게 전송"
@@ -673,7 +752,8 @@ class _Bubble extends StatelessWidget {
     if (message.timestamp - sent < 60 * 1000) {
       return clockTime(message.timestamp);
     }
-    return '${clockTime(sent)} 전송 · ${clockTime(message.timestamp)} 도착';
+    return context.s.chatTimeSentArrived(
+        clockTime(sent), clockTime(message.timestamp));
   }
 
   void _onTap(BuildContext context) {
@@ -731,21 +811,46 @@ class _Bubble extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // 슬랙식 퀵 리액션 행: 자주 쓰는 6개 + 전체 피커. 재난 맥락의
+            // 🆗(무사함)를 팔레트에 포함한다.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+              child: Row(
+                children: [
+                  for (final e in const ['👍', '❤️', '😂', '😮', '😢', '🆗'])
+                    Expanded(
+                      child: _quickEmoji(context, sheet, e),
+                    ),
+                  Expanded(
+                    child: IconButton(
+                      tooltip: context.s.chatAllEmojis,
+                      icon: Icon(Icons.add_reaction_outlined,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      onPressed: () {
+                        Navigator.pop(sheet);
+                        _openEmojiPicker(context);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
             if (isText)
               ListTile(
                 leading: const Icon(Icons.copy_outlined),
-                title: const Text('복사'),
+                title: Text(context.s.chatCopy),
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: message.text ?? ''));
                   Navigator.pop(sheet);
                   messenger.showSnackBar(
-                      const SnackBar(content: Text('복사했습니다')));
+                      SnackBar(content: Text(context.s.chatCopied)));
                 },
               ),
             if (hasFile) ...[
               ListTile(
                 leading: const Icon(Icons.visibility_outlined),
-                title: const Text('보기'),
+                title: Text(context.s.chatView),
                 onTap: () {
                   Navigator.pop(sheet);
                   _view(context);
@@ -754,19 +859,19 @@ class _Bubble extends StatelessWidget {
               if (_isMedia)
                 ListTile(
                   leading: const Icon(Icons.photo_library_outlined),
-                  title: const Text('갤러리에 저장'),
+                  title: Text(context.s.chatSaveToGallery),
                   onTap: () async {
                     Navigator.pop(sheet);
+                    final savedMsg = context.s.chatSavedToGallery;
+                    final failedMsg = context.s.chatSaveToGalleryFailed;
                     final ok = await controller.saveToGallery(message);
                     messenger.showSnackBar(SnackBar(
-                        content: Text(ok
-                            ? '갤러리에 저장했습니다'
-                            : '갤러리에 저장하지 못했습니다')));
+                        content: Text(ok ? savedMsg : failedMsg)));
                   },
                 ),
               ListTile(
                 leading: const Icon(Icons.ios_share),
-                title: const Text('공유 · 파일 앱에 저장'),
+                title: Text(context.s.chatShareSaveToFiles),
                 onTap: () {
                   Navigator.pop(sheet);
                   controller.shareFile(message);
@@ -776,7 +881,7 @@ class _Bubble extends StatelessWidget {
             ListTile(
               leading: Icon(Icons.delete_outline,
                   color: Theme.of(context).colorScheme.error),
-              title: Text('삭제',
+              title: Text(context.s.commonDelete,
                   style: TextStyle(
                       color: Theme.of(context).colorScheme.error)),
               onTap: () {
@@ -791,24 +896,84 @@ class _Bubble extends StatelessWidget {
     );
   }
 
+  /// 퀵 팔레트의 이모지 하나 — 이미 내가 누른 이모지는 틴트 원으로 표시.
+  Widget _quickEmoji(BuildContext context, BuildContext sheet, String emoji) {
+    final mine = controller
+        .reactionsOf(message.msgId)
+        .any((r) => r.fromMe && r.emoji == emoji);
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(22),
+      onTap: () {
+        Navigator.pop(sheet);
+        controller.toggleReaction(message.peerHex, message.msgId, emoji);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 7),
+        decoration: mine
+            ? BoxDecoration(
+                color: scheme.primaryContainer.withValues(alpha: 0.6),
+                shape: BoxShape.circle,
+              )
+            : null,
+        child: Text(emoji,
+            textAlign: TextAlign.center, style: const TextStyle(fontSize: 24)),
+      ),
+    );
+  }
+
+  /// 전체 이모지 피커(유니코드 전체) — 선택 즉시 리액션 토글.
+  void _openEmojiPicker(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheet) => SizedBox(
+        height: MediaQuery.of(sheet).size.height * 0.45,
+        child: EmojiPicker(
+          onEmojiSelected: (category, emoji) {
+            Navigator.pop(sheet);
+            controller.toggleReaction(
+                message.peerHex, message.msgId, emoji.emoji);
+          },
+          config: Config(
+            checkPlatformCompatibility: true,
+            emojiViewConfig: EmojiViewConfig(
+              backgroundColor: scheme.surface,
+              emojiSizeMax: 28,
+            ),
+            categoryViewConfig: CategoryViewConfig(
+              backgroundColor: scheme.surface,
+              indicatorColor: scheme.primary,
+              iconColorSelected: scheme.primary,
+            ),
+            bottomActionBarConfig:
+                const BottomActionBarConfig(enabled: false),
+            searchViewConfig: SearchViewConfig(
+              backgroundColor: scheme.surface,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _confirmDelete(BuildContext context) async {
     final isFile = message.kind == MsgKind.file;
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('메시지 삭제'),
+        title: Text(context.s.chatDeleteTitle),
         content: Text(isFile
-            ? '${message.fileName ?? '파일'}이(가) 내 기기에서 삭제됩니다. '
-                '상대방 기기에는 남아 있습니다.'
-            : '이 메시지를 내 기기에서 삭제할까요? '
-                '상대방 기기에는 남아 있습니다.'),
+            ? context.s.chatDeleteFileContent(message.fileName ?? context.s.chatFileFallback)
+            : context.s.chatDeleteTextContent),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('취소')),
+              child: Text(context.s.commonCancel)),
           FilledButton(
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('삭제')),
+              child: Text(context.s.commonDelete)),
         ],
       ),
     );
@@ -819,15 +984,16 @@ class _Bubble extends StatelessWidget {
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('전송 취소'),
-        content: Text('${message.fileName ?? '파일'} 전송을 취소할까요?'),
+        title: Text(context.s.chatCancelSendTitle),
+        content: Text(context.s.chatCancelSendContent(
+            message.fileName ?? context.s.chatFileFallback)),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('계속 보내기')),
+              child: Text(context.s.chatKeepSending)),
           FilledButton(
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('전송 취소')),
+              child: Text(context.s.chatCancelSend)),
         ],
       ),
     );
@@ -836,12 +1002,12 @@ class _Bubble extends StatelessWidget {
 
   Widget _statusIcon(BuildContext context, Color fg, ColorScheme scheme) {
     final (icon, label, color) = switch (message.status) {
-      MsgStatus.sending => (Icons.schedule, '보내는 중', fg),
-      MsgStatus.sent => (Icons.check, '전송됨', fg),
-      MsgStatus.delivered => (Icons.done_all, '전달됨', fg),
-      MsgStatus.failed => (Icons.error_outline, '실패', scheme.error),
-      MsgStatus.queued => (Icons.schedule_send, '전달 대기', fg),
-      _ => (Icons.check, '전송됨', fg),
+      MsgStatus.sending => (Icons.schedule, context.s.chatStatusSending, fg),
+      MsgStatus.sent => (Icons.check, context.s.chatStatusSent, fg),
+      MsgStatus.delivered => (Icons.done_all, context.s.chatStatusDelivered, fg),
+      MsgStatus.failed => (Icons.error_outline, context.s.chatStatusFailed, scheme.error),
+      MsgStatus.queued => (Icons.schedule_send, context.s.chatStatusQueued, fg),
+      _ => (Icons.check, context.s.chatStatusSent, fg),
     };
     return Semantics(
       label: label,
@@ -851,10 +1017,12 @@ class _Bubble extends StatelessWidget {
 
   Widget _fileContent(BuildContext context, Color fg) {
     final progress = controller.transferProgress[message.msgId];
+    final transferring = progress != null && progress < 1;
     final canOpen = message.filePath != null;
+    final Widget body;
     // 받은/보낸 이미지는 인라인 썸네일로 렌더링된다 — 탭하면 뷰어로 연다.
     if (canOpen && _isImage) {
-      return ClipRRect(
+      body = ClipRRect(
         borderRadius: BorderRadius.circular(10),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 280),
@@ -867,42 +1035,104 @@ class _Bubble extends StatelessWidget {
               children: [
                 Icon(Icons.broken_image_outlined, color: fg),
                 const SizedBox(width: 8),
-                Text(message.fileName ?? '이미지',
+                Text(message.fileName ?? context.s.chatImageFallback,
                     style: TextStyle(color: fg)),
               ],
             ),
           ),
         ),
       );
+    } else {
+      body = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(canOpen ? Icons.file_open : Icons.insert_drive_file, color: fg),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(message.fileName ?? context.s.chatFileFallback,
+                    style: TextStyle(color: fg, fontWeight: FontWeight.w600)),
+                Text(
+                  canOpen
+                      ? context.s.chatFileSizeTapOpen(humanSize(message.fileSize ?? 0))
+                      : humanSize(message.fileSize ?? 0),
+                  style:
+                      TextStyle(color: fg.withValues(alpha: 0.7), fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
     }
-    return Row(
+    // 방향·경로·진행을 한 줄로: "↑ 보내는 중 42% · ⌾ Wi-Fi 직결".
+    // 정렬·색만으로는 파일 카드의 방향이 소실된다(양쪽 카드가 동일하게
+    // 생겨서 "내가 보내는 중인지 받는 중인지"를 카드만 보고 알 수 없었다).
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(canOpen ? Icons.file_open : Icons.insert_drive_file, color: fg),
-        const SizedBox(width: 8),
-        Flexible(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(message.fileName ?? '파일',
-                  style: TextStyle(color: fg, fontWeight: FontWeight.w600)),
-              Text(
-                canOpen
-                    ? '${humanSize(message.fileSize ?? 0)} · 탭하여 열기'
-                    : humanSize(message.fileSize ?? 0),
-                style: TextStyle(color: fg.withValues(alpha: 0.7), fontSize: 11),
-              ),
-              if (progress != null && progress < 1)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: SizedBox(
-                    width: 140,
-                    child: LinearProgressIndicator(value: progress),
-                  ),
-                ),
+        body,
+        const SizedBox(height: 5),
+        _transferMeta(context, fg, progress, transferring),
+      ],
+    );
+  }
+
+  /// 파일 말풍선의 전송 메타 행: 방향(보냄/받음) + 진행률 + 실제 경로 칩.
+  Widget _transferMeta(
+      BuildContext context, Color fg, double? progress, bool transferring) {
+    final lane = message.lane ?? controller.laneOf(message.msgId);
+    final dim = fg.withValues(alpha: 0.8);
+    final percent = ((progress ?? 0) * 100).round();
+    final verb = transferring
+        ? (_isMe
+            ? context.s.chatTransferSending(percent)
+            : context.s.chatTransferReceiving(percent))
+        : (_isMe ? context.s.chatSentFile : context.s.chatReceivedFile);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              _isMe ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
+              size: 13,
+              color: dim,
+            ),
+            const SizedBox(width: 3),
+            Text(verb,
+                style: TextStyle(
+                    color: dim, fontSize: 11, fontWeight: FontWeight.w600)),
+            if (lane != null) ...[
+              Text('  ·  ',
+                  style: TextStyle(
+                      color: fg.withValues(alpha: 0.5), fontSize: 11)),
+              Icon(lane == 'wifi' ? Icons.wifi : Icons.bluetooth,
+                  size: 12, color: dim),
+              const SizedBox(width: 3),
+              // 'Wi-Fi 다이렉트': 실제 기술명이자 국내 기기 UI(삼성 설정 등)에서
+              // 통용되는 용어 — "공유기 없이 기기 간 직접"의 뉘앙스를 유지한다.
+              Text(lane == 'wifi' ? context.s.chatLaneWifi : context.s.chatLaneBle,
+                  style: TextStyle(color: dim, fontSize: 11)),
             ],
-          ),
+          ],
         ),
+        if (transferring)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: SizedBox(
+              width: 180,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: LinearProgressIndicator(value: progress, minHeight: 4),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -929,11 +1159,11 @@ class _EmptyChat extends StatelessWidget {
                   size: 34, color: scheme.onPrimaryContainer),
             ),
             const SizedBox(height: 16),
-            Text('종단 간 암호화된 대화입니다',
+            Text(context.s.chatEncryptedTitle,
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 6),
-            Text('첫 인사를 건네보세요 👋',
+            Text(context.s.chatEncryptedSubtitle,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: scheme.onSurfaceVariant)),
           ],
@@ -957,24 +1187,25 @@ class _ImageViewerPage extends StatelessWidget {
       appBar: AppBar(
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
-        title: Text(message.fileName ?? '이미지',
+        title: Text(message.fileName ?? context.s.chatImageFallback,
             style: const TextStyle(fontSize: 16),
             maxLines: 1,
             overflow: TextOverflow.ellipsis),
         actions: [
           IconButton(
             icon: const Icon(Icons.photo_library_outlined),
-            tooltip: '갤러리에 저장',
+            tooltip: context.s.chatSaveToGallery,
             onPressed: () async {
+              final savedMsg = context.s.chatSavedToGallery;
+              final failedMsg = context.s.chatSaveToGalleryFailed;
               final ok = await controller.saveToGallery(message);
-              messenger.showSnackBar(SnackBar(
-                  content: Text(
-                      ok ? '갤러리에 저장했습니다' : '갤러리에 저장하지 못했습니다')));
+              messenger.showSnackBar(
+                  SnackBar(content: Text(ok ? savedMsg : failedMsg)));
             },
           ),
           IconButton(
             icon: const Icon(Icons.ios_share),
-            tooltip: '공유',
+            tooltip: context.s.chatShare,
             onPressed: () => controller.shareFile(message),
           ),
         ],

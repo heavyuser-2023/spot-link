@@ -27,4 +27,8 @@ abstract final class Bridge {
   static const cmdSetName = 'name';
   static const cmdSetSaver = 'saver';
   static const cmdClearRelay = 'clearRelay';
+  static const cmdBoostDiscovery = 'boost';
+  static const cmdToggleReaction = 'react';
+  static const cmdArmQrNonce = 'qrNonce';
+  static const cmdSetAvatar = 'avatar';
 }

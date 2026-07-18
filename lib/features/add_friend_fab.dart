@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/l10n.dart';
+
 /// 인스타그램 스타일의 가장자리 고정 추가 버튼: 화면 오른쪽 끝에 밀착된 납작하고
 /// 밝은 탭(왼쪽 모서리는 넉넉히 둥글고, 오른쪽은 화면 밖으로 흘러 나감)에, 톤을
 /// 맞춘 표면 위 절제된 아이콘 — 요란한 프라이머리 알약도, 라벨도 없다. 해당 탭이
@@ -113,7 +115,7 @@ class _QrEdgeButtonState extends State<QrEdgeButton>
                     Icons.qr_code_scanner,
                     size: 26,
                     color: scheme.onPrimaryContainer,
-                    semanticLabel: 'QR로 친구 추가',
+                    semanticLabel: context.s.peopleAddFriendQr,
                   ),
                 ),
               ),

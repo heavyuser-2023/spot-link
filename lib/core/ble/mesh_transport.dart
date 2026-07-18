@@ -32,6 +32,12 @@ void Function(String line)? bleLogSink;
 Future<List<String>> Function()? knownPeersLoad;
 void Function(List<String> uuids)? knownPeersSave;
 
+/// 본딩된 피어의 영속화(peerHex → 마지막으로 본 peripheral 식별자).
+/// 본딩된 식별자는 주소 회전으로 죽지 않으므로 2스트라이크 망각에서
+/// 제외된다. [MeshTransport.ensureBonded] 참고.
+Future<Map<String, String>> Function()? bondedPeersLoad;
+void Function(Map<String, String> peers)? bondedPeersSave;
+
 void _log(String msg) {
   if (_logBle) debugPrint(msg);
   bleLogSink?.call(msg);
@@ -60,6 +66,7 @@ class MeshLink {
   final Peripheral? peripheral;
   final GATTCharacteristic? remoteTx; // 여기에 write 한다
   final GATTCharacteristic? remoteRx; // 여기서 notify를 받는다
+  final GATTCharacteristic? remoteBond; // 암호화 읽기 → 본딩 유도(없으면 구버전)
 
   // peripheral 역할 핸들(원격 central이 우리에게 연결한 경우).
   final Central? central;
@@ -75,6 +82,7 @@ class MeshLink {
     this.peripheral,
     this.remoteTx,
     this.remoteRx,
+    this.remoteBond,
     this.central,
   });
 
@@ -222,11 +230,23 @@ class MeshTransport implements MeshTransportInterface {
   final Set<String> _knownPeers = {};
   static const int _maxKnownPeers = 6;
 
+  /// 본딩 상태: peerHex → 마지막 peripheral 식별자. [bondedPeersLoad]에서
+  /// 기동 시 채워지고 [ensureBonded] 성공 시 갱신·영속화된다.
+  final Map<String, String> _bondedPeers = {};
+
+  /// 이 세션에서 본딩을 이미 시도한 피어 — 성공/거절 무관 재프롬프트 금지.
+  final Set<String> _bondAttempted = {};
+
   void _rememberPeer(String uuid) {
     _knownPeers.remove(uuid);
     _knownPeers.add(uuid);
     while (_knownPeers.length > _maxKnownPeers) {
-      _knownPeers.remove(_knownPeers.first);
+      // 가장 오래된 것부터 밀어내되, 본딩된 id는 건너뛴다 — 주소 회전에도
+      // 죽지 않는 유일한 재장전 후보를 뜨내기 id가 밀어내면 안 된다.
+      final victim = _knownPeers.firstWhere(
+          (id) => !_bondedPeers.containsValue(id),
+          orElse: () => _knownPeers.first);
+      _knownPeers.remove(victim);
     }
     knownPeersSave?.call(_knownPeers.toList());
   }
@@ -244,10 +264,19 @@ class MeshTransport implements MeshTransportInterface {
   /// 피어를 scan으로 재발견할 수 없으므로, 이 pending connect가 유일한
   /// reconnect 경로다 — 반드시 가장 신선한 id를 겨냥해야 한다. 테스트 용이성을
   /// 위해 순수 함수 + static이다.
-  static List<String> pendingReconnectOrder(List<String> saved, int budget) {
+  ///
+  /// [bonded]에 든 식별자는 최우선이다: 본딩된 id는 주소 회전으로 죽지
+  /// 않는 유일한 부류라, 짧은 웨이크 창(~10–30초)에서 성공이 보장에 가까운
+  /// 후보를 슬롯 경쟁에서 앞세워야 한다. 각 그룹 안에서는 최신순 유지.
+  static List<String> pendingReconnectOrder(List<String> saved, int budget,
+      {Set<String> bonded = const {}}) {
     final cap = budget < _maxPendingReconnects ? budget : _maxPendingReconnects;
     if (cap <= 0) return const [];
-    return saved.reversed.take(cap).toList();
+    final recentFirst = saved.reversed.toList();
+    return [
+      ...recentFirst.where(bonded.contains),
+      ...recentFirst.where((id) => !bonded.contains(id)),
+    ].take(cap).toList();
   }
 
   /// iOS: 영속화된 모든 피어에 대해 pending connect를 세워 둔다. 걸려 있는
@@ -260,7 +289,8 @@ class MeshTransport implements MeshTransportInterface {
       _knownPeers.addAll(saved);
       final budget = maxLinks - _links.length - _connecting.length - 2;
       var armed = 0;
-      for (final uuid in pendingReconnectOrder(saved, budget)) {
+      for (final uuid in pendingReconnectOrder(saved, budget,
+          bonded: _bondedPeers.values.toSet())) {
         try {
           final peripheral = await _central.getPeripheral(uuid);
           if (_links.containsKey('C:$uuid') || _connecting.contains(uuid)) {
@@ -272,6 +302,51 @@ class MeshTransport implements MeshTransportInterface {
       }
       if (armed > 0) _log('BLE known-peer reconnect armed x$armed');
     } catch (_) {}
+  }
+
+  /// QR로 검증된 친구와의 살아 있는 central 링크에서 OS 본딩을 유도한다.
+  /// 암호화 특성([BleConstants.bondCharacteristicUuid])을 한 번 읽으면:
+  /// 미본딩이면 OS가 페어링 다이얼로그를 띄우고(수락 시 IRK 교환 → 상대
+  /// 주소 회전을 OS가 투명하게 해석 → 대기 연결이 절대 죽지 않음), 이미
+  /// 본딩돼 있으면 조용히 성공한다. 세션당 피어당 1회만 시도해 거절한
+  /// 사용자를 들볶지 않는다.
+  Future<void> ensureBonded(String peerHex) async {
+    if (!_started || _bondAttempted.contains(peerHex)) return;
+    MeshLink? link;
+    for (final l in _links.values) {
+      if (l.role == LinkRole.central &&
+          l.remoteShortId?.hex == peerHex &&
+          l.remoteBond != null &&
+          l.peripheral != null) {
+        link = l;
+        break;
+      }
+    }
+    if (link == null) return; // 직접 central 링크 없음(멀티홉 또는 구버전 피어)
+    _bondAttempted.add(peerHex);
+    // 양쪽이 동시에 SMP를 개시해 충돌하지 않도록 id 사전순으로 시차를 둔다 —
+    // 늦은 쪽은 이미 암호화된 링크를 만나 조용히 성공한다.
+    final delay = myShortId.hex.compareTo(peerHex) < 0
+        ? const Duration(seconds: 1)
+        : const Duration(seconds: 8);
+    await Future<void>.delayed(delay);
+    if (!_started || !_links.containsKey(link.id)) {
+      _bondAttempted.remove(peerHex); // 링크가 사라짐 — 다음 링크에서 재시도
+      return;
+    }
+    try {
+      // 상한에는 사용자가 페어링 다이얼로그에서 고민할 시간도 포함된다.
+      await _central
+          .readCharacteristic(link.peripheral!, link.remoteBond!)
+          .timeout(const Duration(seconds: 60));
+      final key = link.id.substring(2);
+      _bondedPeers[peerHex] = key;
+      bondedPeersSave?.call(Map.of(_bondedPeers));
+      _log('BLE bonded with peer $peerHex ($key)');
+    } catch (e) {
+      // 거절/타임아웃/링크 소실 — 이번 세션은 조용히 물러난다.
+      _log('BLE bond attempt failed for $peerHex: $e');
+    }
   }
 
   /// 걸려 있는 pending-reconnect 키들([_connecting]의 부분집합)과 그
@@ -427,6 +502,12 @@ class MeshTransport implements MeshTransportInterface {
     _wireAdapterState();
     _log('BLE start: central=${_central.state} peripheral=${_peripheral.state} '
         'me=${myShortId.short}');
+    try {
+      _bondedPeers.addAll(await bondedPeersLoad?.call() ?? const {});
+      if (_bondedPeers.isNotEmpty) {
+        _log('BLE bonded peers loaded x${_bondedPeers.length}');
+      }
+    } catch (_) {} // 본딩 기록 없음/손상 — 링크가 생기면 다시 채워진다
     // peripheral 매니저는 central과 독립적으로 전원이 켜진다(iOS에서는 흔히
     // 한 박자 늦다). 아직 준비되지 않은 매니저에서 service를 publish하거나
     // advertising하면 조용히 실패해, 이 노드는 scan은 하지만 다른 누구에게도
@@ -560,6 +641,23 @@ class MeshTransport implements MeshTransportInterface {
     } else {
       _beginDutyCycle();
     }
+  }
+
+  /// 사용자가 명시적으로 요청한 재탐색([wake]의 강화판, 당겨서 새로고침).
+  /// 자동 경로가 실패 폭풍을 막으려고 쌓아 둔 백오프/쿨다운은 "사용자가 지금
+  /// 찾으라고 했다"는 신호 앞에서는 의미가 없다 — 전부 비워서 scan 결과가
+  /// 즉시 다시 dial/probe되게 하고, iOS에서는 빈 슬롯에 알려진 피어 대기
+  /// 연결도 재장전한다(백그라운드 iPhone은 scan에 안 보이므로 이것이 유일한
+  /// 경로다). 이미 걸려 있는 pending은 건드리지 않는다 — 90초 워치독이
+  /// 죽은 식별자를 알아서 걸러낸다.
+  Future<void> boost() async {
+    if (!_started) return;
+    _log('BLE boost: user-requested rediscovery');
+    _probeMisses.clear();
+    _probeBackoff.clear();
+    _lastDialAt.clear();
+    wake();
+    if (Platform.isIOS) await _reconnectKnownPeers();
   }
 
   Future<void> _pollRssi() async {
@@ -728,27 +826,39 @@ class MeshTransport implements MeshTransportInterface {
           // 긴 파일 청크 폭주가 증발해버린다. 그래서 몇 패킷마다 한 번씩
           // response를 받는(WITH response) write를 한다: ATT 왕복이 다음으로
           // 넘어가기 전에 큐를 비워준다.
+          //
+          // 모든 write에 상한 필수: 반쯤 죽은 링크의 withResponse ATT 응답이
+          // 영영 안 오면 이 await가 무한 대기가 되고, broadcast를 기다리는
+          // 호출자(파일 META 디스패치 → sendFilePath → UI 전송 루프)까지
+          // 전부 얼어붙는다(2026-07-17 22:31 관찰: 파일 3의 META에서 정지,
+          // 파일 4·5는 시작조차 못 함). 타임아웃 = 죽은 링크로 판정하고
+          // teardown — 다음 발견/대기연결이 새 링크를 만든다.
           link.txBurst++;
           final flush = link.txBurst >= 6;
           if (flush) link.txBurst = 0;
-          await _central.writeCharacteristic(
-            link.peripheral!,
-            link.remoteTx!,
-            value: p,
-            type: flush
-                ? GATTCharacteristicWriteType.withResponse
-                : GATTCharacteristicWriteType.withoutResponse,
-          );
+          await _central
+              .writeCharacteristic(
+                link.peripheral!,
+                link.remoteTx!,
+                value: p,
+                type: flush
+                    ? GATTCharacteristicWriteType.withResponse
+                    : GATTCharacteristicWriteType.withoutResponse,
+              )
+              .timeout(const Duration(seconds: 10));
         } else {
           if (!link.centralSubscribed || _localRx == null) return;
-          await _peripheral.notifyCharacteristic(
-            link.central!,
-            _localRx!,
-            value: p,
-          );
+          await _peripheral
+              .notifyCharacteristic(
+                link.central!,
+                _localRx!,
+                value: p,
+              )
+              .timeout(const Duration(seconds: 10));
         }
       } catch (e) {
-        // write 실패는 보통 링크가 죽었다는 뜻이다; teardown한다.
+        // write 실패/타임아웃은 링크가 죽었다는 뜻이다; teardown한다.
+        _log('BLE send failed on ${link.id} ($e) — tearing down');
         _tearDown(link.id);
         return;
       }
@@ -780,11 +890,21 @@ class MeshTransport implements MeshTransportInterface {
       value: infoValue,
       descriptors: [],
     );
+    // 본딩 유도 특성: 암호화 읽기 전용. 미본딩 central이 읽으면 OS가
+    // 페어링을 개시하고(iOS: readEncryptionRequired, Android: 포크 패치로
+    // PERMISSION_READ_ENCRYPTED), 본딩 후에는 조용히 성공한다. 값은 무의미 —
+    // 읽기가 성공했다는 사실 자체가 "링크가 암호화됐다"의 증명이다.
+    final bond = GATTCharacteristic.mutable(
+      uuid: BleConstants.bondCharacteristicUuid,
+      properties: [GATTCharacteristicProperty.read],
+      permissions: [GATTCharacteristicPermission.readEncrypted],
+      descriptors: [],
+    );
     final service = GATTService(
       uuid: BleConstants.serviceUuid,
       isPrimary: true,
       includedServices: [],
-      characteristics: [rx, tx, info],
+      characteristics: [rx, tx, info, bond],
     );
     _localRx = rx;
     try {
@@ -848,6 +968,26 @@ class MeshTransport implements MeshTransportInterface {
   }
 
   void _wirePeripheral() {
+    _subs.add(_peripheral.characteristicReadRequested.listen((e) async {
+      // mutable 특성의 read 요청. BOND에 요청이 도달했다는 것 자체가 OS가
+      // 이미 암호화(=페어링)를 마쳤다는 뜻이므로 상수로 답한다. INFO는
+      // immutable이라 대개 스택이 캐시로 응답하지만, 이벤트를 올리는
+      // 플랫폼을 위해 같은 값을 준다.
+      try {
+        if (e.characteristic.uuid == BleConstants.bondCharacteristicUuid) {
+          await _peripheral.respondReadRequestWithValue(e.request,
+              value: Uint8List.fromList('SLB1'.codeUnits));
+        } else if (e.characteristic.uuid ==
+            BleConstants.infoCharacteristicUuid) {
+          await _peripheral.respondReadRequestWithValue(e.request,
+              value: infoValue);
+        } else {
+          await _peripheral.respondReadRequestWithError(e.request,
+              error: GATTError.readNotPermitted);
+        }
+      } catch (_) {}
+    }));
+
     _subs.add(_peripheral.characteristicWriteRequested.listen((e) async {
       // 원격 central이 우리의 TX characteristic에 패킷을 write했다.
       if (e.characteristic.uuid != BleConstants.txCharacteristicUuid) {
@@ -1289,15 +1429,22 @@ class MeshTransport implements MeshTransportInterface {
     _pendingTimers.remove(key);
     if (_links.containsKey('C:$key')) return; // 그 사이에 연결됨
     if (!_pendingKeys.contains(key)) return; // 이미 해소됨 / 밀려남
-    final strikes = (_pendingStaleStrikes[key] ?? 0) + 1;
-    _pendingStaleStrikes[key] = strikes;
-    if (strikes >= 2 && _knownPeers.remove(key)) {
-      knownPeersSave?.call(_knownPeers.toList());
-      _pendingStaleStrikes.remove(key);
-      _log('BLE forgetting stale peer identifier $key '
-          '(no link in ${_pendingStaleTimeout.inSeconds}s x$strikes)');
+    if (_bondedPeers.containsValue(key)) {
+      // 본딩된 피어의 식별자는 주소 회전으로 죽지 않는다 — 만료는 상대가
+      // 지금 범위 밖/전원 꺼짐이라는 뜻일 뿐이다. 슬롯은 풀되 절대 잊지
+      // 않는다(잊으면 본딩의 존재 이유가 사라진다).
+      _log('BLE pending reconnect expired $key (bonded — identifier kept)');
     } else {
-      _log('BLE pending reconnect expired $key (strike $strikes)');
+      final strikes = (_pendingStaleStrikes[key] ?? 0) + 1;
+      _pendingStaleStrikes[key] = strikes;
+      if (strikes >= 2 && _knownPeers.remove(key)) {
+        knownPeersSave?.call(_knownPeers.toList());
+        _pendingStaleStrikes.remove(key);
+        _log('BLE forgetting stale peer identifier $key '
+            '(no link in ${_pendingStaleTimeout.inSeconds}s x$strikes)');
+      } else {
+        _log('BLE pending reconnect expired $key (strike $strikes)');
+      }
     }
     final p = _pendingPeripherals[key];
     if (p != null) {
@@ -1345,7 +1492,7 @@ class MeshTransport implements MeshTransportInterface {
       // 다시 dial할 수 없었다(관찰됨: idle 상태의 두 폰이 establish 도중 서로 20분
       // 넘게 막혀 있었다). 위의 connect()는 non-probe 경로에서 일부러 상한 없이
       // 둔다 — iOS의 pending reconnect는 설계상 몇 분 뒤에 완료된다.
-      final (tx, rx, maxPacket) = await () async {
+      final (tx, rx, bond, maxPacket) = await () async {
         var services = await _central.discoverGATT(peripheral);
         var hasSvc = services.any((s) => s.uuid == BleConstants.serviceUuid);
         // SpotLink service가 없는 SpotLink advertiser는 거의 언제나 재실행
@@ -1370,10 +1517,11 @@ class MeshTransport implements MeshTransportInterface {
         }
         final svc =
             services.firstWhere((s) => s.uuid == BleConstants.serviceUuid);
-        GATTCharacteristic? tx, rx;
+        GATTCharacteristic? tx, rx, bond;
         for (final c in svc.characteristics) {
           if (c.uuid == BleConstants.txCharacteristicUuid) tx = c;
           if (c.uuid == BleConstants.rxCharacteristicUuid) rx = c;
+          if (c.uuid == BleConstants.bondCharacteristicUuid) bond = c;
         }
         if (tx == null || rx == null) {
           throw StateError('characteristics not found');
@@ -1394,7 +1542,7 @@ class MeshTransport implements MeshTransportInterface {
 
         await _central.setCharacteristicNotifyState(peripheral, rx,
             state: true);
-        return (tx, rx, maxPacket);
+        return (tx, rx, bond, maxPacket);
       }()
           .timeout(const Duration(seconds: 25));
 
@@ -1413,6 +1561,7 @@ class MeshTransport implements MeshTransportInterface {
         peripheral: peripheral,
         remoteTx: tx,
         remoteRx: rx,
+        remoteBond: bond,
         maxPacketSize: maxPacket.clamp(BleConstants.defaultMaxPacketSize, 512),
       )..remoteShortId = remoteId;
       _links[linkId] = link;

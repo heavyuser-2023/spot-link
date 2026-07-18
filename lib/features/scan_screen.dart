@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../app/mesh_controller.dart';
 import '../core/ble/mesh_transport.dart' show bleLogSink;
 import '../core/model/qr_payload.dart';
+import '../l10n/l10n.dart';
 
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -32,18 +33,19 @@ class _ScanScreenState extends State<ScanScreen> {
           'parsed=${parsed != null}');
       if (parsed == null) continue;
       _handled = true;
-      final (bundle, name) = parsed;
+      final (bundle, name, nonce) = parsed;
       final controller = context.read<MeshFrontend>();
       try {
         final contact = await controller.addContactFromBundle(
           bundle,
           name: name.isEmpty ? null : name,
           verified: true,
+          verifyNonce: nonce,
         );
         bleLogSink?.call('QR add ok: ${contact.peerId.short}');
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${contact.displayName}님을 추가했습니다 ✓')),
+          SnackBar(content: Text(context.s.scanAddedContact(contact.displayName))),
         );
         Navigator.of(context).pop();
       } catch (e, st) {
@@ -51,7 +53,7 @@ class _ScanScreenState extends State<ScanScreen> {
         _handled = false;
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('추가 실패: $e')),
+          SnackBar(content: Text(context.s.scanAddFailed('$e'))),
         );
       }
       return;
@@ -70,12 +72,12 @@ class _ScanScreenState extends State<ScanScreen> {
         // onSurface(어두운 색)를 써서, 라이브 프리뷰 위에서는 읽을 수 없다.
         titleTextStyle: const TextStyle(
             color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700),
-        title: const Text('QR 코드 스캔'),
+        title: Text(context.s.scanTitle),
         actions: [
           // 손전등 토글 — 어두운 방에서 인쇄된/화면 속 코드를 스캔하는 건
           // 실제로 있는 상황이다; 손전등은 바로 여기에 있어야 한다.
           IconButton(
-            tooltip: '플래시',
+            tooltip: context.s.scanFlash,
             icon: const Icon(Icons.flash_on),
             onPressed: () => _controller.toggleTorch(),
           ),
@@ -101,10 +103,10 @@ class _ScanScreenState extends State<ScanScreen> {
                   color: Colors.black.withValues(alpha: 0.6),
                   borderRadius: BorderRadius.circular(22),
                 ),
-                child: const Text(
-                  '친구의 SpotLink QR 코드를 사각형 안에 맞춰주세요',
+                child: Text(
+                  context.s.scanHint,
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white, fontSize: 14),
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
                 ),
               ),
             ),

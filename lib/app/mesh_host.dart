@@ -106,7 +106,13 @@ class MeshHost {
             base64Decode(m['b'] as String),
             name: m['name'] as String?,
             verified: m['v'] != false,
+            verifyNonce:
+                m['n'] is String ? base64Decode(m['n'] as String) : null,
           );
+        case Bridge.cmdArmQrNonce:
+          c.armQrNonce(base64Decode(m['n'] as String));
+        case Bridge.cmdSetAvatar:
+          await c.setAvatarRecipe(m['v'] as String);
         case Bridge.cmdDeleteContact:
           await c.deleteContact(m['p'] as String);
         case Bridge.cmdRenameContact:
@@ -117,6 +123,11 @@ class MeshHost {
           c.setPowerSaver(m['v'] == true);
         case Bridge.cmdClearRelay:
           await c.clearRelayStore();
+        case Bridge.cmdBoostDiscovery:
+          await c.boostDiscovery();
+        case Bridge.cmdToggleReaction:
+          await c.toggleReaction(
+              m['p'] as String, m['id'] as String, m['e'] as String);
       }
     } catch (e) {
       bleLogSink?.call('MeshHost command ${m['c']} failed: $e');

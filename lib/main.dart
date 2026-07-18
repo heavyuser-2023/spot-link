@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'app/bootstrap.dart';
+import 'l10n/l10n.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -106,6 +107,19 @@ class SpotLinkApp extends StatelessWidget {
     return MaterialApp(
       title: 'SpotLink',
       debugShowCheckedModeBanner: false,
+      // 시스템 언어를 따른다. 지원 목록에 없으면 첫 항목(영어)으로 폴백 —
+      // basicLocaleListResolution의 기본 규약이다.
+      localizationsDelegates: S.localizationsDelegates,
+      supportedLocales: const [
+        Locale('en'), // 폴백 기본
+        Locale('ko'),
+        Locale('ja'),
+        Locale('zh'),
+        Locale('es'),
+        Locale('fr'),
+        Locale('de'),
+        Locale('pt'),
+      ],
       theme: _theme(Brightness.light),
       darkTheme: _theme(Brightness.dark),
       // 텍스트 필드 바깥 아무 곳이나 탭하면 키보드가 닫힌다. 이것이 없으면, 닫힌

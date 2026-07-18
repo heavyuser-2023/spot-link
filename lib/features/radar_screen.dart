@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../app/mesh_controller.dart';
 import '../data/models.dart';
+import '../l10n/l10n.dart';
 import 'chat_screen.dart';
 import 'ui_utils.dart';
 
@@ -85,15 +86,32 @@ class _RadarScreenState extends State<RadarScreen>
   Widget build(BuildContext context) {
     final c = context.watch<MeshFrontend>();
     final scheme = Theme.of(context).colorScheme;
-    final nearby = c.contacts.where((x) => c.isNearby(x.peerHex)).toList()
-      ..sort((a, b) => c.hopsTo(a.peerHex) - c.hopsTo(b.peerHex));
+    // 신뢰 → 근접순(주변 탭과 동일 기준). 붐비는 공간에서는 상한을 두고
+    // 가장 믿을 수 있고 가까운 사람부터 그린다 — 100명을 다 그리면 SVG
+    // 아바타 렌더 비용과 겹침으로 화면이 죽는다.
+    int trustTier(Contact x) => x.verified
+        ? 0
+        : c.hasChat(x.peerHex)
+            ? 1
+            : 2;
+    final all = c.contacts.where((x) => c.isNearby(x.peerHex)).toList()
+      ..sort((a, b) {
+        final t = trustTier(a) - trustTier(b);
+        if (t != 0) return t;
+        return c.hopsTo(a.peerHex) - c.hopsTo(b.peerHex);
+      });
+    const cap = 48;
+    final nearby = all.length <= cap ? all : all.sublist(0, cap);
+    final hidden = all.length - nearby.length;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('주변 친구 ${nearby.length}'),
+        title: Text(hidden > 0
+            ? context.s.radarTitleCapped(all.length, cap)
+            : context.s.radarTitle(all.length)),
         actions: [
           IconButton(
-            tooltip: '원래 배율',
+            tooltip: context.s.radarResetZoom,
             icon: const Icon(Icons.center_focus_strong_outlined),
             onPressed: _reset,
           ),
@@ -105,6 +123,14 @@ class _RadarScreenState extends State<RadarScreen>
           final center = Offset(size.width / 2, size.height / 2);
           final maxR = math.min(size.width, size.height) / 2 - 56;
           final origin = center + _offset;
+          final layout = RadarLayout.compute(
+            peers: nearby,
+            frontend: c,
+            center: origin,
+            maxR: maxR,
+            ringFractions: _ringFractions,
+            scale: _scale,
+          );
 
           return GestureDetector(
             behavior: HitTestBehavior.opaque,
@@ -131,38 +157,90 @@ class _RadarScreenState extends State<RadarScreen>
                       ),
                     ),
                   ),
-                  // 나 (중심) — 크기 고정.
-                  Positioned(
-                    left: origin.dx - 22,
-                    top: origin.dy - 22,
-                    child: Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        color: scheme.primary,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: scheme.surface, width: 3),
+                  // 중계 경로(나 → 릴레이 → 상대): 아바타 밑에 깔린다.
+                  if (layout.relayPaths.isNotEmpty)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: RelayPathPainter(
+                            center: origin,
+                            paths: layout.relayPaths,
+                            color: Colors.amber,
+                          ),
+                        ),
                       ),
-                      child:
-                          Icon(Icons.person, size: 24, color: scheme.onPrimary),
+                    ),
+                  // 나 (중심) — 내 아바타, 크기 고정. 프라이머리 링으로 "나"임을 구분.
+                  Positioned(
+                    left: origin.dx - 24,
+                    top: origin.dy - 24,
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: scheme.surface,
+                        border: Border.all(color: scheme.primary, width: 2.5),
+                      ),
+                      child: PersonAvatar(
+                        avatar: c.myAvatar,
+                        displayName: c.displayName,
+                        colorKey: c.myId.hex,
+                        radius: 19,
+                      ),
                     ),
                   ),
-                  for (var i = 0; i < nearby.length; i++)
-                    _avatar(context, c, nearby[i], i, origin, maxR),
+                  for (final peer in nearby)
+                    _avatar(context, c, peer, layout.pos[peer.peerHex]!),
                   Positioned(
                     left: 0,
                     right: 0,
                     bottom: 10,
                     child: IgnorePointer(
-                      child: Text(
-                        _scale > 1.01
-                            ? '${_scale.toStringAsFixed(1)}× · 두 번 탭하면 원래대로'
-                            : '가까울수록 중앙 · 핀치로 확대, 드래그로 이동',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context)
-                            .textTheme
-                            .labelSmall
-                            ?.copyWith(color: scheme.outline),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // 신뢰 범례: 배지가 무슨 뜻인지 한 줄로.
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.verified,
+                                  size: 13, color: Colors.blue),
+                              const SizedBox(width: 3),
+                              Text(context.s.radarLegendVerified,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall
+                                      ?.copyWith(color: scheme.outline)),
+                              const SizedBox(width: 12),
+                              Icon(Icons.chat_bubble,
+                                  size: 11, color: scheme.onSurfaceVariant),
+                              const SizedBox(width: 3),
+                              Text(context.s.radarLegendChatted,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall
+                                      ?.copyWith(color: scheme.outline)),
+                              const SizedBox(width: 12),
+                              Text(context.s.radarLegendDiscovered,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall
+                                      ?.copyWith(color: scheme.outline)),
+                            ],
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            _scale > 1.01
+                                ? context.s
+                                    .radarZoomHint(_scale.toStringAsFixed(1))
+                                : context.s.radarPanZoomHint,
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelSmall
+                                ?.copyWith(color: scheme.outline),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -175,21 +253,11 @@ class _RadarScreenState extends State<RadarScreen>
     );
   }
 
-  Widget _avatar(BuildContext context, MeshFrontend c, Contact peer, int index,
-      Offset origin, double maxR) {
-    final bucket =
-        proximityBucket(c.rssiOf(peer.peerHex), c.hopsTo(peer.peerHex));
-    // 거리는 줌에 따라 스케일되지만, 아래의 글리프는 그렇지 않다.
-    final radius = maxR * _ringFractions[bucket.ring] * _scale;
-    // 카드와 동일한 안정적 해시 + 황금각 분산을 써서, 한 피어가 두 뷰에서
-    // 같은 위치에 앉도록 한다.
-    var hash = 0;
-    for (final u in peer.peerHex.codeUnits) {
-      hash = (hash * 31 + u) & 0x7fffffff;
-    }
-    final angle = (hash % 360) * math.pi / 180 + index * 2.399;
-    final pos = origin +
-        Offset(math.cos(angle) * radius, math.sin(angle) * radius * 0.82);
+  Widget _avatar(
+      BuildContext context, MeshFrontend c, Contact peer, Offset pos) {
+    // 라벨용 근접 버킷(배치는 RadarLayout이 계산한다).
+    final hops = c.hopsTo(peer.peerHex);
+    final bucket = proximityBucket(c.rssiOf(peer.peerHex), hops);
 
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 120),
@@ -203,21 +271,35 @@ class _RadarScreenState extends State<RadarScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: Theme.of(context).colorScheme.surface,
-                  width: 2.5,
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: peer.verified
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.surface,
+                      width: 2.5,
+                    ),
+                  ),
+                  child: PersonAvatar(
+                    avatar: peer.avatar,
+                    displayName: peer.displayName,
+                    colorKey: peer.peerHex,
+                    radius: 22,
+                  ),
                 ),
-              ),
-              child: CircleAvatar(
-                radius: 22,
-                backgroundColor: avatarColor(peer.peerHex),
-                foregroundColor: Colors.white,
-                child: Text(initialsOf(peer.displayName),
-                    style: const TextStyle(fontSize: 16)),
-              ),
+                Positioned(
+                  right: -4,
+                  top: -4,
+                  child: RadarTrustBadge(
+                    verified: peer.verified,
+                    chatted: c.hasChat(peer.peerHex),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 2),
             Text(
@@ -227,7 +309,7 @@ class _RadarScreenState extends State<RadarScreen>
               style: Theme.of(context).textTheme.labelMedium,
             ),
             Text(
-              bucket.label,
+              bucket.level.label(context, hops: hops),
               style: Theme.of(context)
                   .textTheme
                   .labelSmall
@@ -237,6 +319,189 @@ class _RadarScreenState extends State<RadarScreen>
         ),
       ),
     );
+  }
+}
+
+/// 레이더 아바타의 신뢰 배지: QR로 서로 확인한 친구는 파란 체크(목록과
+/// 동일한 시각 언어), 대화만 나눈 친구는 말풍선, 그냥 발견된 사람은 배지
+/// 없음 — 재난 상황에서 "누구를 믿을 수 있나"를 레이더에서 즉시 읽게 한다.
+class RadarTrustBadge extends StatelessWidget {
+  final bool verified;
+  final bool chatted;
+  const RadarTrustBadge(
+      {super.key, required this.verified, required this.chatted});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!verified && !chatted) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration:
+          BoxDecoration(color: scheme.surface, shape: BoxShape.circle),
+      padding: const EdgeInsets.all(1.5),
+      child: verified
+          ? const Icon(Icons.verified, size: 14, color: Colors.blue)
+          : Icon(Icons.chat_bubble,
+              size: 11, color: scheme.onSurfaceVariant),
+    );
+  }
+}
+
+/// 레이더 위 피어 배치 + 중계 경로 계산. 친구 탭 카드와 전체 화면 레이더가
+/// 같은 결과를 공유해, 한 피어가 두 뷰에서 같은 자리에 앉는다.
+///
+/// 배치 규칙:
+/// - 직접(1홉) 피어: 기존과 동일한 안정 해시 + 황금각 분산.
+/// - 멀티홉 피어: 마지막 릴레이([MeshFrontend.viaOf])의 각도 근처에 앵커 —
+///   "나 → 릴레이 → 상대"의 점선 경로가 꼬이지 않고 자연스럽게 읽힌다.
+///   릴레이를 모르면(구버전 스냅샷 등) 기존 해시 배치로 폴백.
+class RadarLayout {
+  /// peerHex → 레이더 좌표.
+  final Map<String, Offset> pos;
+
+  /// (릴레이 위치, 멀티홉 상대 위치) 쌍 — [RelayPathPainter]가 그린다.
+  final List<(Offset, Offset)> relayPaths;
+  RadarLayout(this.pos, this.relayPaths);
+
+  static int _hash(String key) {
+    var h = 0;
+    for (final u in key.codeUnits) {
+      h = (h * 31 + u) & 0x7fffffff;
+    }
+    return h;
+  }
+
+  static RadarLayout compute({
+    required List<Contact> peers,
+    required MeshFrontend frontend,
+    required Offset center,
+    required double maxR,
+    required List<double> ringFractions,
+    double scale = 1.0,
+  }) {
+    Offset place(double angle, double radius) =>
+        center +
+        Offset(math.cos(angle) * radius, math.sin(angle) * radius * 0.82);
+    double ringRadius(Contact p) {
+      final bucket = proximityBucket(
+          frontend.rssiOf(p.peerHex), frontend.hopsTo(p.peerHex));
+      return maxR * ringFractions[bucket.ring] * scale;
+    }
+
+    double hashAngle(String hex, int index) =>
+        (_hash(hex) % 360) * math.pi / 180 + index * 2.399;
+
+    final pos = <String, Offset>{};
+    final angles = <String, double>{};
+    // 1차: 직접 피어를 먼저 앉혀야 멀티홉이 앵커할 각도가 생긴다.
+    for (var i = 0; i < peers.length; i++) {
+      final p = peers[i];
+      if (frontend.hopsTo(p.peerHex) > 1) continue;
+      final angle = hashAngle(p.peerHex, i);
+      angles[p.peerHex] = angle;
+      pos[p.peerHex] = place(angle, ringRadius(p));
+    }
+    // 2차: 멀티홉 피어 — 릴레이 각도 ±0.45rad 안에서 해시로 흩뿌린다.
+    final paths = <(Offset, Offset)>[];
+    for (var i = 0; i < peers.length; i++) {
+      final p = peers[i];
+      if (frontend.hopsTo(p.peerHex) <= 1) continue;
+      final viaHex = frontend.viaOf(p.peerHex);
+      final anchor = viaHex == null ? null : angles[viaHex];
+      final angle = anchor == null
+          ? hashAngle(p.peerHex, i)
+          : anchor + ((_hash(p.peerHex) % 100) / 100 - 0.5) * 0.9;
+      angles[p.peerHex] = angle;
+      final at = place(angle, ringRadius(p));
+      pos[p.peerHex] = at;
+      final viaPos = viaHex == null ? null : pos[viaHex];
+      if (viaPos != null) paths.add((viaPos, at));
+    }
+    return RadarLayout(pos, paths);
+  }
+}
+
+/// 중계 경로: 나 → 릴레이는 흔적만(옅은 점선 직선 — 직접 링크는 이미
+/// 자명하다), 릴레이 → 상대는 바깥으로 살짝 휘는 점선 곡선. 앰버는 목록의
+/// 중계(멀티홉) 도트와 같은 액센트 언어다. 양 끝은 아바타에 겹치지 않게
+/// 잘라낸다.
+class RelayPathPainter extends CustomPainter {
+  final Offset center;
+  final List<(Offset, Offset)> paths;
+  final Color color;
+  RelayPathPainter({
+    required this.center,
+    required this.paths,
+    required this.color,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final toRelay = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.1
+      ..strokeCap = StrokeCap.round
+      ..color = color.withValues(alpha: 0.20);
+    final toPeer = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round
+      ..color = color.withValues(alpha: 0.55);
+    for (final (via, target) in paths) {
+      canvas.drawPath(
+        _dashed(
+          Path()
+            ..moveTo(center.dx, center.dy)
+            ..lineTo(via.dx, via.dy),
+          trimStart: 26,
+          trimEnd: 24,
+        ),
+        toRelay,
+      );
+      // 곡률: 중점을 중심 반대 방향으로 살짝 밀어낸 2차 베지어.
+      final mid = Offset((via.dx + target.dx) / 2, (via.dy + target.dy) / 2);
+      final away = mid - center;
+      final ctrl =
+          away.distance < 1 ? mid : mid + away / away.distance * 14;
+      canvas.drawPath(
+        _dashed(
+          Path()
+            ..moveTo(via.dx, via.dy)
+            ..quadraticBezierTo(ctrl.dx, ctrl.dy, target.dx, target.dy),
+          trimStart: 24,
+          trimEnd: 24,
+        ),
+        toPeer,
+      );
+    }
+  }
+
+  static Path _dashed(Path src,
+      {double dash = 5, double gap = 4.5, double trimStart = 0, double trimEnd = 0}) {
+    final out = Path();
+    for (final metric in src.computeMetrics()) {
+      var d = trimStart;
+      final end = metric.length - trimEnd;
+      while (d < end) {
+        final next = math.min(d + dash, end);
+        out.addPath(metric.extractPath(d, next), Offset.zero);
+        d = next + gap;
+      }
+    }
+    return out;
+  }
+
+  @override
+  bool shouldRepaint(RelayPathPainter old) {
+    if (old.center != center ||
+        old.color != color ||
+        old.paths.length != paths.length) {
+      return true;
+    }
+    for (var i = 0; i < paths.length; i++) {
+      if (old.paths[i] != paths[i]) return true;
+    }
+    return false;
   }
 }
 

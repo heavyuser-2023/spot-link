@@ -108,4 +108,26 @@ class IdentityStore {
     } catch (_) {}
     await _storage.write(key: _keyName, value: name);
   }
+
+  static const _keyAvatar = 'spotlink_avatar_recipe';
+  static const _keyAvatarCustomized = 'spotlink_avatar_customized';
+
+  /// 내 파츠 아바타 레시피(compact 문자열) — 없으면 null(이니셜 아바타).
+  Future<String?> storedAvatar() async =>
+      await _storage.read(key: _keyAvatar);
+
+  Future<void> setAvatar(String recipe) async =>
+      await _storage.write(key: _keyAvatar, value: recipe);
+
+  /// 사용자가 빌더에서 직접 저장한 적 있는가. null = 미기록(구버전에서
+  /// 올라온 경우 — 저장된 아바타가 있으면 커스텀으로 간주하는 마이그레이션은
+  /// 컨트롤러가 한다). false = 자동 생성 기본 아바타(커스텀 유도 대상).
+  Future<bool?> avatarCustomized() async {
+    final v = await _storage.read(key: _keyAvatarCustomized);
+    return v == null ? null : v == '1';
+  }
+
+  Future<void> setAvatarCustomized(bool customized) async =>
+      await _storage.write(
+          key: _keyAvatarCustomized, value: customized ? '1' : '0');
 }

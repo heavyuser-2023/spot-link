@@ -143,6 +143,23 @@ fun MutableGATTCharacteristicArgs.getProperties(): Int {
 }
 
 fun MutableGATTCharacteristicArgs.getPermissions(): Int {
+    // SpotLink 패치: 원본은 permissionNumbersArgs를 무시하고 property에서
+    // 권한을 유도해, Dart가 요청한 readEncrypted/writeEncrypted(본딩 유도용
+    // 암호화 특성)가 조용히 평문 read/write로 강등됐다. 명시된 권한 인자를
+    // 우선 적용하고, 비어 있을 때만 기존 property-유도 방식으로 폴백한다.
+    val permissionsArgs = permissionNumbersArgs.requireNoNulls().map { args ->
+        GATTCharacteristicPermissionArgs.ofRaw(args.toInt())
+    }
+    var permissions = 0
+    if (permissionsArgs.contains(GATTCharacteristicPermissionArgs.READ))
+        permissions = permissions or BluetoothGattCharacteristic.PERMISSION_READ
+    if (permissionsArgs.contains(GATTCharacteristicPermissionArgs.READ_ENCRYPTED))
+        permissions = permissions or BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED
+    if (permissionsArgs.contains(GATTCharacteristicPermissionArgs.WRITE))
+        permissions = permissions or BluetoothGattCharacteristic.PERMISSION_WRITE
+    if (permissionsArgs.contains(GATTCharacteristicPermissionArgs.WRITE_ENCRYPTED))
+        permissions = permissions or BluetoothGattCharacteristic.PERMISSION_WRITE_ENCRYPTED
+    if (permissions != 0) return permissions
     val propertiesArgs = propertyNumbersArgs.requireNoNulls().map { args ->
         val raw = args.toInt()
         GATTCharacteristicPropertyArgs.ofRaw(raw)
@@ -150,7 +167,6 @@ fun MutableGATTCharacteristicArgs.getPermissions(): Int {
     val read = propertiesArgs.contains(GATTCharacteristicPropertyArgs.READ)
     val write = propertiesArgs.contains(GATTCharacteristicPropertyArgs.WRITE)
     val writeWithoutResponse = propertiesArgs.contains(GATTCharacteristicPropertyArgs.WRITE_WITHOUT_RESPONSE)
-    var permissions = 0
     if (read) permissions = permissions or BluetoothGattCharacteristic.PERMISSION_READ
     if (write || writeWithoutResponse) permissions = permissions or BluetoothGattCharacteristic.PERMISSION_WRITE
     return permissions

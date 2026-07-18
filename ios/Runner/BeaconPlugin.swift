@@ -2,6 +2,7 @@ import CoreBluetooth
 import CoreLocation
 import Flutter
 import Foundation
+import UIKit
 
 /// iBeacon 웨이크 경로 — 사용자가 스와이프로 강제 종료했거나(또는 재부팅 이후
 /// 한 번도 실행된 적 없는) SpotLink 앱을 되살릴 수 있는 유일한 정식 방법:
@@ -49,6 +50,7 @@ class BeaconPlugin: NSObject {
   private var txIndex = 0
   private var txTimer: Timer?
   private var channel: FlutterMethodChannel?
+  private var wakeTask: UIBackgroundTaskIdentifier = .invalid
 
   static func register(with registrar: FlutterPluginRegistrar) {
     let instance = BeaconPlugin()
@@ -181,6 +183,24 @@ class BeaconPlugin: NSObject {
     let data = makeRegion(txIndex).peripheralData(withMeasuredPower: nil)
     tx.startAdvertising(((data as NSDictionary) as! [String: Any]))
   }
+
+  /// 리전 웨이크가 준 백그라운드 실행 시간(기본 ~10초)을 백그라운드 태스크로
+  /// ~30초까지 늘린다. 상대를 발견해 링크를 맺는 데 필요한 전 과정 —
+  /// 본딩된 대기 연결의 착지, GATT 셋업, ANNOUNCE 교환 — 이 이 창 안에서
+  /// 끝나야 하므로 창의 길이가 곧 성공률이다. 만료 핸들러에서 정리하므로
+  /// 시스템 한도를 넘어 붙잡지 않는다.
+  private func extendWakeWindow() {
+    guard UIApplication.shared.applicationState != .active else { return }
+    guard wakeTask == .invalid else { return } // 이미 연장 중
+    wakeTask = UIApplication.shared.beginBackgroundTask(withName: "spotlink.wake") {
+      [weak self] in
+      guard let self = self else { return }
+      if self.wakeTask != .invalid {
+        UIApplication.shared.endBackgroundTask(self.wakeTask)
+        self.wakeTask = .invalid
+      }
+    }
+  }
 }
 
 extension BeaconPlugin: CLLocationManagerDelegate {
@@ -189,6 +209,7 @@ extension BeaconPlugin: CLLocationManagerDelegate {
     // 메시는 알아서 시작된다; 이 알림은 살아 있는 앱을 위한 best-effort
     // 진단용이다.
     Self.recordWake("beacon-enter[\(region.identifier)]")
+    extendWakeWindow()
     channel?.invokeMethod("regionEntered", arguments: region.identifier)
   }
 }

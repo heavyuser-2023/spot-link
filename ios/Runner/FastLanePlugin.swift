@@ -32,6 +32,33 @@ class FastLanePlugin: NSObject, FlutterStreamHandler {
   /// Browser side: tid we are trying to reach (must match discoveryInfo).
   private var browsingForTid: String?
   private var connectedEmitted = false
+  /// 잔상 discoveryInfo로 인한 브라우저 재시작의 스로틀.
+  private var lastBrowseRestart = Date.distantPast
+
+  /// 발견 캐시를 비우기 위한 브라우저 교체(디바운스 1.5초). foundPeer가
+  /// 낡은 tid만 물고 있을 때 새 광고를 다시 받는 유일한 방법이다.
+  ///
+  /// 반드시 "재시작"이 아니라 "교체"여야 한다: 같은 인스턴스에 stop→start를
+  /// 걸면 CFNetService 브라우저의 런루프 소스가 이중 무효화되어 메인 스레드
+  /// EXC_BREAKPOINT로 죽는다(2026-07-17 실기기 크래시, _BrowserCancel →
+  /// CFRunLoopSourceInvalidate assertion). MC 브라우저는 일회용으로 취급한다 —
+  /// 새 인스턴스를 세우고, 옛것은 델리게이트만 떼어 조용히 버린다(명시적
+  /// stop 없이 해제되게 두면 취소 경로가 딱 한 번만 탄다).
+  private func restartBrowsingSoon() {
+    guard Date().timeIntervalSince(lastBrowseRestart) > 1.5 else { return }
+    lastBrowseRestart = Date()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+      guard let self = self, self.browsingForTid != nil,
+            let old = self.browser else { return }
+      old.delegate = nil
+      let fresh = MCNearbyServiceBrowser(
+        peer: self.myPeerId, serviceType: self.serviceType)
+      fresh.delegate = self
+      self.browser = fresh
+      fresh.startBrowsingForPeers()
+      self.log("browser replaced (stale discoveryInfo)")
+    }
+  }
 
   static func register(with registrar: FlutterPluginRegistrar) {
     let instance = FastLanePlugin()
@@ -275,6 +302,12 @@ extension FastLanePlugin: MCNearbyServiceBrowserDelegate {
     let found = info?["tid"]
     guard found == want else {
       log("ignore peer \(peerID.displayName) tid=\(found ?? "nil") want=\(want)")
+      // MC 브라우저는 한 번 찾은 피어의 discoveryInfo가 바뀌어도 foundPeer를
+      // 다시 쏘지 않을 수 있다: 연속 전송에서 직전 tid의 잔상 광고를 보고
+      // 여기로 빠지면 25초 내내 침묵하다 BLE로 폴백한다(관찰: 파일 4개 중
+      // 3번째부터 "fast connect null"). stop→start로 발견 캐시를 비워 새
+      // 광고가 신선한 foundPeer로 다시 들어오게 한다.
+      restartBrowsingSoon()
       return
     }
     log("invite \(peerID.displayName) for tid=\(want)")

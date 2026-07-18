@@ -15,12 +15,23 @@ void main() {
 
       final parsed = MeshController.parseQr(payload);
       expect(parsed, isNotNull);
-      final (bundle, name) = parsed!;
+      final (bundle, name, nonce) = parsed!;
       expect(bundle.length, 64);
       expect(bundle, id.publicBundle);
       expect(name, '김정훈');
+      expect(nonce, isNull); // 논스 없는 구형 페이로드
       // The recovered bundle yields the same PeerId.
       expect(Identity.peerIdFromBundle(bundle), id.peerId);
+    });
+
+    test('parses the mutual-verify nonce when present', () async {
+      final id = await Identity.generate();
+      final nonce = List<int>.generate(16, (i) => i);
+      final payload = 'SPOTLINK1:${b64(id.publicBundle)}:'
+          '${b64(utf8.encode("김정훈"))}:${b64(nonce)}';
+      final parsed = MeshController.parseQr(payload);
+      expect(parsed, isNotNull);
+      expect(parsed!.$3, nonce);
     });
 
     test('rejects foreign / malformed payloads', () {

@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../app/mesh_controller.dart';
 import '../core/ble/mesh_transport.dart' show RadioStatus;
+import '../l10n/l10n.dart';
 import 'chats_tab.dart';
 import 'me_tab.dart';
 import 'people_tab.dart';
@@ -49,7 +50,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final c = context.watch<MeshFrontend>();
-    final titles = ['채팅', '친구', '내 정보'];
+    final titles = [context.s.homeTabChats, context.s.homeTabNearby, context.s.homeTabMe];
     final tabs = [
       ChatsTab(onFindPeople: () => setState(() => _index = 1)),
       PeopleTab(active: _index == 1),
@@ -88,17 +89,26 @@ class _HomeScreenState extends State<HomeScreen> {
               count: c.totalUnread,
               child: const Icon(Icons.forum),
             ),
-            label: '채팅',
+            label: context.s.homeTabChats,
           ),
-          const NavigationDestination(
-            icon: Icon(Icons.people_outline),
-            selectedIcon: Icon(Icons.people),
-            label: '친구',
+          NavigationDestination(
+            icon: const Icon(Icons.radar_outlined),
+            selectedIcon: const Icon(Icons.radar),
+            label: context.s.homeTabNearby,
           ),
-          const NavigationDestination(
-            icon: Icon(Icons.account_circle_outlined),
-            selectedIcon: Icon(Icons.account_circle),
-            label: '내 정보',
+          NavigationDestination(
+            // 아바타 미커스텀 동안 작은 점 배지 — 문구 없이 시선만 유도한다.
+            icon: Badge(
+              isLabelVisible: AvatarNudge.shouldShow(c),
+              smallSize: 7,
+              child: const Icon(Icons.account_circle_outlined),
+            ),
+            selectedIcon: Badge(
+              isLabelVisible: AvatarNudge.shouldShow(c),
+              smallSize: 7,
+              child: const Icon(Icons.account_circle),
+            ),
+            label: context.s.homeTabMe,
           ),
         ],
       ),
@@ -127,24 +137,26 @@ class _MeshStatusChip extends StatelessWidget {
             scheme.errorContainer,
             scheme.onErrorContainer,
             scheme.error,
-            '꺼짐'
+            context.s.homeStatusOff
           )
         : connected
             ? (
                 const Color(0xFFDCF5DF),
                 const Color(0xFF1B5E20),
                 const Color(0xFF2E7D32),
-                '메시 $count'
+                context.s.homeStatusMesh(count)
               )
             : (
                 scheme.surfaceContainerHighest,
                 scheme.onSurfaceVariant,
                 scheme.outline,
-                '검색 중'
+                context.s.homeStatusScanning
               );
 
     return Semantics(
-      label: connected ? '$count개 기기 연결됨' : (active ? '주변 검색 중' : '연결 없음'),
+      label: connected
+          ? context.s.homeSemanticsConnected(count)
+          : (active ? context.s.homeSemanticsScanning : context.s.homeSemanticsNoConnection),
       button: true,
       // 상태 변화는 툭 끊기지 않고 부드럽게 흐르며(색상 크로스페이드), 점은
       // 활발히 검색하는 동안 숨 쉬듯 움직인다 — 칩이 살아 있는 느낌을 준다.
@@ -225,7 +237,7 @@ class _StatusSheet extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('메시 상태', style: Theme.of(context).textTheme.titleLarge),
+            Text(context.s.homeSheetTitle, style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 16),
             Row(
               children: [
@@ -233,7 +245,7 @@ class _StatusSheet extends StatelessWidget {
                   child: _StatusStat(
                     icon: Icons.bluetooth_connected,
                     value: '${c.peerCount}',
-                    label: '연결된 기기',
+                    label: context.s.homeStatConnected,
                     color: c.peerCount > 0 ? scheme.primary : scheme.outline,
                   ),
                 ),
@@ -241,7 +253,7 @@ class _StatusSheet extends StatelessWidget {
                   child: _StatusStat(
                     icon: Icons.people_alt_outlined,
                     value: '${c.nearbyCount}',
-                    label: '주변 친구',
+                    label: context.s.homeStatNearby,
                     color: c.nearbyCount > 0 ? scheme.primary : scheme.outline,
                   ),
                 ),
@@ -249,7 +261,7 @@ class _StatusSheet extends StatelessWidget {
                   child: _StatusStat(
                     icon: Icons.move_to_inbox_outlined,
                     value: '${c.relayStoreCount}',
-                    label: '중계 대기',
+                    label: context.s.homeStatRelayQueue,
                     color: scheme.outline,
                   ),
                 ),
@@ -259,7 +271,7 @@ class _StatusSheet extends StatelessWidget {
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               secondary: const Icon(Icons.battery_saver),
-              title: const Text('배터리 절약'),
+              title: Text(context.s.homeBatterySaver),
               value: c.powerSaver,
               onChanged: (v) => c.setPowerSaver(v),
             ),
@@ -306,11 +318,9 @@ class _BluetoothBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final message = switch (status) {
-      RadioStatus.poweredOff =>
-        '블루투스가 꺼져 있습니다. 블루투스를 켜면 자동으로 주변 검색을 시작합니다.',
-      RadioStatus.unauthorized =>
-        '블루투스 권한이 없습니다. 설정 > SpotLink에서 블루투스를 허용해 주세요.',
-      _ => '블루투스가 꺼져 있거나 권한이 없어 주변 친구를 찾을 수 없습니다.',
+      RadioStatus.poweredOff => context.s.homeBtPoweredOff,
+      RadioStatus.unauthorized => context.s.homeBtUnauthorized,
+      _ => context.s.homeBtUnavailable,
     };
     return MaterialBanner(
       backgroundColor: scheme.errorContainer,
@@ -322,7 +332,7 @@ class _BluetoothBanner extends StatelessWidget {
       actions: [
         TextButton(
           onPressed: () => openAppSettings(),
-          child: const Text('설정 열기'),
+          child: Text(context.s.homeOpenSettings),
         ),
       ],
     );

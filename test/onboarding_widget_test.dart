@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:spot_link/features/onboarding_screen.dart';
+import 'package:spot_link/l10n/gen/s.dart';
 
 void main() {
   testWidgets('onboarding submits the entered name', (tester) async {
     String? submitted;
     await tester.pumpWidget(MaterialApp(
+      locale: const Locale('ko'),
+      localizationsDelegates: S.localizationsDelegates,
+      supportedLocales: S.supportedLocales,
       home: OnboardingScreen(onSubmit: (name) async {
         submitted = name;
       }),
@@ -23,6 +27,9 @@ void main() {
   testWidgets('onboarding ignores empty name', (tester) async {
     var called = false;
     await tester.pumpWidget(MaterialApp(
+      locale: const Locale('ko'),
+      localizationsDelegates: S.localizationsDelegates,
+      supportedLocales: S.supportedLocales,
       home: OnboardingScreen(onSubmit: (name) async {
         called = true;
       }),

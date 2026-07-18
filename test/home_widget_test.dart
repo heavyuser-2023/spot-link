@@ -13,6 +13,7 @@ import 'package:spot_link/core/mesh_node.dart';
 import 'package:spot_link/data/app_database.dart';
 import 'package:spot_link/data/identity_store.dart';
 import 'package:spot_link/features/home_screen.dart';
+import 'package:spot_link/l10n/gen/s.dart';
 
 import 'fake_transport.dart';
 
@@ -56,6 +57,9 @@ void main() {
     });
 
     await tester.pumpWidget(MaterialApp(
+      locale: const Locale('ko'),
+      localizationsDelegates: S.localizationsDelegates,
+      supportedLocales: S.supportedLocales,
       home: ChangeNotifierProvider<MeshFrontend>.value(
         value: controller,
         child: const HomeScreen(),
@@ -65,14 +69,14 @@ void main() {
 
     // Bottom nav labels present.
     expect(find.text('채팅'), findsWidgets);
-    expect(find.text('친구'), findsWidgets);
+    expect(find.text('주변'), findsWidgets);
     expect(find.text('내 정보'), findsWidgets);
 
     // Chats tab empty state.
     expect(find.text('아직 대화가 없어요'), findsOneWidget);
 
     // People tab.
-    await tester.tap(find.text('친구').last);
+    await tester.tap(find.text('주변').last);
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('아직 아무도 없어요'), findsOneWidget);
     // Empty People state now carries a centered "QR로 친구 추가" CTA (the
@@ -114,6 +118,9 @@ void main() {
     // Mirror the real app: the provider sits BELOW MaterialApp (in Bootstrap),
     // while pushed routes mount on the root navigator above it.
     await tester.pumpWidget(MaterialApp(
+      locale: const Locale('ko'),
+      localizationsDelegates: S.localizationsDelegates,
+      supportedLocales: S.supportedLocales,
       home: ChangeNotifierProvider<MeshFrontend>.value(
         value: controller,
         child: const HomeScreen(),
@@ -121,7 +128,7 @@ void main() {
     ));
     await tester.pump(const Duration(milliseconds: 50));
 
-    await tester.tap(find.text('친구').last);
+    await tester.tap(find.text('주변').last);
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('Bob'), findsOneWidget);
 

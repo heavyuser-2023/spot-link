@@ -1,16 +1,25 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:battery_plus/battery_plus.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/widgets.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../core/ble/mesh_transport.dart'
-    show RadioStatus, RssiSample, bleLogSink, knownPeersLoad, knownPeersSave;
+    show
+        RadioStatus,
+        RssiSample,
+        bleLogSink,
+        knownPeersLoad,
+        knownPeersSave,
+        bondedPeersLoad,
+        bondedPeersSave;
 import '../core/crypto/identity.dart';
 import '../core/mesh_node.dart';
 import '../core/model/frame.dart';
@@ -21,8 +30,10 @@ import '../core/transfer/lan_socket_fast_lane.dart';
 import '../core/transfer/platform_fast_lane.dart';
 import '../core/transfer/file_transfer.dart';
 import '../data/app_database.dart';
+import '../data/avatar_codec.dart';
 import '../data/identity_store.dart';
 import '../data/models.dart';
+import '../l10n/l10n.dart';
 import 'background_service.dart';
 import 'beacon_wake.dart';
 import 'mesh_frontend.dart';
@@ -120,6 +131,18 @@ class MeshController extends MeshFrontend
   static const Duration _pulseAfterDrop = Duration(seconds: 60);
   // > iOS의 ~30s 리전 종료 디바운스보다 커서, 막힌 피어가 실제로 EXIT하도록 한다.
   static const Duration _beaconPulseGap = Duration(seconds: 40);
+
+  /// 수동(부스트) 펄스의 연타 방지 쿨다운. 펄스 1주기(40s 갭)+ENTER 여유보다
+  /// 길게 잡아, 연속 당김이 TX 블랙아웃을 이어 붙이지 못하게 한다.
+  DateTime? _lastManualPulse;
+  static const Duration _manualPulseCooldown = Duration(seconds: 90);
+
+  /// 웨이크 넛지 알림의 기본 쿨다운(디스크 스탬프 기준).
+  static const Duration _nudgeCooldown = Duration(minutes: 15);
+
+  /// 링크가 방금 끊겼을 때 웨이크 넛지의 잔여 쿨다운 상한 — "끊긴 직후"가
+  /// 사용자가 알림을 가장 필요로 하는 순간이다. [_relaxWakeNudgeCooldown] 참고.
+  static const Duration _nudgeAfterDrop = Duration(minutes: 2);
   StreamSubscription? _sub;
   StreamSubscription? _rssiSub;
   StreamSubscription? _availabilitySub;
@@ -182,6 +205,20 @@ class MeshController extends MeshFrontend
   @override
   PeerId get myId => identity.peerId;
 
+  /// 고빈도 프레즌스 이벤트(RSSI 샘플, ANNOUNCE)의 notify를 200ms로
+  /// 코얼레싱한다. 3명일 땐 무의미하지만 100명이면 초당 ~7회의 announce가
+  /// 각각 전체 UI 리빌드(주변 목록 정렬 + 레이더 배치 + Android 브리지
+  /// 스냅샷 직렬화)를 일으킨다 — 사람 눈에는 200ms 갱신이면 실시간이다.
+  /// 사용자 행동(전송·삭제 등)의 notify는 기존대로 즉발이다.
+  Timer? _notifyCoalesce;
+  void _notifyCoalesced() {
+    if (_disposed || _notifyCoalesce != null) return;
+    _notifyCoalesce = Timer(const Duration(milliseconds: 200), () {
+      _notifyCoalesce = null;
+      if (!_disposed) notifyListeners();
+    });
+  }
+
   /// 피어별 평활화된 신호 강도: 원시 BLE RSSI는 심하게 흔들리므로, 지수 이동
   /// 평균(EMA)으로 근접 UI가 떨리지 않게 한다.
   void _onRssi(RssiSample s) {
@@ -192,7 +229,7 @@ class MeshController extends MeshFrontend
     rssiSmoothed[hex] =
         old == null ? s.rssi.toDouble() : old * 0.6 + s.rssi * 0.4;
     rssiSeenAt[hex] = DateTime.now().millisecondsSinceEpoch;
-    notifyListeners();
+    _notifyCoalesced();
   }
 
   /// 설정 UI를 위한 릴레이 메일박스 통계.
@@ -306,6 +343,27 @@ class MeshController extends MeshFrontend
       if (last != null) lastMessages[hex] = last;
     }
 
+    // 첫 announce가 나가기 전에 저장된 아바타 레시피를 노드에 싣는다.
+    // 없으면 무작위 기본 아바타를 만들어 시작한다 — 모두가 첫날부터
+    // 캐릭터를 갖고, "커스텀 유도" 넛지의 출발점이 된다.
+    try {
+      _myAvatar = await identityStore.storedAvatar();
+      var customized = await identityStore.avatarCustomized();
+      if (_myAvatar != null && customized == null) {
+        // 구버전에서 올라온 사용자: 이미 빌더로 만든 아바타 — 커스텀 간주.
+        customized = true;
+        await identityStore.setAvatarCustomized(true);
+      }
+      if (_myAvatar == null) {
+        _myAvatar = AvatarCodec.randomCompact();
+        await identityStore.setAvatar(_myAvatar!);
+        customized = false;
+        await identityStore.setAvatarCustomized(false);
+      }
+      _avatarCustomized = customized ?? false;
+      node.avatarRecipe = _myAvatar;
+    } catch (_) {} // 저장소 불가(테스트/플러그인 없음) — 아바타 없이 진행
+
     _sub = node.events.listen(_onEvent);
     _rssiSub = node.rssiSamples.listen(_onRssi);
     started = await node.start();
@@ -357,7 +415,10 @@ class MeshController extends MeshFrontend
       _maybeBeaconPulse();
       // 부팅 시에만 하지 않고 폴링하여, 한 번도 링크되지 않은 wake뿐 아니라
       // 나중에 끊겨 다시 맺지 못한 링크까지 넛지가 다루도록 한다.
-      if (Platform.isIOS && !headless) unawaited(_maybeWakeNudge());
+      if (Platform.isIOS && !headless) {
+        _reconcileForegroundMode();
+        unawaited(_maybeWakeNudge());
+      }
       notifyListeners();
     });
     // 적응형 BLE 전력(Android 전용). 지금 한 번, 그리고 느린 틱마다 평가한다.
@@ -418,6 +479,25 @@ class MeshController extends MeshFrontend
     } catch (_) {} // 배터리 플러그인 사용 불가 / 일시적 오류 — 마지막 단계 유지
   }
 
+  /// 비콘/상태 복원에 의한 백그라운드 재기동은 didChangeAppLifecycleState를
+  /// 한 번도 발화시키지 않은 채 lifecycleState가 null/inactive에 머문다 —
+  /// 부트 3초 재확인은 paused류만 백그라운드로 취급해 이 경우를 놓치고,
+  /// 그 결과 깨어난 앱이 포그라운드용 무필터 스캔(백그라운드에서는 iOS가
+  /// 아무것도 전달하지 않음)을 잠들 때까지 돌렸다(2026-07-17 gold 19:22,
+  /// 4.5분 관찰). 수신 알림 라우팅도 같은 플래그를 쓰므로 알림 억제 오류도
+  /// 함께 났다. 넛지와 같은 신호("부팅+10초면 진짜 포그라운드는 resumed")로
+  /// 매 프레즌스 틱마다 플래그와 전송 스캔 모드를 실제 상태에 맞춘다.
+  void _reconcileForegroundMode() {
+    final resumed =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    if (resumed == _foreground) return;
+    bleLogSink?.call('${DateTime.now().toIso8601String()} '
+        'foreground flag reconciled -> $resumed (lifecycle drift)');
+    _foreground = resumed;
+    node.setForeground(resumed);
+    if (resumed && started) unawaited(node.wakeUp());
+  }
+
   /// 백그라운드에서 오프라인에 갇혀 있을 때 사용자가 앱을 열도록 넛지한다.
   /// [_presenceTimer]에서 10초마다 폴링하여, 한 번도 링크되지 않은 백그라운드
   /// 재기동과, 링크가 올라왔다가 나중에 끊긴 경우를 모두 다룬다(iOS 27은
@@ -441,7 +521,7 @@ class MeshController extends MeshFrontend
       final now = DateTime.now().millisecondsSinceEpoch;
       if (stamp.existsSync()) {
         final last = int.tryParse(stamp.readAsStringSync().trim()) ?? 0;
-        if (now - last < 15 * 60 * 1000) return;
+        if (now - last < _nudgeCooldown.inMilliseconds) return;
       }
       stamp.writeAsStringSync('$now');
     } catch (_) {
@@ -451,27 +531,63 @@ class MeshController extends MeshFrontend
         '(background relaunch, linkless 10s)');
     await NotificationService.showMessage(
       conversationKey: 'wake-nudge',
-      title: '주변에 SpotLink 친구가 있어요',
-      body: '탭해서 열면 바로 연결됩니다.',
+      title: systemS.notifWakeNudgeTitle,
+      body: systemS.notifWakeNudgeBody,
     );
+  }
+
+  /// 마지막 링크가 방금 끊겼을 때: 디스크의 넛지 스탬프를 되감아 잔여
+  /// 쿨다운을 최대 [_nudgeAfterDrop]으로 줄인다. 스탬프를 지우는 게 아니라
+  /// 되감기만 하므로, 드롭이 반복돼도 넛지는 그 하한보다 잦아지지 않는다
+  /// (2026-07-17 사례: 16:34 링크 다운 후 17분 단절 — 쿨다운이 남아 있으면
+  /// 정작 재발견이 막힌 구간에 잠금화면 구제가 침묵한다).
+  Future<void> _relaxWakeNudgeCooldown() async {
+    if (!Platform.isIOS || headless) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final stamp = File(p.join(dir.path, 'wake_nudge_at'));
+      if (!stamp.existsSync()) return;
+      final last = int.tryParse(stamp.readAsStringSync().trim()) ?? 0;
+      final rewound = DateTime.now().millisecondsSinceEpoch -
+          (_nudgeCooldown - _nudgeAfterDrop).inMilliseconds;
+      if (last > rewound) stamp.writeAsStringSync('$rewound');
+    } catch (_) {} // 스탬프를 못 만지면 기존 쿨다운 그대로 — 안전한 실패
   }
 
   /// [_linklessSince] 참고. iOS foreground 전용: [_linklessPulseAfter] 동안
   /// 링크를 하나도 갖지 못했을 때 wake torch를 펄스하여, 우리 비콘 리전 안에
   /// 갇힌 피어를 구조하고 멈춘 광고자를 풀어준다. 방해할 링크가 없다는 바로 그
   /// 이유로 단점이 없다.
-  void _maybeBeaconPulse() {
+  ///
+  /// [force] = 사용자 명시 부스트(당겨서 새로고침): 30/60초 적응 임계를
+  /// 기다리지 않고 즉시 펄스한다. 단 (1) 링크가 잠깐 끊겼다 바로 붙는 일시
+  /// 블립에 40초 TX 블랙아웃을 낭비하지 않도록 무링크 10초 이상일 때만,
+  /// (2) 연타가 펄스를 연쇄시켜 로테이션 웨이크를 계속 침묵시키지 않도록
+  /// [_manualPulseCooldown] 안에 한 번만.
+  void _maybeBeaconPulse({bool force = false}) {
     if (!Platform.isIOS || headless || !_foreground || _beaconPulsing) return;
     final since = _linklessSince;
     if (since == null || linkCount > 0) return;
-    final threshold = (_everLinked || _pulsedSinceBoot)
-        ? _pulseAfterDrop
-        : _pulseAfterBootLinkless;
-    if (DateTime.now().difference(since) < threshold) return;
+    if (force) {
+      if (DateTime.now().difference(since) < const Duration(seconds: 10)) {
+        return;
+      }
+      final last = _lastManualPulse;
+      if (last != null &&
+          DateTime.now().difference(last) < _manualPulseCooldown) {
+        return;
+      }
+      _lastManualPulse = DateTime.now();
+    } else {
+      final threshold = (_everLinked || _pulsedSinceBoot)
+          ? _pulseAfterDrop
+          : _pulseAfterBootLinkless;
+      if (DateTime.now().difference(since) < threshold) return;
+    }
     _beaconPulsing = true;
     _pulsedSinceBoot = true;
     bleLogSink?.call('${DateTime.now().toIso8601String()} '
-        'beacon wake pulse (linkless ${threshold.inSeconds}s)');
+        'beacon wake pulse (${force ? 'manual boost' : 'linkless auto'})');
     unawaited(BeaconWake.stopTx().then((_) {
       _beaconPulseTimer?.cancel();
       _beaconPulseTimer = Timer(_beaconPulseGap, () {
@@ -609,8 +725,12 @@ class MeshController extends MeshFrontend
         'name': displayName,
         'rev': msgRev,
         'contacts': [for (final c in contactList) c.toMap()],
+        'meAvatar': _myAvatar,
+        'meAvCustom': _avatarCustomized,
         'seen': lastSeenAt,
         'hops': lastHopCount,
+        'via': lastViaHex,
+        'lanes': liveLanes,
         'rssi': {
           for (final e in rssiSmoothed.entries)
             e.key: [e.value, rssiSeenAt[e.key] ?? 0],
@@ -656,20 +776,78 @@ class MeshController extends MeshFrontend
   Future<void> _onEvent(NodeEvent e) async {
     switch (e) {
       case LinksChanged(:final count):
+        final hadLinks = linkCount > 0;
         linkCount = count;
         peerCount = node.peerCount; // 서로 다른 기기(C:/P: 중복 제거됨)
         if (count > 0) _everLinked = true; // → 향후 펄스는 drop 주기로
         _linklessSince = count == 0 ? (_linklessSince ?? DateTime.now()) : null;
+        // 방금 마지막 링크가 끊겼다: 직전 넛지의 15분 쿨다운이 남아 있으면
+        // 정작 필요한 순간에 침묵하므로 잔여를 짧게 되감는다.
+        if (hadLinks && count == 0) unawaited(_relaxWakeNudgeCooldown());
         // 토폴로지 변화는 빠른 (재)합류를 위해 잠깐의 low-latency 버스트를 얻는다.
         _lastTopoChange = DateTime.now();
         if (Platform.isAndroid) unawaited(_evaluateAdaptivePower());
         BackgroundService.updateStatus(count);
         notifyListeners();
-      case PeerAnnounced(:final contact, :final hops):
+      case PeerAnnounced(:final contact, :final hops, :final via, :final avatar):
         lastSeenAt[contact.peerId.hex] =
             DateTime.now().millisecondsSinceEpoch;
         lastHopCount[contact.peerId.hex] = hops;
-        await _rememberAnnounced(contact);
+        // 중계 경로: 멀티홉일 때만 기록한다. 직접 announce가 오면 지워서
+        // "직접 링크로 승격"이 레이더에서 즉시 반영되게 한다.
+        if (hops > 1 && via != null) {
+          lastViaHex[contact.peerId.hex] = via.hex;
+        } else {
+          lastViaHex.remove(contact.peerId.hex);
+        }
+        await _rememberAnnounced(contact, avatar: avatar);
+        // QR로 검증된 친구가 직접 링크로 살아 있다: OS 본딩을 유도해 이후의
+        // 주소 회전이 대기 연결을 죽이지 못하게 한다(세션당 1회, 전송
+        // 계층에서 중복 방지).
+        if (contactByHex(contact.peerId.hex)?.verified ?? false) {
+          unawaited(node.ensureBonded(contact.peerId.hex));
+        }
+        _notifyCoalesced(); // 100명 규모에서 announce는 초당 수 회다
+      case VerifyReceived(:final from, :final nonce):
+        if (!_validQrNonce(nonce)) {
+          // 만료됐거나 위조된 논스 — 원격 위장 시도일 수 있으니 승격하지 않는다.
+          bleLogSink?.call('QR verify rejected (invalid nonce) '
+              'from ${from.short}');
+          break;
+        }
+        bleLogSink?.call('QR mutual verify ok from ${from.short}');
+        final existing0 = contactByHex(from.hex) ?? await db.contact(from.hex);
+        if (existing0 != null) {
+          final updated = existing0.copyWith(verified: true);
+          await db.upsertContact(updated);
+          replaceContact(updated);
+        } else {
+          // 아직 ANNOUNCE 전 — 연락처가 생길 때 승격한다.
+          _pendingVerified.add(from.hex);
+        }
+        _bumpRev();
+        notifyListeners();
+      case ReactionReceived(
+          :final from,
+          :final targetMsgIdHex,
+          :final emoji,
+          :final removed
+        ):
+        if (removed) {
+          await db.removeReaction(targetMsgIdHex, emoji, false);
+          reactionCache[targetMsgIdHex]
+              ?.removeWhere((r) => !r.fromMe && r.emoji == emoji);
+        } else {
+          await db.addReaction(from.hex, targetMsgIdHex, emoji, false);
+          final list = reactionCache[targetMsgIdHex] ??= [];
+          if (!list.any((r) => !r.fromMe && r.emoji == emoji)) {
+            list.add(Reaction(
+                msgId: targetMsgIdHex, emoji: emoji, fromMe: false));
+          }
+          // 화면을 보고 있지 않으면 가벼운 알림 — 텍스트 수신과 같은 규칙.
+          _notifyIncoming(from, systemS.notifReaction(emoji));
+        }
+        _bumpRev();
         notifyListeners();
       case TextReceived(:final from, :final text, :final msgId, :final sentAt):
         await _onText(from, text, msgId, sentAt: sentAt);
@@ -684,6 +862,25 @@ class MeshController extends MeshFrontend
         await _onFileOffered(from, meta);
       case FileProgress(:final transferId, :final progress):
         transferProgress[transferId] = progress;
+        notifyListeners();
+      case TransferLane(:final transferIdHex, :final lane):
+        if (liveLanes[transferIdHex] != lane) {
+          liveLanes[transferIdHex] = lane;
+          await db.updateLaneByMsgId(transferIdHex, lane);
+          _bumpRev(); // 원격 UI가 열린 대화를 다시 읽어 경로 칩을 갱신한다
+          notifyListeners();
+        }
+      case FileSuperseded(:final oldTransferIdHex):
+        // 재시도로 대체된 유령 수신 말풍선: 실패로 남기지 말고 지운다 —
+        // 성공한 재시도 옆의 "수신 실패"는 사용자에게 거짓말이다.
+        await db.deleteMessage(oldTransferIdHex);
+        transferProgress.remove(oldTransferIdHex);
+        liveLanes.remove(oldTransferIdHex);
+        for (final msgs in conversationCache.values) {
+          msgs.removeWhere((m) => m.msgId == oldTransferIdHex);
+        }
+        lastMessages.removeWhere((_, m) => m.msgId == oldTransferIdHex);
+        _bumpRev();
         notifyListeners();
       case FileReceived(:final from, :final meta, :final path):
         await _onFileReceived(from, meta, path);
@@ -710,7 +907,7 @@ class MeshController extends MeshFrontend
 
   // ---- 연락처 ----
 
-  Future<void> _rememberAnnounced(ContactIdentity c) async {
+  Future<void> _rememberAnnounced(ContactIdentity c, {String? avatar}) async {
     final existing = await db.contact(c.peerId.hex);
     final now = DateTime.now().millisecondsSinceEpoch;
     if (existing == null) {
@@ -719,7 +916,10 @@ class MeshController extends MeshFrontend
         signingPublicB64: b64(c.signingPublic),
         kexPublicB64: b64(c.kexPublic),
         displayName: c.displayName ?? c.peerId.short,
-        verified: false,
+        // 논스 증명이 연락처보다 먼저 도착한 경우(스캔 직후 ANNOUNCE 전) —
+        // 보류된 승격을 여기서 적용한다.
+        verified: _pendingVerified.remove(c.peerId.hex),
+        avatar: avatar,
         lastSeen: now,
       );
       await db.upsertContact(contact);
@@ -729,23 +929,40 @@ class MeshController extends MeshFrontend
       // 알려진(announce된) 이름을 채택한다. nameLocked 가드가 없으면 피어의 다음
       // ANNOUNCE(~15초마다)가 미검증 연락처에 대한 사용자의 이름 변경을 조용히
       // 되돌렸다.
+      var updated = existing;
+      var changed = false;
       if (!existing.verified &&
           !existing.nameLocked &&
           c.displayName != null &&
           c.displayName!.isNotEmpty &&
           c.displayName != existing.displayName) {
-        final updated = existing.copyWith(displayName: c.displayName, lastSeen: now);
+        updated = updated.copyWith(displayName: c.displayName);
+        changed = true;
+      }
+      // 아바타는 이름 잠금과 무관하게 상대가 알린 최신 레시피를 따른다 —
+      // 본인의 자기표현이라 사용자가 덮어쓸 대상이 아니다.
+      if (avatar != null && avatar != existing.avatar) {
+        updated = updated.copyWith(avatar: avatar);
+        changed = true;
+      }
+      if (changed) {
+        updated = updated.copyWith(lastSeen: now);
         await db.upsertContact(updated);
         replaceContact(updated);
-      } else {
+      } else if (now - existing.lastSeen > 60 * 1000) {
+        // lastSeen 터치는 60초에 한 번이면 충분하다 — 100명 규모에서 매
+        // announce마다 쓰면 SQLite에 초당 ~7회 쓰기가 영구히 돈다. 실시간
+        // 프레즌스는 인메모리 lastSeenAt이 담당한다. 인메모리 사본도 갱신해야
+        // 이 스로틀 조건이 다시 60초를 기다린다.
         await db.touchContact(c.peerId.hex, now);
+        replaceContact(existing.copyWith(lastSeen: now));
       }
     }
   }
 
   @override
   Future<Contact> addContactFromBundle(Uint8List bundle,
-      {String? name, bool verified = true}) async {
+      {String? name, bool verified = true, Uint8List? verifyNonce}) async {
     final c = ContactIdentity.fromBundle(bundle, displayName: name);
     node.addContact(c);
     final existing = await db.contact(c.peerId.hex);
@@ -764,6 +981,14 @@ class MeshController extends MeshFrontend
     );
     await db.upsertContact(contact);
     replaceContact(contact);
+    // 상호 인증: QR에 실려 온 논스를 되돌려 보내 "네 화면을 직접 봤다"를
+    // 증명한다 — 상대 쪽에서도 내가 인증된 친구로 승격된다.
+    if (verifyNonce != null) {
+      unawaited(node.sendVerify(c.peerId, verifyNonce));
+    }
+    // 방금 QR로 검증했고 이미 링크가 살아 있다면 지금 바로 본딩을 유도한다 —
+    // 다음 ANNOUNCE(15초)를 기다릴 이유가 없다.
+    if (verified) unawaited(node.ensureBonded(contact.peerHex));
     notifyListeners();
     return contact;
   }
@@ -784,6 +1009,7 @@ class MeshController extends MeshFrontend
       transferProgress.remove(m.msgId);
     }
     await db.deleteMessagesFor(peerHex);
+    await db.deleteReactionsFor(peerHex);
     await db.deleteContact(peerHex);
     contactList.removeWhere((c) => c.peerHex == peerHex);
     conversationCache.remove(peerHex);
@@ -794,7 +1020,12 @@ class MeshController extends MeshFrontend
     rssiSmoothed.remove(peerHex);
     rssiSeenAt.remove(peerHex);
     if (_openPeer == peerHex) _openPeer = null;
-    node.removeContact(PeerId.fromHex(peerHex));
+    // 노드의 공개키(_knownKex)는 일부러 남겨둔다: 공개 자료라 지워서 얻는 것이
+    // 없고, 상대가 근처에 있으면 어차피 다음 ANNOUNCE(≤15초)가 다시 알려준다.
+    // 예전엔 여기서 키를 지웠는데, 링크가 살아 있는 채로 삭제하면 상대의
+    // 암호화 프레임(재전송·릴레이 재인출)이 키 재학습보다 먼저 쏟아져
+    // "No key to decrypt" 에러가 프레임 수만큼 도배됐다(2026-07-17 관찰).
+    // 삭제는 차단이 아니다 — 삭제 다이얼로그 문구 그대로.
     _bumpRev();
     notifyListeners();
   }
@@ -824,6 +1055,26 @@ class MeshController extends MeshFrontend
     notifyListeners();
   }
 
+  String? _myAvatar;
+  bool _avatarCustomized = true; // 로드 전 기본값: 넛지를 잘못 띄우지 않게
+
+  @override
+  String? get myAvatar => _myAvatar;
+
+  @override
+  bool get avatarCustomized => _avatarCustomized;
+
+  @override
+  Future<void> setAvatarRecipe(String recipe) async {
+    _myAvatar = recipe;
+    _avatarCustomized = true; // 빌더 저장 = 커스텀 완료 → 넛지 영구 소멸
+    await identityStore.setAvatar(recipe);
+    await identityStore.setAvatarCustomized(true);
+    await node.updateAvatar(recipe);
+    _bumpRev();
+    notifyListeners();
+  }
+
   @override
   void setPowerSaver(bool saver) {
     powerSaver = saver;
@@ -842,12 +1093,77 @@ class MeshController extends MeshFrontend
     notifyListeners();
   }
 
-  // ---- QR 페이로드(포맷은 QrPayload에 있음) ----
+  @override
+  Future<void> boostDiscovery() async {
+    if (!started) {
+      // 메시가 아예 안 올라온 상태에서의 당김 = "다시 시도해 봐"라는 뜻.
+      // 사용자가 방금 블루투스를 켰거나 권한을 줬을 수 있다 — 어댑터 이벤트를
+      // 기다리지 않고 지금 시작을 재시도한다.
+      await _onTransportAvailable(true);
+      if (!started) return;
+    }
+    bleLogSink?.call('${DateTime.now().toIso8601String()} '
+        'discovery boost (user pull-to-refresh)');
+    await node.boostDiscovery();
+    // 명시적 부스트는 웨이크 토치 펄스도 즉시 건다(임계 생략, 쿨다운으로
+    // 연쇄 방지) — 스와이프킬로 우리 리전 안에 갇힌 상대는 스캔·대기연결로는
+    // 절대 못 구하고 EXIT+ENTER만이 깨울 수 있다.
+    _maybeBeaconPulse(force: true);
+    if (Platform.isAndroid) {
+      // 60초 저지연 스캔 버스트: 적응형 전력의 "최근 토폴로지 변화" 창을
+      // 재활용한다(수동 절약 토글이 켜져 있으면 그 하드 플로어가 이긴다).
+      _lastTopoChange = DateTime.now();
+      await _evaluateAdaptivePower();
+    }
+  }
+
+  // ---- QR 페이로드(포맷은 QrPayload에 있음) + 상호 인증 논스 ----
+
+  /// 내 QR에 실어 내보낸 논스들(발급 시각 포함). QR 화면을 직접 본 사람만
+  /// 알 수 있는 비밀값 — 유효기간 안에 되돌아오면 보낸 상대를 인증된 친구로
+  /// 승격한다. 같은 화면을 여러 명이 스캔할 수 있으므로 일회용이 아니라
+  /// 유효기간제다(화면을 봤다는 사실 자체가 신뢰 모델의 기준).
+  final List<(Uint8List, DateTime)> _qrNonces = [];
+  static const Duration _qrNonceTtl = Duration(minutes: 10);
+  static const Duration _qrNonceRotate = Duration(minutes: 5);
+
+  /// 논스 증명이 상대의 ANNOUNCE(연락처 생성)보다 먼저 도착한 경우의 보류분.
+  final Set<String> _pendingVerified = {};
+
+  Uint8List _currentQrNonce() {
+    final now = DateTime.now();
+    _qrNonces.removeWhere((e) => now.difference(e.$2) > _qrNonceTtl);
+    if (_qrNonces.isNotEmpty &&
+        now.difference(_qrNonces.last.$2) < _qrNonceRotate) {
+      return _qrNonces.last.$1;
+    }
+    final rng = Random.secure();
+    final n = Uint8List.fromList(List.generate(16, (_) => rng.nextInt(256)));
+    armQrNonce(n);
+    return n;
+  }
+
+  /// 논스를 유효 목록에 등록한다. Android에서는 QR을 그리는 UI isolate가
+  /// 논스를 만들고 브리지로 서비스(여기)에 등록한다 — verify 프레임은
+  /// 서비스에 도착하기 때문이다.
+  void armQrNonce(Uint8List nonce) {
+    _qrNonces.add((nonce, DateTime.now()));
+    while (_qrNonces.length > 4) {
+      _qrNonces.removeAt(0);
+    }
+  }
+
+  bool _validQrNonce(Uint8List n) {
+    final now = DateTime.now();
+    _qrNonces.removeWhere((e) => now.difference(e.$2) > _qrNonceTtl);
+    return _qrNonces.any((e) => listEquals(e.$1, n));
+  }
 
   @override
-  String get myQrPayload => QrPayload.encode(identity.publicBundle, displayName);
+  String get myQrPayload => QrPayload.encode(identity.publicBundle, displayName,
+      nonce: _currentQrNonce());
 
-  static (Uint8List, String)? parseQr(String payload) =>
+  static (Uint8List, String, Uint8List?)? parseQr(String payload) =>
       QrPayload.decode(payload);
 
   // ---- 메시징 ----
@@ -870,7 +1186,36 @@ class MeshController extends MeshFrontend
         ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
       conversationCache[peerHex] = merged;
     }
+    final reactions = await db.reactionsFor(peerHex);
+    // await 사이에 위젯 테스트/화면 전환이 컨트롤러를 dispose했을 수 있다.
+    if (_disposed) return;
+    reactionCache
+      ..clear()
+      ..addAll(reactions);
     notifyListeners();
+  }
+
+  /// dispose 이후의 늦은 async 완료가 notifyListeners를 부르지 않게 하는 가드.
+  bool _disposed = false;
+
+  @override
+  Future<void> toggleReaction(
+      String peerHex, String msgId, String emoji) async {
+    final existing = reactionsOf(msgId)
+        .any((r) => r.fromMe && r.emoji == emoji);
+    if (existing) {
+      await db.removeReaction(msgId, emoji, true);
+      reactionCache[msgId]
+          ?.removeWhere((r) => r.fromMe && r.emoji == emoji);
+    } else {
+      await db.addReaction(peerHex, msgId, emoji, true);
+      (reactionCache[msgId] ??= [])
+          .add(Reaction(msgId: msgId, emoji: emoji, fromMe: true));
+    }
+    _bumpRev();
+    notifyListeners();
+    await node.sendReaction(PeerId.fromHex(peerHex), msgId, emoji,
+        remove: existing);
   }
 
   @override
@@ -930,7 +1275,7 @@ class MeshController extends MeshFrontend
     final path = await _saveLocalCopy(
         'out-${DateTime.now().millisecondsSinceEpoch}', name, bytes);
     if (path == null) {
-      reportError('파일을 저장할 수 없어 보낼 수 없습니다');
+      reportError(systemS.errFileCopyFailed);
       return;
     }
     await sendFilePath(peerHex, path: path, name: name, mime: mime);
@@ -1024,7 +1369,7 @@ class MeshController extends MeshFrontend
   Future<void> retryFile(ChatMessage failed) async {
     final path = failed.filePath;
     if (path == null || !await File(path).exists()) {
-      reportError('원본 파일이 없어 다시 보낼 수 없습니다');
+      reportError(systemS.errFileGoneRetry);
       return;
     }
     final name = failed.fileName ?? p.basename(path);
@@ -1197,6 +1542,9 @@ class MeshController extends MeshFrontend
   Future<void> _wireKnownPeersStore() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
+      // 재설치로 컨테이너 UUID가 바뀌어도 저장된 파일 경로가 살아나도록
+      // 현재 Documents를 DB의 경로 재해석 기준으로 준다.
+      AppDatabase.documentsDir = dir.path;
       final file = File(p.join(dir.path, 'known_peers.json'));
       knownPeersLoad = () async {
         try {
@@ -1210,6 +1558,23 @@ class MeshController extends MeshFrontend
       knownPeersSave = (uuids) {
         try {
           file.writeAsStringSync(jsonEncode(uuids));
+        } catch (_) {}
+      };
+      // 본딩 기록(peerHex → 식별자): 본딩된 식별자를 스테일 망각에서
+      // 제외하고, 세션을 넘어 본딩 상태를 기억하기 위해서다.
+      final bondFile = File(p.join(dir.path, 'bonded_peers.json'));
+      bondedPeersLoad = () async {
+        try {
+          if (!bondFile.existsSync()) return const <String, String>{};
+          return (jsonDecode(await bondFile.readAsString()) as Map)
+              .cast<String, String>();
+        } catch (_) {
+          return const <String, String>{};
+        }
+      };
+      bondedPeersSave = (peers) {
+        try {
+          bondFile.writeAsStringSync(jsonEncode(peers));
         } catch (_) {}
       };
     } catch (_) {} // 진단 수준의 영속화 — 시작을 절대 막지 않는다
@@ -1297,9 +1662,11 @@ class MeshController extends MeshFrontend
 
   @override
   void dispose() {
+    _disposed = true;
     if (!headless) {
       WidgetsBinding.instance.removeObserver(this);
     }
+    _notifyCoalesce?.cancel();
     _presenceTimer?.cancel();
     _bootFgRecheck?.cancel();
     _beaconPulseTimer?.cancel();

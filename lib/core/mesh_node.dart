@@ -30,7 +30,15 @@ class PeerAnnounced extends NodeEvent {
 
   /// 메시 거리: 1 = 직접 이웃, 2 = 우리 사이에 릴레이 하나, …
   final int hops;
-  PeerAnnounced(this.contact, {this.hops = 1});
+
+  /// 이 announce를 우리에게 건네준 직접 이웃(수신 링크의 반대편). [hops]가
+  /// 1이면 발신자 자신이고, 2 이상이면 마지막 릴레이다 — 레이더의 중계 경로
+  /// 표시에 쓰인다. 링크가 아직 상대를 식별하지 못했으면 null.
+  final PeerId? via;
+
+  /// 발신자의 파츠 아바타 레시피(compact). 없으면 null(이니셜 표시).
+  final String? avatar;
+  PeerAnnounced(this.contact, {this.hops = 1, this.via, this.avatar});
 }
 
 class LinksChanged extends NodeEvent {
@@ -66,6 +74,40 @@ class FileOffered extends NodeEvent {
   final PeerId from;
   final FileMeta meta;
   FileOffered(this.from, this.meta);
+}
+
+/// 상대가 내 QR 논스를 되돌려 보냈다 — 내 QR 화면을 직접 봤다는 증명.
+/// 컨트롤러가 논스 유효성을 확인하면 그 상대를 인증된 친구로 승격한다.
+class VerifyReceived extends NodeEvent {
+  final PeerId from;
+  final Uint8List nonce;
+  VerifyReceived(this.from, this.nonce);
+}
+
+/// 상대가 내 메시지에 이모지 리액션을 추가/제거했다.
+class ReactionReceived extends NodeEvent {
+  final PeerId from;
+  final String targetMsgIdHex;
+  final String emoji;
+  final bool removed;
+  ReactionReceived(this.from, this.targetMsgIdHex, this.emoji, this.removed);
+}
+
+/// 파일 바이트가 실제로 이동하는 경로가 확정된 순간('wifi' = fast lane 직결,
+/// 'ble' = 블루투스 청킹). 송신·수신 양쪽에서 발생하며 UI가 말풍선에
+/// 경로 칩을 그리는 근거다.
+class TransferLane extends NodeEvent {
+  final String transferIdHex;
+  final String lane; // 'wifi' | 'ble'
+  TransferLane(this.transferIdHex, this.lane);
+}
+
+/// 같은 파일(동일 발신자·이름·크기)의 새 전송이 시작되어 옛 미완료 수신이
+/// 대체됨 — 옛 말풍선은 조용히 사라져야 한다(재시도가 성공했는데 옛 유령
+/// 수신자의 "실패" 말풍선이 나란히 남아 혼란을 줬다).
+class FileSuperseded extends NodeEvent {
+  final String oldTransferIdHex;
+  FileSuperseded(this.oldTransferIdHex);
 }
 
 class FileProgress extends NodeEvent {
@@ -107,6 +149,10 @@ class MeshNode {
   /// 우리가 광고하는 표시 이름. 사용자가 실시간으로 변경할 수 있도록 가변이며,
   /// 변경 시 현재 이웃들에게 다시 announce한다([updateDisplayName] 참고).
   String displayName;
+
+  /// 내 파츠 아바타 레시피(compact) — ANNOUNCE에 실려 이웃에게 전파된다.
+  /// null이면 필드 자체가 생략된다(구버전과 동일한 프레임).
+  String? avatarRecipe;
 
   late final MeshTransportInterface transport;
   late final Router router;
@@ -166,6 +212,12 @@ class MeshNode {
   /// 전송은 이 시간 동안 아무런 진전이 없을 때만 실패로 처리된다 — 큰 파일이
   /// 정상적으로도 수 분씩 걸리는 BLE에서는 절대적 마감 시한을 두는 것이 잘못이다.
   static const Duration _transferIdleTimeout = Duration(seconds: 60);
+
+  /// 첫 바이트가 오기 전의 수신 대기 상한. 전송 측이 파일들을 fast lane에
+  /// 한 건씩 직렬화하므로, 뒤 파일의 수신자는 앞 파일이 끝날 때까지 조용히
+  /// 기다리는 것이 정상이다 — 60초 리퍼가 이를 죽이면 뒤 파일이 도착해도
+  /// 조립할 수신자가 없다.
+  static const Duration _transferQueuedTimeout = Duration(minutes: 5);
 
   /// 수신 측 ACK 정책: 전송 측이 [_ackIdleGap] 동안 조용하면(버스트 종료 /
   /// 멈춤) 누락된 청크를 요청하고, 활성 버스트 중에는 [_ackHeartbeat]마다 느린
@@ -283,6 +335,16 @@ class MeshNode {
   /// 대한 병행 BLE 청크 경로를 억제한다.
   final Set<String> _fastActive = {};
 
+  /// fast-lane 대기열/협상 중인 transferId(전송 측). 아직 첫 바이트도 보내기
+  /// 전이므로, 수신 측의 조바심 ACK("전 청크 누락")에 재전송으로 답하면 안
+  /// 된다 — 다중 파일 선택 시 대기 중인 파일들의 재전송이 3초마다 겹치며
+  /// BLE 대역을 통째로 태우는 폭풍이 관찰됐다(2026-07-17 21:52).
+  final Set<String> _fastQueued = {};
+
+  /// 재전송 루프가 이미 도는 transferId — ACK가 3초마다 도착하는데 64청크
+  /// 재전송은 그보다 오래 걸리므로, 겹치면 같은 청크의 중복 사본만 쌓인다.
+  final Set<String> _resending = {};
+
   /// Multipeer / Wi-Fi Direct는 동시에 여러 세션을 열면 전부 실패한다
   /// (실기기: 파일 6개 동시 전송 → 6× `FT fast connect null`). 전송·수신
   /// 협상+스트림을 한 건씩 직렬화한다. BLE 폴백은 락 밖에서 돌린다.
@@ -292,11 +354,39 @@ class MeshNode {
   /// 각자 25초씩 또 실패하며 줄 서지 않게 한다.
   DateTime? _fastLaneCooldownoutUntil;
 
-  Future<T> _withFastLaneLock<T>(Future<T> Function() body) {
+  /// [turnTimeout]은 "차례 대기"에만 적용된다(자기 body 실행 시간은 무제한 —
+  /// 큰 파일 스트리밍을 중간에 포기시키면 안 된다). 앞 body가 어떤 이유로든
+  /// 영영 안 끝나면(네이티브 응답 유실 등) 시간이 찬 파일은 차례를 포기하고
+  /// [onTurnTimeout]의 값을 반환하며, 자기 gate를 즉시 열어 뒤 파일들도
+  /// 굶지 않게 한다 — 락 체인 정지가 더는 전체 전송 정지가 되지 않는다
+  /// (2026-07-17 22:22 관찰: 앞 파일 완료 직후 서스펜드와 겹치며 체인이 굳어
+  /// 4번째 파일이 영구 대기).
+  Future<T> _withFastLaneLock<T>(
+    Future<T> Function() body, {
+    Duration? turnTimeout,
+    T Function()? onTurnTimeout,
+  }) {
     final gate = Completer<void>();
     final prev = _fastLaneChain;
     _fastLaneChain = gate.future;
-    return prev.then((_) => body()).whenComplete(() {
+    // 앞 사람의 에러가 뒤 사람의 body 실행을 건너뛰게 두면 안 된다 —
+    // 대기열 전체가 조용히 굶는다.
+    var timedOut = false;
+    Future<void> waited = prev.catchError((_) {});
+    if (turnTimeout != null) {
+      waited = waited.timeout(turnTimeout, onTimeout: () {
+        timedOut = true;
+      });
+    }
+    return waited.then((_) {
+      if (timedOut) {
+        // 차례 포기: 체인은 계속 흘려보내고, 늦게 차례가 와도 재실행 없음
+        // (waited는 이미 완료됐으므로 이 then은 다시 돌지 않는다).
+        if (!gate.isCompleted) gate.complete();
+        return Future<T>.value(onTurnTimeout!());
+      }
+      return body();
+    }).whenComplete(() {
       if (!gate.isCompleted) gate.complete();
     });
   }
@@ -420,6 +510,58 @@ class MeshNode {
     }
   }
 
+  /// 이모지 리액션을 보낸다(추가 또는 제거). 페이로드는 대상 msgId(16) +
+  /// 플래그(1: bit0=제거) + 이모지 UTF-8 — 가장 복잡한 조합 이모지도 수십
+  /// 바이트라 BLE 패킷 하나에 들어간다. store-and-forward를 타므로 상대가
+  /// 오프라인이어도 다음 조우 때 도착하고, 적용은 멱등이라 중복 배달이
+  /// 무해하다.
+  Future<void> sendReaction(
+    PeerId dst,
+    String targetMsgIdHex,
+    String emoji, {
+    bool remove = false,
+  }) async {
+    final kex = _knownKex[dst.hex];
+    if (kex == null) {
+      _events.add(NodeError('Unknown recipient key: ${dst.short}'));
+      return;
+    }
+    final emojiBytes = utf8.encode(emoji);
+    final target = MsgId.fromHex(targetMsgIdHex);
+    final plain = Uint8List(17 + emojiBytes.length)
+      ..setRange(0, 16, target)
+      ..[16] = remove ? 1 : 0
+      ..setRange(17, 17 + emojiBytes.length, emojiBytes);
+    await _dispatch(
+      router.originate(
+        type: FrameType.reaction,
+        dst: dst,
+        payload: await crypto.encrypt(plain, kex),
+        flags: FrameFlags.encrypted,
+      ),
+    );
+  }
+
+  /// QR 스캔 직후 상호 인증 증명을 보낸다: QR에 실려 있던 논스를 암호화해
+  /// 되돌려주면, 상대는 "이 사람이 내 화면을 직접 봤다"를 확인하고 나를
+  /// 인증된 친구로 승격한다. store-and-forward를 타므로 상대 화면이 잠겨
+  /// 있어도 다음 조우 때 도착한다.
+  Future<void> sendVerify(PeerId dst, Uint8List nonce) async {
+    final kex = _knownKex[dst.hex];
+    if (kex == null) {
+      _events.add(NodeError('Unknown recipient key: ${dst.short}'));
+      return;
+    }
+    await _dispatch(
+      router.originate(
+        type: FrameType.verify,
+        dst: dst,
+        payload: await crypto.encrypt(nonce, kex),
+        flags: FrameFlags.encrypted,
+      ),
+    );
+  }
+
   Future<void> _broadcastAnnounce() async {
     if (transport.linkCount == 0) return;
     await transport.broadcast(_announceFrame().encode());
@@ -433,6 +575,26 @@ class MeshNode {
   Future<void> wakeUp() async {
     await _broadcastAnnounce();
     transport.wake();
+  }
+
+  /// QR로 검증된 친구와의 직접 링크에서 BLE 본딩을 유도한다.
+  /// [MeshTransport.ensureBonded] 참고. BLE가 아닌 전송에서는 no-op.
+  Future<void> ensureBonded(String peerHex) async {
+    final t = transport;
+    if (t is MeshTransport) await t.ensureBonded(peerHex);
+  }
+
+  /// [wakeUp]의 강화판(사용자 명시 재탐색): announce에 더해 전송 계층의
+  /// 탐색 백오프를 비우고 대기 연결을 재장전한다. [MeshTransport.boost] 참고.
+  /// BLE가 아닌 전송(테스트 fake)에서는 [wakeUp]과 동일하게 동작한다.
+  Future<void> boostDiscovery() async {
+    await _broadcastAnnounce();
+    final t = transport;
+    if (t is MeshTransport) {
+      await t.boost();
+    } else {
+      t.wake();
+    }
   }
 
   Future<void> stop() async {
@@ -454,11 +616,17 @@ class MeshNode {
       t.cancel();
     }
     _senderTimers.clear();
+    for (final t in _ackRepeatTimers) {
+      t.cancel();
+    }
+    _ackRepeatTimers.clear();
     for (final w in _fastAcceptWaiters.values) {
       if (!w.isCompleted) w.completeError(StateError('node stopped'));
     }
     _fastAcceptWaiters.clear();
     _fastActive.clear();
+    _fastQueued.clear();
+    _resending.clear();
     for (final s in _senders.values) {
       s.close();
     }
@@ -502,6 +670,13 @@ class MeshNode {
   /// 목록이 재연결을 기다리지 않고 갱신되게 한다.
   Future<void> updateDisplayName(String name) async {
     displayName = name;
+    await transport.broadcast(_announceFrame().encode());
+  }
+
+  /// 내 아바타 레시피를 바꾸고 즉시 재announce한다 — 이웃 화면의 내 아바타가
+  /// 다음 15초 주기를 기다리지 않고 갱신되게.
+  Future<void> updateAvatar(String? recipe) async {
+    avatarRecipe = recipe;
     await transport.broadcast(_announceFrame().encode());
   }
 
@@ -648,8 +823,45 @@ class MeshNode {
     if (fastLane != null &&
         fastLane!.capabilities.isNotEmpty &&
         sender.meta.fileSize >= fastLaneMinBytes) {
-      // 협상·Wi-Fi 스트림만 직렬화. 실패 후 BLE 폴백은 락 밖에서 병행 가능.
-      final ok = await _withFastLaneLock(() => _trySendFast(sender, dst, kex));
+      // 락 대기열에서 차례를 기다리는 동안에도 이 전송은 살아 있다 — 여기서
+      // 워치독을 계속 먹여주지 않으면, 앞 파일이 60초 이상 점유할 때 뒤
+      // 파일이 시작도 못 해 보고 idle 타임아웃으로 죽는다(관찰: 파일 2개
+      // 선택 시 두 번째가 타임아웃). 스트리밍 중 급식도 이 타이머가 겸한다.
+      final feeder = Timer.periodic(const Duration(seconds: 20), (_) {
+        if (_senders.containsKey(tid)) {
+          _armSenderWatchdog(tid, sender.meta.name);
+        }
+      });
+      final queuedAt = DateTime.now();
+      _fastQueued.add(tid); // 시작 전 — 수신 측 조바심 ACK에 재전송 금지
+      bool ok;
+      try {
+        // 협상·Wi-Fi 스트림만 직렬화. 실패 후 BLE 폴백은 락 밖에서 병행 가능.
+        ok = await _withFastLaneLock(
+          () {
+            final waited = DateTime.now().difference(queuedAt);
+            if (waited > const Duration(seconds: 2)) {
+              bleLogSink?.call(
+                  'FT fast lane queue waited ${waited.inSeconds}s: '
+                  '${sender.meta.name}');
+            }
+            return _trySendFast(sender, dst, kex);
+          },
+          turnTimeout: const Duration(seconds: 90),
+          onTurnTimeout: () {
+            bleLogSink?.call('FT fast lane turn timeout (90s) → BLE: '
+                '${sender.meta.name}');
+            return false;
+          },
+        );
+      } catch (e) {
+        // 어떤 예외도 파일 하나를 조용히 증발시키면 안 된다 — BLE로 살린다.
+        bleLogSink?.call('FT fast path error: $e → BLE: ${sender.meta.name}');
+        ok = false;
+      } finally {
+        feeder.cancel();
+        _fastQueued.remove(tid);
+      }
       if (ok) return; // fast lane이 전달을 완수함(전달 ACK는 BLE로 도착)
       if (!_senders.containsKey(tid)) return; // 그 사이에 취소됨/폐기됨
       bleLogSink?.call(
@@ -669,6 +881,9 @@ class MeshNode {
     Uint8List kex,
   ) async {
     final tid = sender.meta.transferIdHex;
+    // 대기열에서 기다리는 사이 취소/타임아웃됐을 수 있다 — 죽은 전송이
+    // fast lane을 점유하지 않게 한다.
+    if (!_senders.containsKey(tid)) return false;
     final now = DateTime.now();
     if (_fastLaneCooldownoutUntil != null && now.isBefore(_fastLaneCooldownoutUntil!)) {
       bleLogSink?.call(
@@ -710,7 +925,6 @@ class MeshNode {
 
     bleLogSink?.call('FT fast accept: ${accept.offer.kind.name}');
     FastLaneSession? session;
-    Timer? feeder;
     try {
       session = await fastLane!.connect(tid, accept.offer);
       if (session == null) {
@@ -722,11 +936,10 @@ class MeshNode {
       }
       _fastLaneCooldownoutUntil = null; // 성공 → 쿨다운 해제
       _fastActive.add(tid);
-      // fast lane이 전송을 소유하는 동안에는 idle 감시 타이머에 먹여줄 BLE
-      // ACK가 없으므로, 그동안은 우리가 직접 먹여준다.
-      feeder = Timer.periodic(const Duration(seconds: 20),
-          (_) => _armSenderWatchdog(tid, sender.meta.name));
+      // idle 워치독 급식은 [_deliverFile]의 feeder가 대기열~스트림 전 구간을
+      // 덮는다.
       bleLogSink?.call('FT fast connected: ${accept.offer.kind.name}');
+      _events.add(TransferLane(tid, 'wifi'));
       // 파일 전체를 하나의 암호화된, 길이 접두(length-prefixed) blob으로 보낸다.
       // 파일 전체 GCM은 평문+암호문이 이 호출 동안에만 RAM에 존재한다는 뜻이다 —
       // 설계상 일시적이다; BLE 경로는 파일을 아예 메모리에 올리지 않는다.
@@ -759,9 +972,13 @@ class MeshNode {
       bleLogSink?.call('FT fast send error: $e');
       return false;
     } finally {
-      feeder?.cancel();
       _fastActive.remove(tid);
-      await session?.close();
+      if (session != null) {
+        await session.close();
+        // 락 체인 정지 진단용 경계 마커: 이 줄이 없고 'send done'만 있으면
+        // close 경로 어딘가에 매달린 것이다.
+        bleLogSink?.call('FT fast session closed: ${sender.meta.name}');
+      }
     }
   }
 
@@ -807,12 +1024,16 @@ class MeshNode {
     Uint8List kex,
   ) async {
     final tid = sender.meta.transferIdHex;
+    _events.add(TransferLane(tid, 'ble'));
     var sent = 0;
     var lastPct = -1;
     try {
       for (final chunk in sender.allChunks()) {
-        // 버스트 도중에 폐기됨(조기 완료, 타임아웃, 취소, 정지).
-        if (!_senders.containsKey(tid)) return;
+        // 버스트 도중에 폐기됨(조기 완료, 타임아웃, 취소, 정지) — 또는
+        // 재시도가 같은 tid를 "새 sender"로 교체함. containsKey만 보면 옛
+        // 버스트가 교체된(닫힌) sender의 파일 핸들을 계속 읽다 터진다
+        // (관찰: FileSystemException: File closed).
+        if (!identical(_senders[tid], sender)) return;
         final cipher = await crypto.encrypt(chunk.encode(), kex);
         await _dispatch(
           router.originate(
@@ -881,6 +1102,7 @@ class MeshNode {
     final ann = Announce(
       publicBundle: identity.publicBundle,
       displayName: displayName,
+      avatar: avatarRecipe,
     );
     return router.originate(
       type: FrameType.announce,
@@ -984,7 +1206,7 @@ class MeshNode {
         );
       }
       if (decision.deliverLocal) {
-        await _deliverLocal(frame);
+        await _deliverLocal(frame, via: pkt.link.remoteShortId);
       }
     } catch (e) {
       _events.add(NodeError('Dropped malformed frame: $e'));
@@ -1027,7 +1249,11 @@ class MeshNode {
     }
   }
 
-  Future<void> _deliverLocal(Frame frame) async {
+  /// src별 "키 없음" 사용자 알림의 마지막 시각 — 이 상황은 보통 자가 치유되는
+  /// 일시 상태(보관→ANNOUNCE 도착→재전달)라, 프레임마다 스낵바를 쏘면 안 된다.
+  final Map<String, DateTime> _noKeyNoticeAt = {};
+
+  Future<void> _deliverLocal(Frame frame, {PeerId? via}) async {
     Uint8List payload = frame.payload;
     if (frame.isEncrypted) {
       final kex = _knownKex[frame.src.hex];
@@ -1037,7 +1263,18 @@ class MeshNode {
         // 그들의 ANNOUNCE가 도착하면 재시도한다([redeliverParked]).
         if (frame.dst == myId && !store.contains(frame.msgIdHex)) {
           store.add(frame);
-          _events.add(NodeError('No key to decrypt from ${frame.src.short}'));
+          bleLogSink?.call(
+              'MSG parked (no key yet) from ${frame.src.short} '
+              '${frame.msgIdHex.substring(0, 8)}');
+          // 사용자 대상 에러는 src당 30초에 한 번만: 재연결 직후의 밀린
+          // 프레임 폭주가 스낵바 도배가 되면 안 된다. 30초 넘게 반복되면
+          // 그때는 진짜 문제(ANNOUNCE 미도달)라 계속 알린다.
+          final last = _noKeyNoticeAt[frame.src.hex];
+          if (last == null ||
+              DateTime.now().difference(last) > const Duration(seconds: 30)) {
+            _noKeyNoticeAt[frame.src.hex] = DateTime.now();
+            _events.add(NodeError('No key to decrypt from ${frame.src.short}'));
+          }
         }
         if (frame.dst == myId) _markPendingLocalDelivery(frame.msgIdHex);
         return;
@@ -1069,7 +1306,8 @@ class MeshNode {
           // 하나 = announceTtl-1, … 다른 origin TTL을 쓰는 피어(구버전은 ttl 1로
           // announce함)의 프레임에 대비해 clamp한다.
           final hops = (announceTtl - frame.ttl + 1).clamp(1, announceTtl);
-          _events.add(PeerAnnounced(contact, hops: hops));
+          _events.add(
+              PeerAnnounced(contact, hops: hops, via: via, avatar: ann.avatar));
           // 그들의 키가, 그들을 알기 전에 보관해둔 메시지를 열어줄 수 있다.
           unawaited(redeliverParked(from: contact.peerId));
         } catch (_) {}
@@ -1118,11 +1356,45 @@ class MeshNode {
         bleLogSink?.call(
           'FT recv meta: ${meta.name} chunks=${meta.totalChunks}',
         );
+        // 같은 파일의 재전송(재시도 = 새 tid): 옛 미완료 수신자는 유령이다 —
+        // 그대로 두면 나중에 타임아웃하며 "수신 실패" 말풍선을 남겨, 성공한
+        // 재시도 옆에서 사용자를 헷갈리게 한다. 조용히 대체한다.
+        for (final e in _receivers.entries.toList()) {
+          final old = e.value;
+          if (!old.isComplete &&
+              _receiverPeers[e.key] == frame.src &&
+              old.meta.name == meta.name &&
+              old.meta.fileSize == meta.fileSize) {
+            bleLogSink?.call('FT recv superseded by retry: ${meta.name} '
+                '(old ${e.key.substring(0, 8)})');
+            old.discard();
+            _rxTimers.remove(e.key)?.cancel();
+            _completeReceiver(e.key);
+            _events.add(FileSuperseded(e.key));
+          }
+        }
         _receivers[meta.transferIdHex] =
             FileReceiver(meta, incomingPartPath(meta.transferIdHex));
         _receiverPeers[meta.transferIdHex] = frame.src;
         _startReceiverRecovery(meta.transferIdHex, frame.src);
         _events.add(FileOffered(frame.src, meta));
+        break;
+      case FrameType.reaction:
+        if (payload.length < 17) break;
+        final target = MsgId.hex(Uint8List.sublistView(payload, 0, 16));
+        final removed = payload[16] == 1;
+        final emoji =
+            utf8.decode(payload.sublist(17), allowMalformed: true).trim();
+        // 상한: 조합(ZWJ) 이모지도 UTF-8로 ~35바이트 — 그 이상은 악성/오류.
+        if (emoji.isEmpty || emoji.length > 24) break;
+        _events.add(ReactionReceived(frame.src, target, emoji, removed));
+        // 전달됐으니 메일박스들이 사본을 지울 수 있게 영수증을 낸다.
+        unawaited(_broadcastReceipt(frame.msgId));
+        break;
+      case FrameType.verify:
+        if (payload.length != 16) break;
+        _events.add(VerifyReceived(frame.src, Uint8List.fromList(payload)));
+        unawaited(_broadcastReceipt(frame.msgId));
         break;
       case FrameType.fileChunk:
         await _handleFileChunk(frame.src, payload);
@@ -1271,22 +1543,35 @@ class MeshNode {
       // 있다: "누락"된 것은 모두 이미 가는 중이다. 지금 재전송하면 전송 전체가
       // BLE로 중복될 것이다.
       if (_streaming.contains(ack.transferIdHex) ||
-          _fastActive.contains(ack.transferIdHex)) {
+          _fastActive.contains(ack.transferIdHex) ||
+          // 아직 시작도 안 한 전송(fast-lane 대기열): 수신 측은 META만 보고
+          // "전부 누락"을 조르지만, 여기 응답하면 대기 중인 파일 수만큼의
+          // 재전송 루프가 겹치며 BLE 대역을 태운다. 곧 정식 버스트가 간다.
+          _fastQueued.contains(ack.transferIdHex)) {
         return;
       }
-      bleLogSink?.call('FT resend requested: ${ack.missing.length} chunks');
-      for (final chunk in sender.chunksToResend(ack)) {
-        if (!_senders.containsKey(ack.transferIdHex)) return; // 폐기됨
-        final cipher = await crypto.encrypt(chunk.encode(), kex);
-        await _dispatch(
-          router.originate(
-            type: FrameType.fileChunk,
-            dst: from,
-            payload: cipher,
-            flags: FrameFlags.encrypted,
-          ),
-          persist: false,
-        );
+      // 루프 직렬화: ACK는 ~3초마다 오는데 64청크 재전송은 그보다 느리다 —
+      // 겹치면 같은 청크의 중복 사본만 쌓여 유효 처리량이 0에 수렴한다.
+      if (!_resending.add(ack.transferIdHex)) return;
+      try {
+        bleLogSink?.call('FT resend requested: ${ack.missing.length} chunks '
+            '(${ack.transferIdHex.substring(0, 8)})');
+        for (final chunk in sender.chunksToResend(ack)) {
+          // 폐기됐거나 재시도가 sender를 교체함(닫힌 파일 핸들 접근 방지).
+          if (!identical(_senders[ack.transferIdHex], sender)) return;
+          final cipher = await crypto.encrypt(chunk.encode(), kex);
+          await _dispatch(
+            router.originate(
+              type: FrameType.fileChunk,
+              dst: from,
+              payload: cipher,
+              flags: FrameFlags.encrypted,
+            ),
+            persist: false,
+          );
+        }
+      } finally {
+        _resending.remove(ack.transferIdHex);
       }
     }
   }
@@ -1388,6 +1673,7 @@ class MeshNode {
         return; // 전송 측이 끝내 연결하지 않음 → BLE 복구 타이머가 처리한다
       }
       bleLogSink?.call('FT fast recv connected, reading…');
+      _events.add(TransferLane(tid, 'wifi'));
       // 4바이트 길이 접두를 읽은 뒤 그만큼의 암호문 바이트를 읽는다. 조각들은
       // 두 번만 조립되므로(헤더 파싱 + 완료), 100MB 전송이 복사에서 O(n²)이 되지
       // 않는다.
@@ -1431,7 +1717,9 @@ class MeshNode {
             _rememberCompleted(tid);
             // BLE 완료 경로를 그대로 재사용한다: 서명된 "complete" ACK가 전송
             // 측을 멈추고 그쪽 말풍선을 전달됨으로 바꾼다.
-            await _sendFileAck(from, receiver.buildAck());
+            final completeAck = receiver.buildAck();
+            await _sendFileAck(from, completeAck);
+            _repeatCompletionAck(from, completeAck);
           } finally {
             _finalizing.remove(tid);
           }
@@ -1483,6 +1771,11 @@ class MeshNode {
       }
       return; // 아직 META를 보지 못함(또는 이미 완료됨)
     }
+    // 첫 청크 = BLE 경로 확정(수신 측). fast lane이 끼어들면 그쪽 이벤트가
+    // 나중에 'wifi'로 덮어쓴다.
+    if (receiver.receivedCount == 0) {
+      _events.add(TransferLane(tidHex, 'ble'));
+    }
     final isNew = receiver.offer(chunk);
     _rxLastChunk[tidHex] = DateTime.now();
     // 진행률 이벤트를 조절한다: 청크마다가 아니라 퍼센트마다 하나씩.
@@ -1500,9 +1793,11 @@ class MeshNode {
         final path = await receiver.finalize();
         bleLogSink?.call('FT recv complete: ${receiver.meta.name}');
         _events.add(FileReceived(from, receiver.meta, path));
+        final completeAck = receiver.buildAck();
         _completeReceiver(tidHex);
         _rememberCompleted(tidHex);
-        await _sendFileAck(from, receiver.buildAck());
+        await _sendFileAck(from, completeAck);
+        _repeatCompletionAck(from, completeAck);
       } catch (_) {
         // 모든 청크가 다 있는데 파일 해시가 불일치. 청크별 GCM은 이를 거의
         // 불가능하게 만든다; "complete"로 잘못 ACK하기보다는(그러면 전송 측이
@@ -1559,6 +1854,29 @@ class MeshNode {
   }
 
   /// 완료/중단된 전송에 대한 수신 측 상태를 모두 정리한다.
+  /// 완료 ACK 재송신 타이머들 — stop() 시 취소.
+  final List<Timer> _ackRepeatTimers = [];
+
+  /// 완료 ACK는 단발 BLE 프레임이라 유실되면 전송 측이 60초 뒤 "실패"로
+  /// 오판한다(관찰 2026-07-17 22:58: 수신은 완료됐는데 전송 측 send timeout —
+  /// 파일은 갔는데 상태만 거짓 실패). 몇 번 반복해 유실 확률을 없앤다 —
+  /// 전송 측 ACK 처리는 멱등이라 중복은 무해하다.
+  void _repeatCompletionAck(PeerId to, FileAck ack) {
+    for (final delay in const [
+      Duration(seconds: 4),
+      Duration(seconds: 15),
+      Duration(seconds: 40),
+    ]) {
+      _ackRepeatTimers.add(Timer(delay, () {
+        unawaited(_sendFileAck(to, ack));
+      }));
+    }
+    // 오래된 완료 타이머가 무한히 쌓이지 않게 간단히 손질한다.
+    if (_ackRepeatTimers.length > 60) {
+      _ackRepeatTimers.removeRange(0, _ackRepeatTimers.length - 60);
+    }
+  }
+
   void _completeReceiver(String tidHex) {
     _receivers.remove(tidHex);
     _receiverPeers.remove(tidHex);
@@ -1584,7 +1902,13 @@ class MeshNode {
       }
       final now = DateTime.now();
       final idle = now.difference(_rxLastChunk[tidHex] ?? now);
-      if (idle > _transferIdleTimeout) {
+      // 아직 바이트가 하나도 안 온 전송은 전송 측 fast-lane 대기열에서 차례를
+      // 기다리는 중일 수 있다(다중 파일 선택 시 한 건씩 직렬화됨 — 앞 파일이
+      // 큰 경우 수 분). 시작 전 대기는 넉넉히, 진행 중 침묵은 기존대로 짧게.
+      final patience = receiver.receivedCount == 0
+          ? _transferQueuedTimeout
+          : _transferIdleTimeout;
+      if (idle > patience) {
         t.cancel();
         bleLogSink?.call('FT recv timeout: ${receiver.meta.name}');
         receiver.discard();

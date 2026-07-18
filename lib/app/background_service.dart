@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
+import '../l10n/l10n.dart';
 import 'headless_mesh.dart';
 
 /// 유일무이한 메시 노드를 소유(OWN)하는 Android 포그라운드 서비스.
@@ -48,8 +49,8 @@ class BackgroundService {
     if (!_supported) return;
     if (await FlutterForegroundTask.isRunningService) return;
     await FlutterForegroundTask.startService(
-      notificationTitle: 'SpotLink is active',
-      notificationText: 'Discovering people and relaying messages nearby.',
+      notificationTitle: systemS.fgsTitle,
+      notificationText: systemS.fgsSearching,
       callback: headlessMeshMain,
     );
   }
@@ -74,10 +75,10 @@ class BackgroundService {
     if (!_supported) return;
     if (!await FlutterForegroundTask.isRunningService) return;
     await FlutterForegroundTask.updateService(
-      notificationTitle: 'SpotLink is active',
+      notificationTitle: systemS.fgsTitle,
       notificationText: linkCount > 0
-          ? 'Connected to $linkCount nearby device(s).'
-          : 'Searching for people nearby…',
+          ? systemS.fgsConnected(linkCount)
+          : systemS.fgsSearching,
     );
   }
 

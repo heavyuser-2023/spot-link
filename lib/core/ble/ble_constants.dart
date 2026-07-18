@@ -20,6 +20,14 @@ class BleConstants {
   static final UUID infoCharacteristicUuid =
       UUID.fromString('7370746c-696e-6b00-0000-000000000004');
 
+  /// BOND: 암호화 읽기 전용 characteristic. 값 자체는 의미 없고("SLB1"),
+  /// 검증된(QR) 친구의 센트럴이 이를 한 번 읽는 행위가 OS 페어링/본딩을
+  /// 유도한다. 본딩되면 IRK가 교환되어 상대의 BLE 주소 회전에도 저장된
+  /// peripheral 식별자가 계속 해석(resolve)된다 — 대기 연결이 절대 죽지 않는
+  /// 근본책. 구버전은 이 특성을 모르므로 무시한다(프로토콜 호환).
+  static final UUID bondCharacteristicUuid =
+      UUID.fromString('7370746c-696e-6b00-0000-000000000005');
+
   /// 광고에 짧은 PeerId를 실어 나르는 데 사용하는 제조사 id.
   /// 0xFFFF는 "회사 없음" 테스트 id로 — P2P 앱에는 적합하다.
   static const int manufacturerId = 0xFFFF;

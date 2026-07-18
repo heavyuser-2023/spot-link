@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/l10n.dart';
+
 /// 첫 실행 화면: 다른 사람에게 어떤 이름으로 보일지 사용자에게 묻는다. 이것이
 /// 없으면 모든 피어가 기본값 "SpotLink User"로 표시된다.
 class OnboardingScreen extends StatefulWidget {
@@ -50,12 +52,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 child: Icon(Icons.hub, size: 40, color: scheme.onPrimaryContainer),
               ),
               const SizedBox(height: 28),
-              Text('SpotLink에\n오신 걸 환영합니다',
+              Text(context.s.onboardingWelcome,
                   style: Theme.of(context).textTheme.headlineMedium),
               const SizedBox(height: 12),
               Text(
-                '주변 친구들에게 표시될 이름을 정해주세요.\n'
-                '인터넷 없이 블루투스로 안전하게 대화합니다.',
+                context.s.onboardingSubtitle,
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                     color: scheme.onSurfaceVariant),
               ),
@@ -67,11 +68,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 maxLength: 32,
                 onSubmitted: (_) => _submit(),
                 // 앱의 채워진(filled) 입력 스타일을 상속한다 — 혼자 테두리 형태로 튀지 않는다.
-                decoration: const InputDecoration(
-                  labelText: '표시 이름',
-                  hintText: '예: 김정훈',
+                decoration: InputDecoration(
+                  labelText: context.s.onboardingNameLabel,
+                  hintText: context.s.onboardingNameHint,
                   counterText: '', // 여기서 글자 수 카운터는 그저 잡음일 뿐
-                  prefixIcon: Icon(Icons.person_outline),
+                  prefixIcon: const Icon(Icons.person_outline),
                 ),
               ),
               const SizedBox(height: 16),
@@ -85,8 +86,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           height: 20,
                           width: 20,
                           child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('시작하기',
-                          style: TextStyle(
+                      : Text(context.s.onboardingStart,
+                          style: const TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w600)),
                 ),
               ),

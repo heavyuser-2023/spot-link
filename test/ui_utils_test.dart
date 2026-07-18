@@ -1,11 +1,28 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:spot_link/features/ui_utils.dart';
+import 'package:spot_link/l10n/l10n.dart';
 
 void main() {
   setUpAll(() async {
     await initializeDateFormatting('ko', null);
   });
+
+  /// 로케일 의존 헬퍼(dayLabel/relativeTime)에 한국어 컨텍스트를 공급한다.
+  Future<BuildContext> koContext(WidgetTester tester) async {
+    late BuildContext ctx;
+    await tester.pumpWidget(MaterialApp(
+      locale: const Locale('ko'),
+      localizationsDelegates: S.localizationsDelegates,
+      supportedLocales: S.supportedLocales,
+      home: Builder(builder: (c) {
+        ctx = c;
+        return const SizedBox();
+      }),
+    ));
+    return ctx;
+  }
 
   test('avatarColor is deterministic and within palette', () {
     final a = avatarColor('deadbeef01020304');
@@ -36,25 +53,33 @@ void main() {
     expect(sameDay(base, nextDay), isFalse);
   });
 
-  test('dayLabel returns 오늘 for now', () {
-    expect(dayLabel(DateTime.now().millisecondsSinceEpoch), '오늘');
+  testWidgets('dayLabel returns 오늘 for now (ko locale)', (tester) async {
+    final ctx = await koContext(tester);
+    expect(dayLabel(ctx, DateTime.now().millisecondsSinceEpoch), '오늘');
   });
 
-  test('relativeTime returns 지금 for now', () {
-    expect(relativeTime(DateTime.now().millisecondsSinceEpoch), '지금');
+  testWidgets('relativeTime returns 지금 for now (ko locale)', (tester) async {
+    final ctx = await koContext(tester);
+    expect(relativeTime(ctx, DateTime.now().millisecondsSinceEpoch), '지금');
   });
 
   test('proximityBucket maps RSSI and hops to honest buckets', () {
-    expect(proximityBucket(-40, 1), (label: '바로 옆', ring: 0));
-    expect(proximityBucket(-55, 1), (label: '바로 옆', ring: 0));
-    expect(proximityBucket(-60, 1), (label: '가까이', ring: 1));
-    expect(proximityBucket(-75, 1), (label: '근처', ring: 2));
-    expect(proximityBucket(-95, 1), (label: '멀리', ring: 3));
+    expect(proximityBucket(-40, 1), (level: Proximity.veryNear, ring: 0));
+    expect(proximityBucket(-55, 1), (level: Proximity.veryNear, ring: 0));
+    expect(proximityBucket(-60, 1), (level: Proximity.near, ring: 1));
+    expect(proximityBucket(-75, 1), (level: Proximity.nearby, ring: 2));
+    expect(proximityBucket(-95, 1), (level: Proximity.far, ring: 3));
     // No reading yet: honest middle bucket.
-    expect(proximityBucket(null, 1), (label: '주변', ring: 2));
+    expect(proximityBucket(null, 1), (level: Proximity.unknown, ring: 2));
     // Multihop always sits on the outer ring, even with a strong reading
     // from some stale direct encounter.
-    expect(proximityBucket(-40, 2), (label: '2홉 건너', ring: 3));
-    expect(proximityBucket(null, 3), (label: '3홉 건너', ring: 3));
+    expect(proximityBucket(-40, 2), (level: Proximity.relayed, ring: 3));
+    expect(proximityBucket(null, 3), (level: Proximity.relayed, ring: 3));
+  });
+
+  testWidgets('Proximity labels resolve in ko locale', (tester) async {
+    final ctx = await koContext(tester);
+    expect(Proximity.veryNear.label(ctx), '바로 옆');
+    expect(Proximity.relayed.label(ctx, hops: 2), '2홉 건너');
   });
 }

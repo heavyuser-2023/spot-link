@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import '../l10n/l10n.dart';
+
 /// 앱이 포그라운드에 있지 않을 때(예: 화면 꺼짐 / 백그라운드) 수신 메시지/파일에
 /// 대한 로컬 알림을 표시한다. Android 포그라운드 서비스가 프로세스를 살려 두어
 /// 이 알림들이 발생할 수 있게 하고, iOS에서는 백그라운드 BLE 모드가 같은 역할을
@@ -11,8 +13,6 @@ class NotificationService {
   static bool _ready = false;
 
   static const _channelId = 'spotlink_messages';
-  static const _channelName = '메시지';
-  static const _channelDesc = '새 메시지와 파일 도착 알림';
 
   static Future<void> init() async {
     if (_ready) return;
@@ -29,10 +29,10 @@ class NotificationService {
     // 첫 알림이 조용히 버려지지 않도록 Android 채널을 미리 생성한다.
     final android2 = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
-    await android2?.createNotificationChannel(const AndroidNotificationChannel(
+    await android2?.createNotificationChannel(AndroidNotificationChannel(
       _channelId,
-      _channelName,
-      description: _channelDesc,
+      systemS.notifChannelName,
+      description: systemS.notifChannelDesc,
       importance: Importance.high,
     ));
     // Android 13+에서 POST_NOTIFICATIONS를 요청한다(이전 버전에서는 no-op).
@@ -62,10 +62,10 @@ class NotificationService {
         return;
       }
     }
-    const android = AndroidNotificationDetails(
+    final android = AndroidNotificationDetails(
       _channelId,
-      _channelName,
-      channelDescription: _channelDesc,
+      systemS.notifChannelName,
+      channelDescription: systemS.notifChannelDesc,
       importance: Importance.high,
       priority: Priority.high,
     );
@@ -76,7 +76,7 @@ class NotificationService {
         title: title,
         body: body,
         notificationDetails:
-            const NotificationDetails(android: android, iOS: darwin),
+            NotificationDetails(android: android, iOS: darwin),
       );
     } catch (_) {
       // 무시: 알림은 최선의 노력(best-effort)일 뿐이며, 특히 데스크톱/테스트에서 그렇다.

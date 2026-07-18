@@ -39,4 +39,22 @@ void main() {
   test('empty saved list is safe', () {
     expect(MeshTransport.pendingReconnectOrder(const [], 10), isEmpty);
   });
+
+  test('bonded identifiers jump the queue, newest first within groups', () {
+    // saved는 오래된 것→최신 순. 본딩된 p1old(가장 오래됨)가 상한 경쟁에서
+    // 최신 뜨내기 id들을 제치고 맨 앞에 서야 한다.
+    final order = MeshTransport.pendingReconnectOrder(
+      saved, 3,
+      bonded: {'p1old'},
+    );
+    expect(order, ['p1old', 'p6new', 'p5']);
+  });
+
+  test('bonded set with no matches leaves order unchanged', () {
+    final order = MeshTransport.pendingReconnectOrder(
+      saved, 2,
+      bonded: {'ghost'},
+    );
+    expect(order, ['p6new', 'p5']);
+  });
 }

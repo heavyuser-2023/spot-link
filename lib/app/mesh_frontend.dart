@@ -43,6 +43,16 @@ abstract class MeshFrontend extends ChangeNotifier {
   String get myQrPayload;
   Future<void> setDisplayName(String name);
 
+  /// 내 파츠 아바타 레시피(compact, [AvatarCodec]) — null이면 이니셜 아바타.
+  String? get myAvatar;
+
+  /// 사용자가 빌더에서 직접 아바타를 저장한 적 있는가. false = 자동 생성
+  /// 기본 아바타(내 정보의 커스텀 유도 카드·탭 배지가 이 값으로 뜬다).
+  bool get avatarCustomized;
+
+  /// 아바타 레시피를 저장하고 즉시 재announce해 이웃 화면에 반영한다.
+  Future<void> setAvatarRecipe(String recipe);
+
   // ---- 상태 ----
   bool get started;
   int get linkCount;
@@ -58,15 +68,38 @@ abstract class MeshFrontend extends ChangeNotifier {
   /// 일시적인 사용자 대상 에러(스낵바용).
   Stream<String> get errorEvents;
 
+  /// 사용자가 명시적으로 요청한 즉시 재탐색(친구 탭 당겨서 새로고침).
+  /// 다음 self-heal / 적응형 틱을 기다리지 않고 지금 바로: 프레즌스를 다시
+  /// announce하고, 광고·스캔을 재활용하며, 탐색 백오프/쿨다운을 비우고
+  /// (iOS) 알려진 피어 대기 연결을 재장전하고 (Android) 60초 저지연 스캔
+  /// 버스트를 건다. 발견 자체를 기다리지는 않는다 — 새 피어는 평소처럼
+  /// 상태 변경 알림으로 도착한다.
+  Future<void> boostDiscovery();
+
   // ---- 프레즌스 / 연락처 ----
   List<Contact> get contacts;
   Contact? contactByHex(String peerHex);
   bool isNearby(String peerHex);
   int get nearbyCount;
   int hopsTo(String peerHex);
+
+  /// 멀티홉 피어의 마지막 릴레이(직접 이웃)의 peerHex. 직접 연결(1홉)이거나
+  /// 아직 모르면 null. 레이더의 중계 경로 표시용.
+  String? viaOf(String peerHex);
+
+  /// 파일 전송의 실제 경로('wifi'|'ble') 세션 캐시. 영구 값은 메시지 행의
+  /// [ChatMessage.lane]에 있다 — UI는 `message.lane ?? laneOf(msgId)`로 읽는다.
+  String? laneOf(String msgId);
+
+  /// 이 피어와 주고받은 대화(메시지 이력)가 있는가 — 레이더/목록에서
+  /// "대화했던 친구"를 구분하는 근거.
+  bool hasChat(String peerHex);
   int? rssiOf(String peerHex);
+  /// [verifyNonce]: 스캔한 QR에 실려 있던 상호 인증 논스. 넘기면 상대에게
+  /// 암호화해 되돌려 보내 "네 화면을 직접 봤다"를 증명하고, 상대 쪽에서도
+  /// 내가 인증된 친구로 승격된다.
   Future<Contact> addContactFromBundle(Uint8List bundle,
-      {String? name, bool verified = true});
+      {String? name, bool verified = true, Uint8List? verifyNonce});
   Future<void> deleteContact(String peerHex);
   Future<void> renameContact(String peerHex, String name);
 
@@ -108,6 +141,15 @@ abstract class MeshFrontend extends ChangeNotifier {
   Future<void> retryFile(ChatMessage failed);
   Future<void> deleteMessage(ChatMessage msg);
   Map<String, double> get transferProgress;
+
+  // ---- 이모지 리액션 ----
+
+  /// 이 메시지에 달린 리액션들(열린 대화 기준 캐시).
+  List<Reaction> reactionsOf(String msgId);
+
+  /// 내 리액션 토글: 없으면 추가, 있으면 제거. 상대에게 리액션 프레임이
+  /// 전송되며 store-and-forward라 오프라인이어도 나중에 도착한다.
+  Future<void> toggleReaction(String peerHex, String msgId, String emoji);
 
   // ---- 로컬 파일 동작(공유 앱 컨테이너 내 경로에 대해 작동) --
   Future<void> openFile(ChatMessage msg);

@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:fluttermoji/fluttermoji.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../app/mesh_controller.dart';
+import '../data/avatar_codec.dart';
+import '../l10n/l10n.dart';
 
 /// [MeshFrontend]를 다시 제공하면서 [screen]을 push한다. push된 라우트는 루트
 /// 내비게이터 — Bootstrap의 provider 위 — 에 마운트되므로, 이것이 없으면 새
@@ -47,18 +51,18 @@ String initialsOf(String name) {
 
 /// 대화 목록용 짧은 상대 시간: "지금", "5분", "3시간", "어제", 요일, 또는
 /// 날짜.
-String relativeTime(int epochMs) {
+String relativeTime(BuildContext context, int epochMs) {
   final now = DateTime.now();
   final d = DateTime.fromMillisecondsSinceEpoch(epochMs);
   final diff = now.difference(d);
-  if (diff.inMinutes < 1) return '지금';
-  if (diff.inMinutes < 60) return '${diff.inMinutes}분';
+  if (diff.inMinutes < 1) return context.s.utilJustNow;
+  if (diff.inMinutes < 60) return context.s.utilMinutesAgo(diff.inMinutes);
   if (diff.inHours < 24 && now.day == d.day) return DateFormat.Hm().format(d);
   final yesterday = now.subtract(const Duration(days: 1));
   if (d.year == yesterday.year &&
       d.month == yesterday.month &&
       d.day == yesterday.day) {
-    return '어제';
+    return context.s.utilYesterday;
   }
   if (diff.inDays < 7) return DateFormat.E('ko').format(d);
   return DateFormat('M/d').format(d);
@@ -68,16 +72,19 @@ String relativeTime(int epochMs) {
 String clockTime(int epochMs) =>
     DateFormat.Hm().format(DateTime.fromMillisecondsSinceEpoch(epochMs));
 
-/// 채팅 날짜 구분선용 전체 날짜 라벨: "오늘", "어제", 또는 날짜.
-String dayLabel(int epochMs) {
+/// 채팅 날짜 구분선용 전체 날짜 라벨: "오늘", "어제", 또는 로케일 날짜.
+String dayLabel(BuildContext context, int epochMs) {
   final now = DateTime.now();
   final d = DateTime.fromMillisecondsSinceEpoch(epochMs);
   if (now.year == d.year && now.month == d.month && now.day == d.day) {
-    return '오늘';
+    return context.s.utilToday;
   }
   final y = now.subtract(const Duration(days: 1));
-  if (y.year == d.year && y.month == d.month && y.day == d.day) return '어제';
-  return DateFormat('yyyy년 M월 d일').format(d);
+  if (y.year == d.year && y.month == d.month && y.day == d.day) {
+    return context.s.utilYesterday;
+  }
+  return DateFormat.yMMMMd(Localizations.localeOf(context).toString())
+      .format(d);
 }
 
 bool sameDay(int aMs, int bMs) {
@@ -90,13 +97,28 @@ bool sameDay(int aMs, int bMs) {
 /// 인덱스(0 = 가장 안쪽/가장 가까움 … 3 = 가장 바깥). BLE의 절대 거리는
 /// 신뢰할 수 없어서, 정직한 구간만 주장한다; 멀티홉 피어는 신호와 무관하게
 /// 항상 바깥 링에 앉는다.
-({String label, int ring}) proximityBucket(int? rssi, int hops) {
-  if (hops > 1) return (label: '$hops홉 건너', ring: 3);
-  if (rssi == null) return (label: '주변', ring: 2);
-  if (rssi >= -55) return (label: '바로 옆', ring: 0);
-  if (rssi >= -70) return (label: '가까이', ring: 1);
-  if (rssi >= -82) return (label: '근처', ring: 2);
-  return (label: '멀리', ring: 3);
+enum Proximity { veryNear, near, nearby, far, unknown, relayed }
+
+({Proximity level, int ring}) proximityBucket(int? rssi, int hops) {
+  if (hops > 1) return (level: Proximity.relayed, ring: 3);
+  if (rssi == null) return (level: Proximity.unknown, ring: 2);
+  if (rssi >= -55) return (level: Proximity.veryNear, ring: 0);
+  if (rssi >= -70) return (level: Proximity.near, ring: 1);
+  if (rssi >= -82) return (level: Proximity.nearby, ring: 2);
+  return (level: Proximity.far, ring: 3);
+}
+
+/// [proximityBucket]의 수준을 현재 로케일 라벨로 옮긴다. 멀티홉([Proximity.relayed])은
+/// 홉 수가 라벨에 들어가므로 [hops]를 넘겨야 한다.
+extension ProximityLabel on Proximity {
+  String label(BuildContext c, {int hops = 0}) => switch (this) {
+        Proximity.veryNear => c.s.utilProximityVeryNear,
+        Proximity.near => c.s.utilProximityNear,
+        Proximity.nearby => c.s.utilProximityNearby,
+        Proximity.far => c.s.utilProximityFar,
+        Proximity.unknown => c.s.utilProximityUnknown,
+        Proximity.relayed => c.s.utilProximityRelayed(hops),
+      };
 }
 
 String humanSize(int bytes) {
@@ -176,6 +198,61 @@ class _PulsingDotState extends State<PulsingDot>
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+/// 파츠 아바타(레시피) 또는 이니셜 폴백을 그리는 공용 아바타.
+///
+/// [avatar]는 [AvatarCodec]의 compact 레시피다 — 이미지가 아니라 ~30바이트
+/// 텍스트이고, 렌더링은 이 기기에 내장된 파츠 자산(Avataaars SVG)이 한다.
+/// 형식이 낯설거나(구버전 발신) 파싱이 실패하면 기존 이니셜 아바타로
+/// 우아하게 강등된다. 레시피→SVG 변환은 문자열 조립이라 싸지만, 매 빌드
+/// 반복을 피하려고 레시피별로 메모이즈한다.
+class PersonAvatar extends StatelessWidget {
+  final String? avatar; // AvatarCodec compact 레시피
+  final String displayName;
+  final String colorKey; // 이니셜 폴백의 배경색 키(peerHex)
+  final double radius;
+  const PersonAvatar({
+    super.key,
+    required this.avatar,
+    required this.displayName,
+    required this.colorKey,
+    required this.radius,
+  });
+
+  static final Map<String, String> _svgCache = {};
+
+  @override
+  Widget build(BuildContext context) {
+    final json = AvatarCodec.jsonFromCompact(avatar);
+    if (json != null) {
+      if (_svgCache.length > 64) _svgCache.clear();
+      final svg = _svgCache.putIfAbsent(avatar!,
+          () => FluttermojiFunctions().decodeFluttermojifromString(json));
+      final scheme = Theme.of(context).colorScheme;
+      return ClipOval(
+        child: Container(
+          width: radius * 2,
+          height: radius * 2,
+          color: scheme.surfaceContainerHighest,
+          // Avataaars는 상반신 구도라 살짝 확대해 얼굴이 원을 채우게 한다.
+          child: Transform.scale(
+            scale: 1.12,
+            child: SvgPicture.string(svg, fit: BoxFit.contain),
+          ),
+        ),
+      );
+    }
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: avatarColor(colorKey),
+      foregroundColor: Colors.white,
+      child: Text(
+        initialsOf(displayName),
+        style: TextStyle(fontSize: radius * 0.72),
       ),
     );
   }

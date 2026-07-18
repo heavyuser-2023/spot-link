@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
@@ -15,6 +16,7 @@ import '../core/model/qr_payload.dart';
 import '../data/app_database.dart';
 import '../data/identity_store.dart';
 import '../data/models.dart';
+import '../l10n/l10n.dart';
 import 'background_service.dart';
 import 'beacon_wake.dart';
 import 'bridge_protocol.dart';
@@ -75,6 +77,11 @@ class RemoteMeshController extends MeshFrontend
   /// (부트스트랩 스플래시)가 계속 주도권을 갖게 한다.
   Future<void> init() async {
     _firstSnap = Completer<void>();
+    // UI isolate도 공유 DB에서 직접 메시지를 읽는다 — 경로 재해석 기준 주입.
+    try {
+      AppDatabase.documentsDir =
+          (await getApplicationDocumentsDirectory()).path;
+    } catch (_) {}
     FlutterForegroundTask.addTaskDataCallback(_onData);
     _wired = true;
     WidgetsBinding.instance.addObserver(this);
@@ -111,7 +118,7 @@ class RemoteMeshController extends MeshFrontend
     try {
       await _firstSnap!.future.timeout(const Duration(seconds: 12));
     } catch (_) {
-      _lastError ??= '메시 서비스 연결 중…';
+      _lastError ??= systemS.errServiceConnecting;
       notifyListeners();
     }
 
@@ -199,6 +206,8 @@ class RemoteMeshController extends MeshFrontend
     _relayCount = (m['relayN'] as num?)?.toInt() ?? 0;
     _relayBytes = (m['relayB'] as num?)?.toInt() ?? 0;
     _displayName = m['name'] as String? ?? _displayName;
+    _myAvatar = m['meAvatar'] as String? ?? _myAvatar;
+    _avatarCustomized = m['meAvCustom'] as bool? ?? _avatarCustomized;
 
     Map<String, Object?> asMap(Object? o) =>
         (o as Map?)?.cast<String, Object?>() ?? const {};
@@ -215,6 +224,12 @@ class RemoteMeshController extends MeshFrontend
     lastHopCount
       ..clear()
       ..addAll(asMap(m['hops']).map((k, v) => MapEntry(k, (v as num).toInt())));
+    lastViaHex
+      ..clear()
+      ..addAll(asMap(m['via']).map((k, v) => MapEntry(k, v as String)));
+    liveLanes
+      ..clear()
+      ..addAll(asMap(m['lanes']).map((k, v) => MapEntry(k, v as String)));
     rssiSmoothed.clear();
     rssiSeenAt.clear();
     asMap(m['rssi']).forEach((k, v) {
@@ -255,7 +270,30 @@ class RemoteMeshController extends MeshFrontend
   Future<void> _reloadConversation(String peerHex) async {
     final loaded = await db.messagesFor(peerHex, limit: 200);
     conversationCache[peerHex] = loaded;
+    reactionCache
+      ..clear()
+      ..addAll(await db.reactionsFor(peerHex));
     notifyListeners();
+  }
+
+  @override
+  Future<void> toggleReaction(
+      String peerHex, String msgId, String emoji) async {
+    // 낙관적 미러: 서비스가 DB에 확정하면 rev 갱신으로 다시 읽는다.
+    final list = reactionCache[msgId] ??= [];
+    final had = list.any((r) => r.fromMe && r.emoji == emoji);
+    if (had) {
+      list.removeWhere((r) => r.fromMe && r.emoji == emoji);
+    } else {
+      list.add(Reaction(msgId: msgId, emoji: emoji, fromMe: true));
+    }
+    notifyListeners();
+    _send({
+      'c': Bridge.cmdToggleReaction,
+      'p': peerHex,
+      'id': msgId,
+      'e': emoji,
+    });
   }
 
   // ---- MeshFrontend: 신원 / 프로필 ----
@@ -266,8 +304,26 @@ class RemoteMeshController extends MeshFrontend
   @override
   PeerId get myId => identity.peerId;
 
+  /// QR 상호 인증 논스 — 여기(UI isolate)서 만들고 브리지로 서비스에 등록한다:
+  /// 되돌아오는 verify 프레임은 서비스 isolate에 도착하기 때문이다.
+  Uint8List? _qrNonce;
+  DateTime? _qrNonceAt;
+
   @override
-  String get myQrPayload => QrPayload.encode(identity.publicBundle, _displayName);
+  String get myQrPayload {
+    final now = DateTime.now();
+    if (_qrNonce == null ||
+        _qrNonceAt == null ||
+        now.difference(_qrNonceAt!) > const Duration(minutes: 5)) {
+      final rng = Random.secure();
+      _qrNonce =
+          Uint8List.fromList(List.generate(16, (_) => rng.nextInt(256)));
+      _qrNonceAt = now;
+      _send({'c': Bridge.cmdArmQrNonce, 'n': base64Encode(_qrNonce!)});
+    }
+    return QrPayload.encode(identity.publicBundle, _displayName,
+        nonce: _qrNonce);
+  }
 
   @override
   Future<void> setDisplayName(String name) async {
@@ -275,6 +331,23 @@ class RemoteMeshController extends MeshFrontend
     if (trimmed.isEmpty) return;
     _displayName = trimmed;
     _send({'c': Bridge.cmdSetName, 'v': trimmed});
+    notifyListeners();
+  }
+
+  String? _myAvatar;
+  bool _avatarCustomized = true; // 첫 snapshot 전에는 넛지를 띄우지 않는다
+
+  @override
+  String? get myAvatar => _myAvatar;
+
+  @override
+  bool get avatarCustomized => _avatarCustomized;
+
+  @override
+  Future<void> setAvatarRecipe(String recipe) async {
+    _myAvatar = recipe; // 낙관적 미러 — 권위 값은 다음 snapshot으로 도착
+    _avatarCustomized = true;
+    _send({'c': Bridge.cmdSetAvatar, 'v': recipe});
     notifyListeners();
   }
 
@@ -296,6 +369,11 @@ class RemoteMeshController extends MeshFrontend
   bool get powerSaver => _powerSaver;
 
   @override
+  Future<void> boostDiscovery() async {
+    _send({'c': Bridge.cmdBoostDiscovery});
+  }
+
+  @override
   void setPowerSaver(bool saver) {
     _powerSaver = saver;
     _send({'c': Bridge.cmdSetSaver, 'v': saver});
@@ -306,12 +384,13 @@ class RemoteMeshController extends MeshFrontend
 
   @override
   Future<Contact> addContactFromBundle(Uint8List bundle,
-      {String? name, bool verified = true}) async {
+      {String? name, bool verified = true, Uint8List? verifyNonce}) async {
     _send({
       'c': Bridge.cmdAddContact,
       'b': base64Encode(bundle),
       'name': name,
       'v': verified,
+      if (verifyNonce != null) 'n': base64Encode(verifyNonce),
     });
     // 스캔 화면이 snapshot 왕복을 기다리지 않고 확인할 수 있도록 즉시
     // 미러링한다; 권위 있는 행은 다음 snap과 함께 도착한다.
