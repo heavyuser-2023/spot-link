@@ -211,4 +211,28 @@ void main() {
     await a.node.dispose();
     await b.node.dispose();
   });
+
+  test('pickAdvertisable: 셀룰러·터널 제외, Wi-Fi 우선', () {
+    final wifi = InternetAddress('192.168.0.10');
+    final cell = InternetAddress('10.123.45.6');
+    final vpn = InternetAddress('10.8.0.2');
+    final mystery = InternetAddress('172.16.0.9');
+    final picked = LanSocketFastLane.pickAdvertisable([
+      ('pdp_ip0', [cell]), // iOS 셀룰러 — 제외
+      ('utun3', [vpn]), // VPN 터널 — 제외
+      ('weird0', [mystery]), // 알 수 없는 인터페이스 — 후순위로 유지
+      ('en0', [wifi]), // Wi-Fi — 최우선
+    ]);
+    expect(picked.first, wifi);
+    expect(picked, isNot(contains(cell)));
+    expect(picked, isNot(contains(vpn)));
+    expect(picked, contains(mystery));
+
+    // 셀룰러뿐이면 빈 목록 → prepareInbound가 null을 돌려 BLE로 남는다.
+    expect(
+        LanSocketFastLane.pickAdvertisable([
+          ('rmnet_data1', [cell])
+        ]),
+        isEmpty);
+  });
 }

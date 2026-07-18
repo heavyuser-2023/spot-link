@@ -35,10 +35,46 @@ class LanSocketFastLane implements FastLaneInterface {
         includeLoopback: false,
         includeLinkLocal: false,
       );
-      return [for (final i in ifaces) ...i.addresses];
+      return pickAdvertisable(
+          [for (final i in ifaces) (i.name, i.addresses)]);
     } catch (_) {
       return const [];
     }
+  }
+
+  /// 광고할 주소를 인터페이스 이름으로 선별한다. 예전에는 `addresses.first`를
+  /// 그대로 광고했는데, 열거 결과에는 **셀룰러 인터페이스(통신사 NAT IP)**도
+  /// 포함된다 — 그게 먼저 잡히면 송신자는 도달 불가능한 주소에 6초 매달렸다
+  /// 실패하고 쿨다운까지 건다. Wi-Fi/유선/핫스팟을 앞세우고 셀룰러·터널은
+  /// 아예 제외한다(셀룰러뿐이면 어차피 LAN 직결이 불가능하다 → BLE).
+  static List<InternetAddress> pickAdvertisable(
+      Iterable<(String, List<InternetAddress>)> ifaces) {
+    // iOS/macOS: en*(Wi-Fi·유선), Android: wlan*(Wi-Fi), eth*(유선),
+    // ap*/swlan*(핫스팟). 셀룰러: pdp_ip*(iOS), rmnet*/ccmni*(Android).
+    // 터널/VPN: utun*/tun*/tap*/ipsec* — 피어가 같은 터널에 있을 리 없다.
+    bool preferred(String n) =>
+        n.startsWith('en') ||
+        n.startsWith('wlan') ||
+        n.startsWith('eth') ||
+        n.startsWith('ap') ||
+        n.startsWith('swlan') ||
+        n.startsWith('bridge');
+    bool excluded(String n) =>
+        n.startsWith('pdp_ip') ||
+        n.startsWith('rmnet') ||
+        n.startsWith('ccmni') ||
+        n.startsWith('utun') ||
+        n.startsWith('tun') ||
+        n.startsWith('tap') ||
+        n.startsWith('ipsec');
+    final lan = <InternetAddress>[];
+    final unknown = <InternetAddress>[];
+    for (final (name, addrs) in ifaces) {
+      final n = name.toLowerCase();
+      if (excluded(n)) continue;
+      (preferred(n) ? lan : unknown).addAll(addrs);
+    }
+    return [...lan, ...unknown];
   }
 
   @override
