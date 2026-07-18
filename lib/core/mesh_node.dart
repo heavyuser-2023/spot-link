@@ -349,6 +349,11 @@ class MeshNode {
   /// 대한 병행 BLE 청크 경로를 억제한다.
   final Set<String> _fastActive = {};
 
+  /// 수신 측: ACCEPT를 보내고 송신자의 연결을 기다리는 중인 수단.
+  /// 송신자가 그 수단의 연결에 실패해 마스크에서 빼고 재오퍼하면, 이 값으로
+  /// "대기 중인 수단이 버려졌음"을 알아채고 남은 교집합으로 재협상한다.
+  final Map<String, FastLaneKind> _pendingInboundKind = {};
+
   /// fast-lane 대기열/협상 중인 transferId(전송 측). 아직 첫 바이트도 보내기
   /// 전이므로, 수신 측의 조바심 ACK("전 청크 누락")에 재전송으로 답하면 안
   /// 된다 — 다중 파일 선택 시 대기 중인 파일들의 재전송이 3초마다 겹치며
@@ -907,54 +912,68 @@ class MeshNode {
       );
       return false;
     }
-    final caps = fastLane!.capabilities;
-    // Offer 페이로드: transferId(16) + capsBitmask(1).
-    var bitmask = 0;
-    for (final k in caps) {
-      bitmask |= 1 << k.code;
-    }
-    final offerPlain = Uint8List(17)
-      ..setRange(0, 16, sender.meta.transferId)
-      ..[16] = bitmask;
-    final waiter = _fastAcceptWaiters[tid] = Completer<_FastAccept>();
-    await _dispatch(
-      router.originate(
-        type: FrameType.fileFastOffer,
-        dst: dst,
-        payload: await crypto.encrypt(offerPlain, kex),
-        flags: FrameFlags.encrypted,
-      ),
-      persist: false,
-    );
-
-    _FastAccept accept;
-    try {
-      accept = await waiter.future.timeout(fastLaneNegotiateWindow);
-    } catch (_) {
-      _fastAcceptWaiters.remove(tid);
-      return false; // 제때 ACCEPT 없음 → BLE
-    } finally {
-      _fastAcceptWaiters.remove(tid);
-    }
-
-    bleLogSink?.call('FT fast accept: ${accept.offer.kind.name}');
+    // 협상 → 연결. 선택된 수단의 연결이 실패하면 그 수단을 제외하고 한 번 더
+    // 오퍼한다 — 예: multipeer가 라디오 혼잡으로 죽어도 같은 Wi-Fi의
+    // lanSocket이 파일을 살린다. 수신 측은 새 오퍼 마스크에서 자기 대기 수단이
+    // 빠진 것을 보고 남은 교집합으로 재협상한다([_handleFastOffer]).
+    final excluded = <FastLaneKind>{};
     FastLaneSession? session;
-    try {
+    _FastAccept? accept;
+    for (var attempt = 0; attempt < 2 && session == null; attempt++) {
+      final caps = fastLane!.capabilities.difference(excluded);
+      if (caps.isEmpty) break;
+      // Offer 페이로드: transferId(16) + capsBitmask(1).
+      var bitmask = 0;
+      for (final k in caps) {
+        bitmask |= 1 << k.code;
+      }
+      final offerPlain = Uint8List(17)
+        ..setRange(0, 16, sender.meta.transferId)
+        ..[16] = bitmask;
+      final waiter = _fastAcceptWaiters[tid] = Completer<_FastAccept>();
+      await _dispatch(
+        router.originate(
+          type: FrameType.fileFastOffer,
+          dst: dst,
+          payload: await crypto.encrypt(offerPlain, kex),
+          flags: FrameFlags.encrypted,
+        ),
+        persist: false,
+      );
+
+      try {
+        accept = await waiter.future.timeout(fastLaneNegotiateWindow);
+      } catch (_) {
+        _fastAcceptWaiters.remove(tid);
+        return false; // 제때 ACCEPT 없음 → BLE
+      } finally {
+        _fastAcceptWaiters.remove(tid);
+      }
+
+      bleLogSink?.call('FT fast accept: ${accept.offer.kind.name}');
       session = await fastLane!.connect(tid, accept.offer);
       if (session == null) {
-        bleLogSink?.call('FT fast connect null → BLE');
-        // 동시 다중 세션/라디오 혼잡으로 연속 실패하는 패턴을 짧게 차단.
-        _fastLaneCooldownoutUntil =
-            DateTime.now().add(const Duration(seconds: 15));
-        return false;
+        excluded.add(accept.offer.kind);
+        final remaining = fastLane!.capabilities.difference(excluded);
+        bleLogSink?.call('FT fast connect null (${accept.offer.kind.name})'
+            '${remaining.isEmpty ? ' → BLE' : ' → 남은 수단으로 재오퍼'}');
       }
+    }
+    if (session == null || accept == null) {
+      // 동시 다중 세션/라디오 혼잡으로 연속 실패하는 패턴을 짧게 차단.
+      _fastLaneCooldownoutUntil =
+          DateTime.now().add(const Duration(seconds: 15));
+      return false;
+    }
+    final acc = accept; // non-null 프로모션
+    try {
       _fastLaneCooldownoutUntil = null; // 성공 → 쿨다운 해제
       _fastActive.add(tid);
       // idle 워치독 급식은 [_deliverFile]의 feeder가 대기열~스트림 전 구간을
       // 덮는다.
-      bleLogSink?.call('FT fast connected: ${accept.offer.kind.name}');
+      bleLogSink?.call('FT fast connected: ${acc.offer.kind.name}');
       _events.add(TransferLane(tid, 'wifi'));
-      if (accept.segmented && !debugForceLegacyFastLane) {
+      if (acc.segmented && !debugForceLegacyFastLane) {
         // 세그먼트 스트리밍: [매직 u32][segLen u32][seg GCM]…[0 u32].
         // RAM에는 세그먼트 하나(기본 4MB)의 평문+암호문만 머문다 — 예전의
         // 파일 전체 GCM은 대용량에서 파일 크기 2배의 순간 점유로 jetsam을
@@ -1003,7 +1022,7 @@ class MeshNode {
             Duration(seconds: 30 + sender.meta.fileSize ~/ (512 * 1024)));
       } catch (_) {}
       bleLogSink?.call('FT fast send done: ${sender.meta.name} '
-          '(${sender.meta.fileSize}B via ${accept.offer.kind.name})');
+          '(${sender.meta.fileSize}B via ${acc.offer.kind.name})');
       // 수신 측의 완료 ACK를 기다린다(BLE로 도착) — 끝내 오지 않으면 감시
       // 타이머가 이미 전송을 실패로 처리한다.
       _events.add(FileProgress(tid, 1.0, true));
@@ -1013,12 +1032,10 @@ class MeshNode {
       return false;
     } finally {
       _fastActive.remove(tid);
-      if (session != null) {
-        await session.close();
-        // 락 체인 정지 진단용 경계 마커: 이 줄이 없고 'send done'만 있으면
-        // close 경로 어딘가에 매달린 것이다.
-        bleLogSink?.call('FT fast session closed: ${sender.meta.name}');
-      }
+      await session.close();
+      // 락 체인 정지 진단용 경계 마커: 이 줄이 없고 'send done'만 있으면
+      // close 경로 어딘가에 매달린 것이다.
+      bleLogSink?.call('FT fast session closed: ${sender.meta.name}');
     }
   }
 
@@ -1643,7 +1660,23 @@ class MeshNode {
     // 실제로 이 전송을 기다리고 있고 아직 끝나지 않은 경우에만 동작한다.
     final receiver = _receivers[tid];
     if (receiver == null || _completedTransfers.contains(tid)) return;
-    if (_fastActive.contains(tid)) return; // 이미 협상 중
+    if (_fastActive.contains(tid)) {
+      // 이미 협상/수신 중. 단, 송신자가 연결 실패 후 그 수단을 빼고 다시
+      // 오퍼한 경우라면([_trySendFast]의 재오퍼) 남은 교집합으로 재협상한다.
+      // 실제 바이트 수신 중(pending 없음)이거나, 대기 중인 수단이 여전히
+      // 마스크에 있으면(리스너/광고가 살아 있으니) 무시한다.
+      final pending = _pendingInboundKind[tid];
+      if (pending == null ||
+          payload.length < 17 ||
+          (payload[16] & (1 << pending.code)) != 0) {
+        return;
+      }
+      bleLogSink
+          ?.call('FT fast re-offer without ${pending.name} — renegotiate');
+      _fastActive.remove(tid);
+      _pendingInboundKind.remove(tid);
+      // 버려진 리스너/광고는 각자의 타임아웃으로 정리된다.
+    }
 
     // 수신 측은 네트워크 대기(connect)를 앱 전역 락으로 감싸지 않는다 —
     // 송신 측이 같은 락을 잡고 ACCEPT를 기다리면 교착이 난다. 송신 직렬화 +
@@ -1680,6 +1713,7 @@ class MeshNode {
     bleLogSink?.call('FT fast offer accepted: ${chosen.name} (tid $tid)');
 
     _fastActive.add(tid);
+    _pendingInboundKind[tid] = chosen;
     // ACCEPT: transferId(16) + chosenKind(1) + offerLen(2) + offerBlob
     //         + flags(1, bit0: 세그먼트 스트리밍 수신 지원).
     // 구버전 송신자는 blob 뒤의 여분 바이트를 무시하고 레거시 형식으로 보낸다.
@@ -1713,9 +1747,14 @@ class MeshNode {
     FastLaneSession? session;
     try {
       session = await inbound.session;
+      // 소유권: 재오퍼가 이미 새 협상을 시작했다면(다른 수단이 pending) 이
+      // 인바운드는 유령이다 — 새 협상의 상태(_fastActive 등)를 건드리면 안
+      // 된다.
+      final owner = _pendingInboundKind[tid] == inbound.offer.kind;
+      if (owner) _pendingInboundKind.remove(tid);
       if (session == null) {
         bleLogSink?.call('FT fast recv: no session (peer never connected) → BLE');
-        _fastActive.remove(tid);
+        if (owner) _fastActive.remove(tid);
         return; // 전송 측이 끝내 연결하지 않음 → BLE 복구 타이머가 처리한다
       }
       bleLogSink?.call('FT fast recv connected, reading…');
@@ -1852,7 +1891,9 @@ class MeshNode {
       // BLE 수신자 + 복구 타이머를 계속 돌게 둔다: 누락된 청크를 ACK하면 전송
       // 측이 BLE로 다시 보낸다.
     } finally {
-      _fastActive.remove(tid);
+      // 세션 없이 끝난 유령 인바운드(재협상으로 대체됨)는 위의 owner 가드가
+      // 이미 정리를 결정했다 — 여기서 새 협상의 표식을 지우면 안 된다.
+      if (session != null) _fastActive.remove(tid);
       await session?.close();
     }
   }

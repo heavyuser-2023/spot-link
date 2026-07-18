@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -5,6 +6,8 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:spot_link/core/crypto/identity.dart';
 import 'package:spot_link/core/mesh_node.dart';
+import 'package:spot_link/core/transfer/composite_fast_lane.dart';
+import 'package:spot_link/core/transfer/fast_lane.dart';
 import 'package:spot_link/core/transfer/lan_socket_fast_lane.dart';
 
 import 'fake_transport.dart';
@@ -235,4 +238,72 @@ void main() {
         ]),
         isEmpty);
   });
+
+  test('선호 수단 연결 실패 시 남은 수단으로 재오퍼해 완주한다', () async {
+    // 네이티브 P2P(wifiAware) 흉내: 수신 대기는 되지만 송신 연결은 항상
+    // 실패한다. 선호도상 lanSocket보다 먼저 선택되므로, 재오퍼 없이는 이
+    // 조합이 lanSocket을 영원히 가린다(개선 전 동작 = BLE 폴백).
+    LanSocketFastLane lan() => LanSocketFastLane(
+          bindHost: InternetAddress.loopbackIPv4,
+          localAddresses: () async => [InternetAddress.loopbackIPv4],
+        );
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = TestNode(MeshNode(
+        identity: idA,
+        displayName: 'A',
+        transport: radio.create(idA.peerId),
+        fastLane: CompositeFastLane([_BrokenNativeLane(), lan()])));
+    final b = TestNode(MeshNode(
+        identity: idB,
+        displayName: 'B',
+        transport: radio.create(idB.peerId),
+        fastLane: CompositeFastLane([_BrokenNativeLane(), lan()])));
+    await a.node.start();
+    await b.node.start();
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    final rnd = Random(42);
+    final fileBytes = Uint8List.fromList(
+        List.generate(300 * 1024, (_) => rnd.nextInt(256)));
+    await a.node.sendFile(idB.peerId,
+        bytes: fileBytes, name: 'retry.bin', mime: 'application/octet-stream');
+
+    final got = await waitFor<FileReceived>(b, (e) => true,
+        timeout: const Duration(seconds: 15));
+    expect(File(got.path).readAsBytesSync(), fileBytes);
+    // 2차 오퍼의 lanSocket으로 fast lane 완주 — BLE 폴백이면 회귀다.
+    expect(
+        b.events.whereType<TransferLane>().any((e) => e.lane == 'wifi'), isTrue);
+
+    await a.node.dispose();
+    await b.node.dispose();
+  });
+}
+
+/// 수신 대기(prepareInbound)는 성공하지만 송신 연결(connect)은 항상 실패하는
+/// 네이티브 P2P 레인 — 라디오 혼잡으로 죽는 multipeer/wifiDirect의 축소판.
+class _BrokenNativeLane implements FastLaneInterface {
+  @override
+  Set<FastLaneKind> get capabilities => {FastLaneKind.wifiAware};
+
+  @override
+  Future<FastLaneInbound?> prepareInbound(
+      String transferIdHex, FastLaneKind kind) async {
+    if (kind != FastLaneKind.wifiAware) return null;
+    // 송신자가 끝내 연결하지 않는 리스너: future는 영영 완료되지 않는다
+    // (재협상이 이 유령을 대체하는 경로를 검증한다).
+    return FastLaneInbound(
+        FastLaneOffer(FastLaneKind.wifiAware, Uint8List.fromList([1])),
+        Completer<FastLaneSession?>().future);
+  }
+
+  @override
+  Future<FastLaneSession?> connect(
+          String transferIdHex, FastLaneOffer offer) async =>
+      null;
 }

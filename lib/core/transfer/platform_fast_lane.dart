@@ -151,7 +151,11 @@ class PlatformFastLane implements FastLaneInterface {
       }
       return _PlatformSession(this, transferIdHex);
     }).timeout(const Duration(seconds: 25), onTimeout: () {
-      unawaited(_close(transferIdHex)); // 네이티브 광고도 중지
+      // 같은 tid로 재협상이 시작돼 새 완료자가 등록됐다면 남의 세션을 닫지
+      // 않는다 — 이 타이머는 자기 세대의 것만 정리한다.
+      if (_connected[transferIdHex] == connected) {
+        unawaited(_close(transferIdHex)); // 네이티브 광고도 중지
+      }
       return null;
     });
     return FastLaneInbound(FastLaneOffer(kind, blob), session);
