@@ -45,7 +45,6 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
     private val p2pChannel by lazy { p2p?.initialize(context, Looper.getMainLooper(), null) }
 
     private val transfers = HashMap<String, Transfer>()
-    private val port = 8988
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         context = binding.applicationContext
@@ -72,10 +71,14 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         val tid = call.argument<String>("transferId")
         when (call.method) {
             "capabilities" -> {
-                val ok = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                    context.packageManager
-                        .hasSystemFeature("android.hardware.wifi.direct")
-                result.success(if (ok) listOf("wifiDirect") else emptyList<String>())
+                // wifiDirect는 실기기 2대 검증 전까지 광고하지 않는다.
+                // 이유: ① 이 경로는 런타임 검증이 안 됐고, ② 송신 측
+                // WifiNetworkSpecifier.requestNetwork는 Android 10+에서 시스템
+                // 승인 다이얼로그를 띄워 조용한 자동 전송이 불가능하며,
+                // ③ 선호도상 lanSocket보다 앞서므로 광고하는 순간 같은 Wi-Fi의
+                // 확실한 lanSocket을 가려 성공률을 오히려 떨어뜨린다.
+                // 재활성화 조건: WifiP2pManager.connect 기반 재구현 + 검증.
+                result.success(emptyList<String>())
             }
             "prepareInbound" -> {
                 if (tid == null) { result.success(null); return }
@@ -117,7 +120,11 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                     val ownerIp = "192.168.49.1"
                     val t = Transfer(tid)
                     transfers[tid] = t
-                    t.listen(port)
+                    // 임시 포트에 바인딩한 뒤 실제 포트를 광고한다 — 고정 포트
+                    // (예전 8988)는 동시 수신·TIME_WAIT 잔상과 충돌했고, 바인딩
+                    // 전에 blob부터 만들어 실패를 놓쳤다.
+                    val port = t.listen()
+                    if (port == null) { result.success(null); return@requestGroupInfo }
                     val blob = "${group.networkName}\n${group.passphrase}\n$ownerIp\n$port"
                         .toByteArray(Charsets.UTF_8)
                     result.success(blob)
@@ -179,15 +186,19 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         var networkCallback: ConnectivityManager.NetworkCallback? = null
         var connectivityManager: ConnectivityManager? = null
 
-        fun listen(port: Int) = thread {
-            try {
-                val ss = ServerSocket(port)
-                server = ss
-                val sock = ss.accept()
-                bind(sock)
-            } catch (e: Exception) {
-                if (!closed) emit(tid, "error")
+        /** 임시 포트에 바인딩하고 실제 포트를 반환한다(실패 시 null). */
+        fun listen(): Int? {
+            val ss = try { ServerSocket(0) } catch (e: Exception) { return null }
+            server = ss
+            thread {
+                try {
+                    val sock = ss.accept()
+                    bind(sock)
+                } catch (e: Exception) {
+                    if (!closed) emit(tid, "error")
+                }
             }
+            return ss.localPort
         }
 
         fun dial(network: Network, ip: String, port: Int) = thread {
