@@ -960,22 +960,32 @@ class MeshNode {
         // 파일 전체 GCM은 대용량에서 파일 크기 2배의 순간 점유로 jetsam을
         // 불렀다. 세그먼트별 암호문은 순서 조작 시 조립 결과가 달라질 뿐이고,
         // 무결성은 finalize의 매니페스트 SHA-256이 파일 전체로 검증한다.
-        session.add(_u32be(fastLaneMagicSegmented));
+        await session.add(_u32be(fastLaneMagicSegmented));
         final size = sender.meta.fileSize;
+        var lastPct = 0;
         for (var off = 0; off < size; off += fastLaneSegmentBytes) {
           final len = min(fastLaneSegmentBytes, size - off);
           final cipher =
               await crypto.encrypt(await sender.readRange(off, len), kex);
-          session.add(_u32be(cipher.length));
-          session.add(cipher);
+          await session.add(_u32be(cipher.length));
+          // add를 기다리는 것이 곧 백프레셔다 — 전송 계층에 실제로 넘어간
+          // 뒤에야 다음 세그먼트를 디스크에서 읽는다. 그 덕에 송신 진행률도
+          // 실제 전송 속도를 따라간다(예전엔 0%→100% 점프).
+          await session.add(cipher);
+          final sentBytes = min(off + fastLaneSegmentBytes, size);
+          final pct = (sentBytes * 100) ~/ size;
+          if (pct >= lastPct + 5 && sentBytes < size) {
+            lastPct = pct;
+            _events.add(FileProgress(tid, sentBytes / size, true));
+          }
         }
-        session.add(_u32be(0)); // 종료 마커
+        await session.add(_u32be(0)); // 종료 마커
       } else {
         // 레거시 수신자(ACCEPT에 flags 없음): 파일 전체를 하나의 암호화된
         // 길이 접두 blob으로 보낸다 — 구버전 호환 경로.
         final cipher = await crypto.encrypt(await sender.readAll(), kex);
-        session.add(_u32be(cipher.length));
-        session.add(cipher);
+        await session.add(_u32be(cipher.length));
+        await session.add(cipher);
       }
       await session.finishSending();
       // 전송 계층이 아직 큐에 쌓인 바이트를 내보내는 중일 수 있다 — Multipeer는

@@ -36,8 +36,10 @@ abstract class FastLaneSession {
   /// 피어로부터 도착하는 바이트.
   Stream<Uint8List> get incoming;
 
-  /// 피어에게 바이트를 보낸다.
-  void add(Uint8List data);
+  /// 피어에게 바이트를 보낸다. 반환된 future는 데이터가 전송 계층에 실제로
+  /// 넘겨진 뒤 완료된다 — 호출자가 await하면 자연스러운 백프레셔가 걸려,
+  /// 대용량 파일이 플랫폼 채널/소켓 큐에 통째로 쌓이는 것을 막는다.
+  Future<void> add(Uint8List data);
 
   /// 정중하게 전송을 끝낸다(half-close); 한 번 호출하는 것은 안전하다.
   Future<void> finishSending();

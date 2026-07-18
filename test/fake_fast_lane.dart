@@ -80,7 +80,7 @@ class _FakeSession implements FastLaneSession {
   Stream<Uint8List> get incoming => _incoming.stream;
 
   @override
-  void add(Uint8List data) {
+  Future<void> add(Uint8List data) async {
     final peer = _peer;
     if (peer != null && !peer._incoming.isClosed) {
       peer._incoming.add(Uint8List.fromList(data));

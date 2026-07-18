@@ -238,10 +238,13 @@ class _PlatformSession implements FastLaneSession {
   Stream<Uint8List> get incoming => _lane._incomingOf(_tid);
 
   @override
-  void add(Uint8List data) {
+  Future<void> add(Uint8List data) async {
     for (var off = 0; off < data.length; off += _chunk) {
       final end = (off + _chunk < data.length) ? off + _chunk : data.length;
-      _lane._send(_tid, Uint8List.sublistView(data, off, end));
+      // 조각마다 네이티브 응답을 기다린다(백프레셔). 예전에는 unawaited로
+      // 전부 발사해 100MB 파일이면 1,600개의 채널 메시지가 한꺼번에 큐에
+      // 쌓였다 — 메모리 급증 + 플랫폼 스레드 정체.
+      await _lane._send(_tid, Uint8List.sublistView(data, off, end));
     }
   }
 

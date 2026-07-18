@@ -124,7 +124,12 @@ class _SocketSession implements FastLaneSession {
   Stream<Uint8List> get incoming => _socket; // Socket은 Stream<Uint8List>이다
 
   @override
-  void add(Uint8List data) => _socket.add(data);
+  Future<void> add(Uint8List data) async {
+    _socket.add(data);
+    // flush를 기다려 OS 소켓 버퍼에 실제로 흘러간 뒤 다음 세그먼트를 읽는다 —
+    // 느린 링크에서 파일 전체가 dart:io 내부 큐에 쌓이는 것을 막는다.
+    await _socket.flush();
+  }
 
   @override
   Future<void> finishSending() async {
