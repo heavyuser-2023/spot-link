@@ -239,6 +239,44 @@ void main() {
         isEmpty);
   });
 
+  test('tid 프리앰블: 낯선 접속은 거절하고 진짜 송신자를 기다린다', () async {
+    final lane = LanSocketFastLane(
+      bindHost: InternetAddress.loopbackIPv4,
+      localAddresses: () async => [InternetAddress.loopbackIPv4],
+    );
+    const tidHex = '00112233445566778899aabbccddeeff';
+    final tidBytes = Uint8List.fromList([
+      0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, //
+      0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+    ]);
+    final inbound = await lane.prepareInbound(tidHex, FastLaneKind.lanSocket,
+        tidPreamble: true);
+    expect(inbound, isNotNull);
+    final port = (inbound!.offer.blob[4] << 8) | inbound.offer.blob[5];
+
+    // ① 낯선 접속(포트 스캔 흉내): 엉뚱한 16바이트 → 세션이 되면 안 된다.
+    final intruder = await Socket.connect(InternetAddress.loopbackIPv4, port);
+    intruder.add(Uint8List(16)); // 전부 0 — tid와 불일치
+    await intruder.flush();
+
+    // ② 진짜 송신자: 올바른 프리앰블 + 본문 — 세션으로 채택돼야 한다.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    final sender = await Socket.connect(InternetAddress.loopbackIPv4, port);
+    sender.add(tidBytes);
+    sender.add(Uint8List.fromList([1, 2, 3, 4]));
+    await sender.flush();
+
+    final session = await inbound.session;
+    expect(session, isNotNull, reason: '낯선 접속이 진짜 송신자를 밀어냈다');
+    final firstData = await session!.incoming.first
+        .timeout(const Duration(seconds: 3));
+    expect(firstData, [1, 2, 3, 4]); // 프리앰블은 벗겨지고 본문만 흐른다
+
+    await session.close();
+    intruder.destroy();
+    sender.destroy();
+  });
+
   test('선호 수단 연결 실패 시 남은 수단으로 재오퍼해 완주한다', () async {
     // 네이티브 P2P(wifiAware) 흉내: 수신 대기는 되지만 송신 연결은 항상
     // 실패한다. 선호도상 lanSocket보다 먼저 선택되므로, 재오퍼 없이는 이
@@ -293,7 +331,8 @@ class _BrokenNativeLane implements FastLaneInterface {
 
   @override
   Future<FastLaneInbound?> prepareInbound(
-      String transferIdHex, FastLaneKind kind) async {
+      String transferIdHex, FastLaneKind kind,
+      {bool tidPreamble = false}) async {
     if (kind != FastLaneKind.wifiAware) return null;
     // 송신자가 끝내 연결하지 않는 리스너: future는 영영 완료되지 않는다
     // (재협상이 이 유령을 대체하는 경로를 검증한다).

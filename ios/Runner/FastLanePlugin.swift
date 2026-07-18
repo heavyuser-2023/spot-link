@@ -20,7 +20,11 @@ import UIKit
 class FastLanePlugin: NSObject, FlutterStreamHandler {
   private let serviceType = "spotlink-ft" // 1…15 chars, [a-z0-9-]
   /// One peer identity for the process lifetime (MC requirement).
-  private let myPeerId = MCPeerID(displayName: UIDevice.current.name)
+  /// 가명을 쓴다 — UIDevice.current.name("○○의 iPhone")은 AWDL 광고로 주변
+  /// 모두에게 평문 노출된다. 상대 식별은 discoveryInfo/컨텍스트의 tid가 하므로
+  /// 표시 이름은 아무 의미도 담을 필요가 없다.
+  private let myPeerId = MCPeerID(
+    displayName: "SL-" + String(format: "%08x", UInt32.random(in: .min ... .max)))
 
   private var eventSink: FlutterEventSink?
 

@@ -128,7 +128,9 @@ class PlatformFastLane implements FastLaneInterface {
 
   @override
   Future<FastLaneInbound?> prepareInbound(
-      String transferIdHex, FastLaneKind kind) async {
+      String transferIdHex, FastLaneKind kind,
+      // 네이티브 P2P는 discoveryInfo/컨텍스트로 이미 tid를 대조한다 — 무시.
+      {bool tidPreamble = false}) async {
     if (!_caps.contains(kind)) return null;
     _wireEvents();
     Uint8List? blob;

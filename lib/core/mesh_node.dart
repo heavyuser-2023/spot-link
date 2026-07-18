@@ -373,9 +373,10 @@ class MeshNode {
   /// 협상+스트림을 한 건씩 직렬화한다. BLE 폴백은 락 밖에서 돌린다.
   Future<void> _fastLaneChain = Future<void>.value();
 
-  /// Fast-lane 연결이 방금 실패했을 때 짧은 쿨다운 — 줄 선 나머지 파일이
-  /// 각자 25초씩 또 실패하며 줄 서지 않게 한다.
-  DateTime? _fastLaneCooldownoutUntil;
+  /// Fast-lane 연결이 방금 실패했을 때의 짧은 쿨다운(피어별) — 줄 선 나머지
+  /// 파일이 각자 25초씩 또 실패하며 줄 서지 않게 한다. 피어별인 이유: 한
+  /// 상대와의 실패가 다른 상대와의 fast lane까지 막으면 안 된다.
+  final Map<String, DateTime> _fastLaneCooldownUntil = {};
 
   /// [turnTimeout]은 "차례 대기"에만 적용된다(자기 body 실행 시간은 무제한 —
   /// 큰 파일 스트리밍을 중간에 포기시키면 안 된다). 앞 body가 어떤 이유로든
@@ -908,10 +909,11 @@ class MeshNode {
     // fast lane을 점유하지 않게 한다.
     if (!_senders.containsKey(tid)) return false;
     final now = DateTime.now();
-    if (_fastLaneCooldownoutUntil != null && now.isBefore(_fastLaneCooldownoutUntil!)) {
+    final coolUntil = _fastLaneCooldownUntil[dst.hex];
+    if (coolUntil != null && now.isBefore(coolUntil)) {
       bleLogSink?.call(
         'FT fast skip (cooldown '
-        '${_fastLaneCooldownoutUntil!.difference(now).inSeconds}s): '
+        '${coolUntil.difference(now).inSeconds}s): '
         '${sender.meta.name}',
       );
       return false;
@@ -926,14 +928,17 @@ class MeshNode {
     for (var attempt = 0; attempt < 2 && session == null; attempt++) {
       final caps = fastLane!.capabilities.difference(excluded);
       if (caps.isEmpty) break;
-      // Offer 페이로드: transferId(16) + capsBitmask(1).
+      // Offer 페이로드: transferId(16) + capsBitmask(1) + flags(1).
+      // flags bit0: lanSocket tid 프리앰블 지원 — 구버전 수신자는 여분
+      // 바이트를 무시한다.
       var bitmask = 0;
       for (final k in caps) {
         bitmask |= 1 << k.code;
       }
-      final offerPlain = Uint8List(17)
+      final offerPlain = Uint8List(18)
         ..setRange(0, 16, sender.meta.transferId)
-        ..[16] = bitmask;
+        ..[16] = bitmask
+        ..[17] = 0x01;
       final waiter = _fastAcceptWaiters[tid] = Completer<_FastAccept>();
       await _dispatch(
         router.originate(
@@ -970,19 +975,23 @@ class MeshNode {
       }
     }
     if (session == null || accept == null) {
-      // 동시 다중 세션/라디오 혼잡으로 연속 실패하는 패턴을 짧게 차단.
-      _fastLaneCooldownoutUntil =
+      // 이 피어와의 연속 실패 패턴을 짧게 차단(다른 피어는 영향 없음).
+      _fastLaneCooldownUntil[dst.hex] =
           DateTime.now().add(const Duration(seconds: 15));
       return false;
     }
     final acc = accept; // non-null 프로모션
     try {
-      _fastLaneCooldownoutUntil = null; // 성공 → 쿨다운 해제
+      _fastLaneCooldownUntil.remove(dst.hex); // 성공 → 쿨다운 해제
       _fastActive.add(tid);
       // idle 워치독 급식은 [_deliverFile]의 feeder가 대기열~스트림 전 구간을
       // 덮는다.
       bleLogSink?.call('FT fast connected: ${acc.offer.kind.name}');
       _events.add(TransferLane(tid, 'wifi'));
+      if (acc.wantsPreamble) {
+        // 수신자의 lanSocket 리스너가 이 16바이트로 우리를 식별한다.
+        await session.add(sender.meta.transferId);
+      }
       if (acc.segmented && !debugForceLegacyFastLane) {
         // 세그먼트 스트리밍: [매직 u32][segLen u32][seg GCM]…[0 u32].
         // RAM에는 세그먼트 하나(기본 4MB)의 평문+암호문만 머문다 — 예전의
@@ -1696,6 +1705,8 @@ class MeshNode {
     // capabilities 교집합을 선호도 순으로 시도: 네이티브 P2P 우선, 실패 시
     // 같은 Wi-Fi의 LAN 소켓.
     final senderMask = payload[16];
+    // OFFER flags(bit0: tid 프리앰블 지원) — 구버전 송신자의 오퍼에는 없다.
+    final senderFlags = payload.length >= 18 ? payload[17] : 0;
     final candidates = fastLane!.capabilities
         .where((k) => (senderMask & (1 << k.code)) != 0)
         .toList()
@@ -1707,14 +1718,20 @@ class MeshNode {
 
     FastLaneInbound? inbound;
     FastLaneKind? chosen;
+    var armedPreamble = false;
     for (final k in candidates) {
+      // 송신자가 지원할 때만 lanSocket 리스너에 tid 프리앰블 검증을 무장한다
+      // (구버전 송신자는 프리앰블을 안 보내므로 요구하면 안 된다).
+      final wantPre =
+          (senderFlags & 0x01) != 0 && k == FastLaneKind.lanSocket;
       try {
-        inbound = await fastLane!.prepareInbound(tid, k);
+        inbound = await fastLane!.prepareInbound(tid, k, tidPreamble: wantPre);
       } catch (_) {
         inbound = null;
       }
       if (inbound != null) {
         chosen = k;
+        armedPreamble = wantPre;
         break;
       }
       bleLogSink?.call('FT fast prepareInbound failed: ${k.name}');
@@ -1726,7 +1743,8 @@ class MeshNode {
     _fastActive.add(tid);
     _pendingInboundKind[tid] = chosen;
     // ACCEPT: transferId(16) + chosenKind(1) + offerLen(2) + offerBlob
-    //         + flags(1, bit0: 세그먼트 스트리밍 수신 지원).
+    //         + flags(1, bit0: 세그먼트 스트리밍 수신 지원,
+    //                 bit1: tid 프리앰블 검증 무장 — 첫 16바이트 필수).
     // 구버전 송신자는 blob 뒤의 여분 바이트를 무시하고 레거시 형식으로 보낸다.
     final blob = inbound.offer.blob;
     final accept = Uint8List(16 + 1 + 2 + blob.length + 1);
@@ -1734,7 +1752,7 @@ class MeshNode {
     accept[16] = chosen.code;
     ByteData.view(accept.buffer).setUint16(17, blob.length, Endian.big);
     accept.setRange(19, 19 + blob.length, blob);
-    accept[19 + blob.length] = 0x01;
+    accept[19 + blob.length] = 0x01 | (armedPreamble ? 0x02 : 0);
     await _dispatch(
       router.originate(
         type: FrameType.fileFastAccept,
@@ -2154,4 +2172,8 @@ class _FastAccept {
   _FastAccept(this.offer, [this.flags = 0]);
 
   bool get segmented => flags & 0x01 != 0;
+
+  /// 수신자가 lanSocket tid 프리앰블 검증을 무장했다 — 첫 16바이트로
+  /// transferId를 보내야 세션으로 인정받는다.
+  bool get wantsPreamble => flags & 0x02 != 0;
 }

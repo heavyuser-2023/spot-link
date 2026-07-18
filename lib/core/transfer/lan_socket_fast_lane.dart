@@ -80,9 +80,26 @@ class LanSocketFastLane implements FastLaneInterface {
   @override
   Set<FastLaneKind> get capabilities => {FastLaneKind.lanSocket};
 
+  static Uint8List _hexToBytes(String hex) {
+    final out = Uint8List(hex.length ~/ 2);
+    for (var i = 0; i < out.length; i++) {
+      out[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    return out;
+  }
+
+  static bool _bytesEq(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   @override
   Future<FastLaneInbound?> prepareInbound(
-      String transferIdHex, FastLaneKind kind) async {
+      String transferIdHex, FastLaneKind kind,
+      {bool tidPreamble = false}) async {
     if (kind != FastLaneKind.lanSocket) return null;
     final addrs = await _localAddresses();
     if (addrs.isEmpty) return null; // 어떤 네트워크에도 없음 → BLE
@@ -117,15 +134,63 @@ class LanSocketFastLane implements FastLaneInterface {
         server.close();
       }
     });
+    final expected = tidPreamble ? _hexToBytes(transferIdHex) : null;
+    // 검증 통과(또는 프리앰블 미사용) 소켓을 세션으로 채택하고 대기를 접는다.
+    void adopt(FastLaneSession session) {
+      timeout.cancel();
+      sub.cancel();
+      server.close();
+      completer.complete(session);
+    }
+
     sub = server.listen((socket) {
       if (completer.isCompleted) {
         socket.destroy();
         return;
       }
-      timeout.cancel();
-      sub.cancel();
-      server.close();
-      completer.complete(_SocketSession(socket));
+      if (expected == null) {
+        adopt(_SocketSession(socket));
+        return;
+      }
+      // 프리앰블 검증: 첫 16바이트가 transferId와 일치하는 연결만 세션으로
+      // 인정한다. 불일치(같은 LAN의 포트 스캔, 엉뚱한 다이얼)는 끊고 진짜
+      // 송신자를 계속 기다린다 — 예전 첫-연결 무조건 수락은 낯선 접속 하나가
+      // 전송 전체를 BLE로 밀어냈다.
+      final buf = BytesBuilder();
+      var validated = false;
+      final ctrl = StreamController<Uint8List>();
+      late StreamSubscription<Uint8List> s;
+      final guard = Timer(const Duration(seconds: 4), () {
+        if (!validated) {
+          s.cancel();
+          socket.destroy();
+        }
+      });
+      s = socket.listen((d) {
+        if (validated) {
+          ctrl.add(d);
+          return;
+        }
+        buf.add(d);
+        if (buf.length < 16) return;
+        final all = buf.takeBytes();
+        guard.cancel();
+        if (!_bytesEq(Uint8List.sublistView(all, 0, 16), expected) ||
+            completer.isCompleted) {
+          s.cancel();
+          socket.destroy();
+          return;
+        }
+        validated = true;
+        if (all.length > 16) ctrl.add(Uint8List.sublistView(all, 16));
+        adopt(_SocketSession(socket, incoming: ctrl.stream));
+      }, onError: (_) {
+        guard.cancel();
+        if (!ctrl.isClosed) ctrl.close();
+      }, onDone: () {
+        guard.cancel();
+        if (!ctrl.isClosed) ctrl.close();
+      });
     }, onError: (_) {
       if (!completer.isCompleted) completer.complete(null);
     });
@@ -155,11 +220,17 @@ class LanSocketFastLane implements FastLaneInterface {
 
 class _SocketSession implements FastLaneSession {
   final Socket _socket;
+
+  /// 프리앰블 검증이 소켓 스트림을 이미 구독한 경우, 나머지 바이트가 흐르는
+  /// 대체 스트림(단일 구독인 Socket은 재구독이 불가능하다).
+  final Stream<Uint8List>? _incoming;
   bool _closed = false;
-  _SocketSession(this._socket);
+  _SocketSession(this._socket, {Stream<Uint8List>? incoming})
+      : _incoming = incoming;
 
   @override
-  Stream<Uint8List> get incoming => _socket; // Socket은 Stream<Uint8List>이다
+  Stream<Uint8List> get incoming =>
+      _incoming ?? _socket; // Socket은 Stream<Uint8List>이다
 
   @override
   Future<void> add(Uint8List data) async {

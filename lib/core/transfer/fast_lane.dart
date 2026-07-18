@@ -62,10 +62,16 @@ abstract class FastLaneInterface {
   /// 수신자 측: 들어오는 전송 하나를 수신 대기하기 시작하고 BLE로 되돌려 보낼
   /// 연결 정보를 반환한다. 불가능하면 null을 반환한다(→ BLE). 반환된 세션은
   /// 발신자가 연결하면 완료된다.
+  ///
+  /// [tidPreamble]이 true면(송신자가 OFFER flags로 지원을 알린 경우) 첫
+  /// 16바이트가 transferId와 일치하는 연결만 세션으로 인정한다 — 같은 LAN의
+  /// 엉뚱한 접속(포트 스캔 등)이 진짜 송신자를 밀어내지 못하게 한다.
+  /// 검증을 실제로 무장한 구현만 ACCEPT에 그 사실을 알린다(레인별 선택).
   Future<FastLaneInbound?> prepareInbound(
     String transferIdHex,
-    FastLaneKind kind,
-  );
+    FastLaneKind kind, {
+    bool tidPreamble = false,
+  });
 
   /// 발신자 측: 수신자가 BLE로 반환한 [offer]를 사용해 수신자에게 연결한다.
   /// 연결된 세션을 반환하거나, 실패 시 null을 반환한다(→ BLE 폴백).

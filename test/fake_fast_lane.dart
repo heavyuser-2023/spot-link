@@ -48,8 +48,9 @@ class FakeFastLane implements FastLaneInterface {
   @override
   Future<FastLaneInbound?> prepareInbound(
     String transferIdHex,
-    FastLaneKind kind,
-  ) async {
+    FastLaneKind kind, {
+    bool tidPreamble = false,
+  }) async {
     if (medium.failListen) return null;
     final sessionFut = medium
         ._listen(transferIdHex)

@@ -23,8 +23,10 @@ class CompositeFastLane implements FastLaneInterface {
 
   @override
   Future<FastLaneInbound?> prepareInbound(
-      String transferIdHex, FastLaneKind kind) async {
-    return _laneFor(kind)?.prepareInbound(transferIdHex, kind);
+      String transferIdHex, FastLaneKind kind,
+      {bool tidPreamble = false}) async {
+    return _laneFor(kind)
+        ?.prepareInbound(transferIdHex, kind, tidPreamble: tidPreamble);
   }
 
   @override
