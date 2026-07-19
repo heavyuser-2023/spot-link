@@ -86,6 +86,7 @@ class PlatformFastLane implements FastLaneInterface {
   static FastLaneKind? _kindByName(String n) => switch (n) {
         'wifiAware' => FastLaneKind.wifiAware,
         'wifiDirect' => FastLaneKind.wifiDirect,
+        'wifiDirectHosted' => FastLaneKind.wifiDirectHosted,
         'multipeer' => FastLaneKind.multipeer,
         _ => null,
       };
@@ -144,12 +145,38 @@ class PlatformFastLane implements FastLaneInterface {
     }
   }
 
+  /// 송신자-호스트 모드에서 수신자가 조인+다이얼을 마치기를 기다리는
+  /// 완료자들(tid 키). [connectToHost]가 채운다.
+  final Map<String, Completer<FastLaneSession?>> _hostedWaiters = {};
+
   @override
   Future<FastLaneInbound?> prepareInbound(
       String transferIdHex, FastLaneKind kind,
       // 네이티브 P2P는 discoveryInfo/컨텍스트로 이미 tid를 대조한다 — 무시.
       {bool tidPreamble = false}) async {
     if (!_rxCaps.contains(kind)) return null;
+    if (kind == FastLaneKind.wifiDirectHosted) {
+      // 수신자 측 hosted 모드: 여기서 준비할 리스너가 없다 — 송신자의
+      // HOSTINFO가 오면 [connectToHost]가 조인+다이얼해 이 future를 채운다.
+      // 예산: ACCEPT 왕복 + 송신자 그룹 생성 + 조인(≤12s) + 다이얼.
+      final waiter =
+          _hostedWaiters[transferIdHex] = Completer<FastLaneSession?>();
+      final session = waiter.future
+          .timeout(const Duration(seconds: 35), onTimeout: () {
+        _hostedWaiters.remove(transferIdHex);
+        return null;
+      });
+      return FastLaneInbound(
+          FastLaneOffer(kind, Uint8List.fromList([1])), session);
+    }
+    return _prepareNativeInbound(transferIdHex, kind);
+  }
+
+  /// 네이티브가 리스너/광고를 세우는 인바운드(일반 wifiDirect 수신 GO,
+  /// multipeer 광고). 송신자-호스트 모드의 **송신** 측도 같은 배관을 쓴다
+  /// ([prepareOutboundHost]) — 역할만 뒤집혔을 뿐 호스트 쪽 일은 동일하다.
+  Future<FastLaneInbound?> _prepareNativeInbound(
+      String transferIdHex, FastLaneKind kind) async {
     _wireEvents();
     Uint8List? blob;
     try {
@@ -215,6 +242,33 @@ class PlatformFastLane implements FastLaneInterface {
       return null;
     }
     return _PlatformSession(this, transferIdHex);
+  }
+
+  @override
+  Future<FastLaneInbound?> prepareOutboundHost(
+      String transferIdHex, FastLaneKind kind) async {
+    if (kind != FastLaneKind.wifiDirectHosted ||
+        !_txCaps.contains(FastLaneKind.wifiDirectHosted)) {
+      return null;
+    }
+    // 네이티브 GO+리스너는 일반 wifiDirect 수신 경로와 동일하다.
+    return _prepareNativeInbound(transferIdHex, FastLaneKind.wifiDirect);
+  }
+
+  @override
+  Future<bool> connectToHost(
+      String transferIdHex, FastLaneKind kind, Uint8List blob) async {
+    if (kind != FastLaneKind.wifiDirectHosted) return false;
+    final waiter = _hostedWaiters.remove(transferIdHex);
+    if (waiter == null || waiter.isCompleted) return false;
+    final session =
+        await _connectWifiDirectAsClient(FastLaneOffer(kind, blob));
+    if (waiter.isCompleted) {
+      await session?.close();
+      return false;
+    }
+    waiter.complete(session);
+    return session != null;
   }
 
   /// iOS가 Android Wi-Fi Direct 그룹에 레거시 Wi-Fi 클라이언트로 접속한 뒤

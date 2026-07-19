@@ -121,7 +121,10 @@ class FastLanePlugin: NSObject, FlutterStreamHandler {
       // 조합이 BLE로 폴백한다.
       let hotspotEntitlementAvailable = false
       let tx = hotspotEntitlementAvailable ? ["multipeer", "wifiDirect"] : ["multipeer"]
-      result(["tx": tx, "rx": ["multipeer"]])
+      // rx의 wifiDirectHosted = Android 송신자가 호스트한 그룹에 우리가
+      // 조인+다이얼하는 역방향 수신 — 역시 Hotspot entitlement 필요.
+      let rx = hotspotEntitlementAvailable ? ["multipeer", "wifiDirectHosted"] : ["multipeer"]
+      result(["tx": tx, "rx": rx])
     case "joinWifi":
       guard let ssid = args?["ssid"] as? String,
             let pass = args?["passphrase"] as? String

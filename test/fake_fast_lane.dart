@@ -49,6 +49,16 @@ class FakeFastLane implements FastLaneInterface {
   Set<FastLaneKind> get inboundCapabilities => capabilities;
 
   @override
+  Future<FastLaneInbound?> prepareOutboundHost(
+          String transferIdHex, FastLaneKind kind) async =>
+      null;
+
+  @override
+  Future<bool> connectToHost(
+          String transferIdHex, FastLaneKind kind, Uint8List blob) async =>
+      false;
+
+  @override
   Future<FastLaneInbound?> prepareInbound(
     String transferIdHex,
     FastLaneKind kind, {

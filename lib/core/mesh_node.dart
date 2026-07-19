@@ -966,7 +966,9 @@ class MeshNode {
       }
 
       bleLogSink?.call('FT fast accept: ${accept.offer.kind.name}');
-      session = await fastLane!.connect(tid, accept.offer);
+      session = accept.offer.kind == FastLaneKind.wifiDirectHosted
+          ? await _hostAndAwaitDial(sender, dst, kex)
+          : await fastLane!.connect(tid, accept.offer);
       if (session == null) {
         excluded.add(accept.offer.kind);
         final remaining = fastLane!.capabilities.difference(excluded);
@@ -1482,6 +1484,9 @@ class MeshNode {
       case FrameType.fileFastAccept:
         _handleFastAccept(payload);
         break;
+      case FrameType.fileFastHostInfo:
+        await _handleFastHostInfo(payload);
+        break;
       case FrameType.receipt:
         await _handleReceipt(frame, payload);
         break;
@@ -1666,10 +1671,12 @@ class MeshNode {
   // ---------------------------------------------------------------------------
 
   /// 값이 클수록 = 선호됨. multipeer(iOS끼리, 셋업 최속) > Wi-Fi Direct/
-  /// Aware(그룹 생성+접속 필요) > LAN 소켓(공유 AP 필요).
+  /// Aware(그룹 생성+접속) > 송신자-호스트 역방향(HOSTINFO 한 라운드 추가)
+  /// > LAN 소켓(공유 AP 필요하지만 가장 값쌈 — 단 기내엔 AP가 없다).
   static int _lanePreference(FastLaneKind k) => switch (k) {
-        FastLaneKind.multipeer => 3,
-        FastLaneKind.wifiAware || FastLaneKind.wifiDirect => 2,
+        FastLaneKind.multipeer => 4,
+        FastLaneKind.wifiAware || FastLaneKind.wifiDirect => 3,
+        FastLaneKind.wifiDirectHosted => 2,
         FastLaneKind.lanSocket => 1,
       };
 
@@ -1933,6 +1940,54 @@ class MeshNode {
       if (session != null) _fastActive.remove(tid);
       await session?.close();
     }
+  }
+
+  /// 송신자-호스트 모드: 그룹(SoftAP)+리스너를 만들고 접속 정보를 HOSTINFO
+  /// 프레임으로 보낸 뒤, 수신자가 조인해 다이얼해 오기를 기다린다.
+  /// 인증: 접속 정보는 E2E 암호화로만 전달되고 그룹은 WPA2 암호로 잠겨
+  /// 있으므로, 조인 자체가 곧 수신자 인증이다(tid 프리앰블 불필요).
+  Future<FastLaneSession?> _hostAndAwaitDial(
+      FileSender sender, PeerId dst, Uint8List kex) async {
+    final host = await fastLane!
+        .prepareOutboundHost(sender.meta.transferIdHex, FastLaneKind.wifiDirectHosted);
+    if (host == null) return null;
+    final blob = host.offer.blob;
+    final info = Uint8List(16 + 1 + 2 + blob.length);
+    info.setRange(0, 16, sender.meta.transferId);
+    info[16] = FastLaneKind.wifiDirectHosted.code;
+    ByteData.view(info.buffer).setUint16(17, blob.length, Endian.big);
+    info.setRange(19, 19 + blob.length, blob);
+    await _dispatch(
+      router.originate(
+        type: FrameType.fileFastHostInfo,
+        dst: dst,
+        payload: await crypto.encrypt(info, kex),
+        flags: FrameFlags.encrypted,
+      ),
+      persist: false,
+    );
+    bleLogSink?.call('FT hosted: group up, HOSTINFO sent — awaiting dial');
+    try {
+      return await host.session;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 수신자 측: 송신자-호스트 접속 정보 도착 — 그룹에 조인하고 다이얼한다.
+  /// 성공 시 레인이 [FastLaneInterface.prepareInbound]의 세션 future를
+  /// 완성시켜, 이미 대기 중인 [_receiveFast]가 이어서 바이트를 읽는다.
+  Future<void> _handleFastHostInfo(Uint8List payload) async {
+    if (fastLane == null || payload.length < 19) return;
+    final tid = MsgId.hex(Uint8List.fromList(payload.sublist(0, 16)));
+    final kind = FastLaneKind.fromCode(payload[16]);
+    if (kind == null) return;
+    final blobLen = ByteData.view(payload.buffer, payload.offsetInBytes)
+        .getUint16(17, Endian.big);
+    if (payload.length < 19 + blobLen) return;
+    final blob = Uint8List.fromList(payload.sublist(19, 19 + blobLen));
+    final ok = await fastLane!.connectToHost(tid, kind, blob);
+    bleLogSink?.call('FT hosted connect ${ok ? 'ok' : 'failed'} (tid $tid)');
   }
 
   void _handleFastAccept(Uint8List payload) {

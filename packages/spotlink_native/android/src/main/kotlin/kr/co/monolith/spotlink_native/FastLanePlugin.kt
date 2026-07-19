@@ -83,8 +83,13 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
                 val ok = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
                     context.packageManager
                         .hasSystemFeature("android.hardware.wifi.direct")
-                val caps = if (ok) listOf("wifiDirect") else emptyList<String>()
-                result.success(mapOf("tx" to caps, "rx" to caps))
+                // tx의 wifiDirectHosted = 송신자-호스트 역방향(수신자가 AP를
+                // 못 만드는 iPhone일 때): 우리가 그룹을 만들고 HOSTINFO로
+                // 접속 정보를 넘기면 상대가 조인+다이얼한다.
+                val rx = if (ok) listOf("wifiDirect") else emptyList<String>()
+                val tx = if (ok) listOf("wifiDirect", "wifiDirectHosted")
+                         else emptyList<String>()
+                result.success(mapOf("tx" to tx, "rx" to rx))
             }
             "prepareInbound" -> {
                 if (tid == null) { result.success(null); return }

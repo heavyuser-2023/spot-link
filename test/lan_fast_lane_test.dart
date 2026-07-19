@@ -277,6 +277,46 @@ void main() {
     sender.destroy();
   });
 
+  test('송신자-호스트 모드(Android→iPhone 방향)로 완주한다', () async {
+    // 수신자는 AP를 못 만드는 iPhone 흉내(inbound=hosted만), 송신자는
+    // 그룹을 호스트하는 Android 흉내 — OFFER→ACCEPT→HOSTINFO→조인·다이얼
+    // →세그먼트 스트림 전 과정을 실 루프백 TCP로 검증한다.
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = TestNode(MeshNode(
+        identity: idA,
+        displayName: 'A(android tx)',
+        transport: radio.create(idA.peerId),
+        fastLane: _HostedSenderLane()));
+    final b = TestNode(MeshNode(
+        identity: idB,
+        displayName: 'B(iphone rx)',
+        transport: radio.create(idB.peerId),
+        fastLane: _HostedReceiverLane()));
+    await a.node.start();
+    await b.node.start();
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    final rnd = Random(31);
+    final fileBytes = Uint8List.fromList(
+        List.generate(400 * 1024, (_) => rnd.nextInt(256)));
+    await a.node.sendFile(idB.peerId,
+        bytes: fileBytes, name: 'reverse.bin', mime: 'application/octet-stream');
+
+    final got = await waitFor<FileReceived>(b, (e) => true,
+        timeout: const Duration(seconds: 15));
+    expect(File(got.path).readAsBytesSync(), fileBytes);
+    expect(
+        b.events.whereType<TransferLane>().any((e) => e.lane == 'wifi'), isTrue);
+
+    await a.node.dispose();
+    await b.node.dispose();
+  });
+
   test('선호 수단 연결 실패 시 남은 수단으로 재오퍼해 완주한다', () async {
     // 네이티브 P2P(wifiAware) 흉내: 수신 대기는 되지만 송신 연결은 항상
     // 실패한다. 선호도상 lanSocket보다 먼저 선택되므로, 재오퍼 없이는 이
@@ -333,6 +373,16 @@ class _BrokenNativeLane implements FastLaneInterface {
   Set<FastLaneKind> get inboundCapabilities => {FastLaneKind.wifiAware};
 
   @override
+  Future<FastLaneInbound?> prepareOutboundHost(
+          String transferIdHex, FastLaneKind kind) async =>
+      null;
+
+  @override
+  Future<bool> connectToHost(
+          String transferIdHex, FastLaneKind kind, Uint8List blob) async =>
+      false;
+
+  @override
   Future<FastLaneInbound?> prepareInbound(
       String transferIdHex, FastLaneKind kind,
       {bool tidPreamble = false}) async {
@@ -347,5 +397,113 @@ class _BrokenNativeLane implements FastLaneInterface {
   @override
   Future<FastLaneSession?> connect(
           String transferIdHex, FastLaneOffer offer) async =>
+      null;
+}
+
+
+/// 송신자-호스트 모드의 송신 측(Android 흉내): 루프백 리스너를 만들고
+/// "ip:port"를 HOSTINFO blob으로 광고한다.
+class _HostedSenderLane implements FastLaneInterface {
+  @override
+  Set<FastLaneKind> get capabilities => {FastLaneKind.wifiDirectHosted};
+
+  @override
+  Set<FastLaneKind> get inboundCapabilities => const {};
+
+  @override
+  Future<FastLaneInbound?> prepareOutboundHost(
+      String transferIdHex, FastLaneKind kind) async {
+    if (kind != FastLaneKind.wifiDirectHosted) return null;
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final completer = Completer<FastLaneSession?>();
+    final timeout = Timer(const Duration(seconds: 10), () {
+      if (!completer.isCompleted) {
+        completer.complete(null);
+        server.close();
+      }
+    });
+    server.listen((socket) {
+      if (completer.isCompleted) {
+        socket.destroy();
+        return;
+      }
+      timeout.cancel();
+      server.close();
+      completer.complete(SocketFastLaneSession(socket));
+    });
+    final blob =
+        Uint8List.fromList('127.0.0.1:${server.port}'.codeUnits);
+    return FastLaneInbound(
+        FastLaneOffer(kind, blob), completer.future);
+  }
+
+  @override
+  Future<FastLaneInbound?> prepareInbound(
+          String transferIdHex, FastLaneKind kind,
+          {bool tidPreamble = false}) async =>
+      null;
+
+  @override
+  Future<FastLaneSession?> connect(
+          String transferIdHex, FastLaneOffer offer) async =>
+      null;
+
+  @override
+  Future<bool> connectToHost(
+          String transferIdHex, FastLaneKind kind, Uint8List blob) async =>
+      false;
+}
+
+/// 송신자-호스트 모드의 수신 측(iPhone 흉내): HOSTINFO가 오면 조인 없이
+/// (루프백이므로) 바로 다이얼해 대기 중인 세션 future를 채운다.
+class _HostedReceiverLane implements FastLaneInterface {
+  final Map<String, Completer<FastLaneSession?>> _waiters = {};
+
+  @override
+  Set<FastLaneKind> get capabilities => const {};
+
+  @override
+  Set<FastLaneKind> get inboundCapabilities => {FastLaneKind.wifiDirectHosted};
+
+  @override
+  Future<FastLaneInbound?> prepareInbound(
+      String transferIdHex, FastLaneKind kind,
+      {bool tidPreamble = false}) async {
+    if (kind != FastLaneKind.wifiDirectHosted) return null;
+    final waiter = _waiters[transferIdHex] = Completer<FastLaneSession?>();
+    final session =
+        waiter.future.timeout(const Duration(seconds: 12), onTimeout: () {
+      _waiters.remove(transferIdHex);
+      return null;
+    });
+    return FastLaneInbound(
+        FastLaneOffer(kind, Uint8List.fromList([1])), session);
+  }
+
+  @override
+  Future<bool> connectToHost(
+      String transferIdHex, FastLaneKind kind, Uint8List blob) async {
+    final waiter = _waiters.remove(transferIdHex);
+    if (waiter == null || waiter.isCompleted) return false;
+    final parts = String.fromCharCodes(blob).split(':');
+    try {
+      final socket = await Socket.connect(parts[0], int.parse(parts[1]),
+          timeout: const Duration(seconds: 4));
+      waiter.complete(SocketFastLaneSession(socket));
+      return true;
+    } catch (_) {
+      waiter.complete(null);
+      return false;
+    }
+  }
+
+  @override
+  Future<FastLaneSession?> connect(
+          String transferIdHex, FastLaneOffer offer) async =>
+      null;
+
+  @override
+  Future<FastLaneInbound?> prepareOutboundHost(
+          String transferIdHex, FastLaneKind kind) async =>
       null;
 }

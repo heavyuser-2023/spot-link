@@ -83,6 +83,16 @@ class LanSocketFastLane implements FastLaneInterface {
   @override
   Set<FastLaneKind> get inboundCapabilities => {FastLaneKind.lanSocket};
 
+  @override
+  Future<FastLaneInbound?> prepareOutboundHost(
+          String transferIdHex, FastLaneKind kind) async =>
+      null; // 송신자-호스트 모드는 네이티브 레인 전용
+
+  @override
+  Future<bool> connectToHost(
+          String transferIdHex, FastLaneKind kind, Uint8List blob) async =>
+      false;
+
   static Uint8List _hexToBytes(String hex) {
     final out = Uint8List(hex.length ~/ 2);
     for (var i = 0; i < out.length; i++) {

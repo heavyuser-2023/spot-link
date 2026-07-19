@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'fast_lane.dart';
 
@@ -44,5 +45,18 @@ class CompositeFastLane implements FastLaneInterface {
   Future<FastLaneSession?> connect(
       String transferIdHex, FastLaneOffer offer) async {
     return _laneFor(offer.kind)?.connect(transferIdHex, offer);
+  }
+
+  @override
+  Future<FastLaneInbound?> prepareOutboundHost(
+      String transferIdHex, FastLaneKind kind) async {
+    return _laneFor(kind)?.prepareOutboundHost(transferIdHex, kind);
+  }
+
+  @override
+  Future<bool> connectToHost(
+      String transferIdHex, FastLaneKind kind, Uint8List blob) async {
+    return await _laneForInbound(kind)?.connectToHost(transferIdHex, kind, blob) ??
+        false;
   }
 }

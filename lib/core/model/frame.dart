@@ -16,7 +16,8 @@ enum FrameType {
   fileFastOffer(0x09), // e2e: 발신자가 이 전송에 Wi-Fi 패스트레인을 제안
   fileFastAccept(0x0a), // e2e: 수신자가 수락 + 자신의 연결 정보를 반환
   reaction(0x0b), // e2e: 메시지에 대한 이모지 리액션 추가/제거
-  verify(0x0c); // e2e: QR 논스 반환 — 상호 인증 증명(스캔한 쪽 → 스캔당한 쪽)
+  verify(0x0c), // e2e: QR 논스 반환 — 상호 인증 증명(스캔한 쪽 → 스캔당한 쪽)
+  fileFastHostInfo(0x0d); // e2e: 송신자-호스트 모드의 접속 정보(그룹 SSID 등)
 
   final int code;
   const FrameType(this.code);

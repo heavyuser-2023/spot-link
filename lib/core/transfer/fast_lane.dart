@@ -7,7 +7,11 @@ enum FastLaneKind {
   wifiAware(1), // Android Wi-Fi Aware (NAN) — AP 없는 직접 연결 (네이티브)
   wifiDirect(2), // Android Wi-Fi Direct (WifiP2p) — 네이티브
   multipeer(3), // iOS/macOS MultipeerConnectivity (AWDL) — 네이티브
-  lanSocket(4); // 같은 Wi-Fi(AP) 위 TCP 소켓 — 순수 Dart, 크로스플랫폼
+  lanSocket(4), // 같은 Wi-Fi(AP) 위 TCP 소켓 — 순수 Dart, 크로스플랫폼
+  // 송신자-호스트 역방향 모드: 송신자(Android)가 그룹(SoftAP)+리스너를 만들고
+  // 접속 정보를 HOSTINFO 프레임으로 넘기면 수신자(iOS 등)가 조인+다이얼한다.
+  // Android(송신)→iPhone(수신)처럼 수신자가 AP를 만들 수 없는 조합용.
+  wifiDirectHosted(5);
 
   final int code;
   const FastLaneKind(this.code);
@@ -82,6 +86,20 @@ abstract class FastLaneInterface {
   /// 발신자 측: 수신자가 BLE로 반환한 [offer]를 사용해 수신자에게 연결한다.
   /// 연결된 세션을 반환하거나, 실패 시 null을 반환한다(→ BLE 폴백).
   Future<FastLaneSession?> connect(String transferIdHex, FastLaneOffer offer);
+
+  /// 송신자-호스트 모드([FastLaneKind.wifiDirectHosted]): 송신자가 그룹과
+  /// TCP 리스너를 만들고, BLE(HOSTINFO)로 광고할 접속 정보를 반환한다.
+  /// 수신자가 조인+다이얼하면 세션이 완료된다. 미지원 레인은 null.
+  Future<FastLaneInbound?> prepareOutboundHost(
+          String transferIdHex, FastLaneKind kind) async =>
+      null;
+
+  /// 수신자 측(송신자-호스트 모드): HOSTINFO의 접속 정보로 송신자의 그룹에
+  /// 조인하고 다이얼한다. 성공하면 [prepareInbound]가 돌려준 세션 future를
+  /// 완성시키고 true를 반환한다.
+  Future<bool> connectToHost(
+          String transferIdHex, FastLaneKind kind, Uint8List blob) async =>
+      false;
 }
 
 /// 수신자 측 절반: BLE로 광고할 오퍼와, 발신자가 연결되면 세션으로 해석되는
