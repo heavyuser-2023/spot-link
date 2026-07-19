@@ -1147,6 +1147,20 @@ class MeshTransport implements MeshTransportInterface {
     _scanModeTimer?.cancel();
     _scanModeTimer = null;
     _overflowPhase = false;
+    if (foreground) {
+      // 백그라운드 사이 iOS가 광고를 백그라운드급(이름 제거, 서비스 UUID는
+      // overflow 영역)으로 강등시킨다 — 포그라운드로 돌아와도 스스로
+      // 승격되지 않고, self-heal의 가벼운 _startAdvertising()은 "already
+      // started"라 no-op이다. 이 상태로는 비콘 웨이크 창의 필터 스캐너가
+      // 우리를 못 본다(2026-07-19 22:05: heavy가 포그라운드로 3분 서
+      // 있는데도 gold가 세 번 깨어나 번번이 링크 실패, heavy 재시작 직후
+      // 웨이크에서만 1.3초 만에 성공 — 재시작이 주던 것이 바로 신선한
+      // 포그라운드급 광고였다). 부트 경로처럼 stop→start로 교체한다.
+      unawaited(_startAdvertising(restart: true));
+      // 링크가 없으면 알려진 피어 대기 연결도 다시 걸어, 앱 재시작이 주던
+      // "즉시 재발견"을 포그라운드 복귀가 그대로 갖게 한다.
+      if (_links.isEmpty) unawaited(_reconnectKnownPeers());
+    }
     if (_powerMode == PowerMode.active) {
       unawaited(_stopScanning().then((_) => _startScanning()));
       if (foreground) _beginScanModeCycle();
