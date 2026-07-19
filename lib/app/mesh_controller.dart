@@ -253,6 +253,16 @@ class MeshController extends MeshFrontend
 
   Future<void> init() async {
     await _wireKnownPeersStore();
+    // 유령 META가 이미 받은 파일 말풍선을 failed로 뒤집어 놓은 것을 복구:
+    // 파일이 디스크에 있다(=수신을 끝냈다는 증거)면 received로 되돌린다.
+    // 멱등 위생 — 정상 상태에서는 0건이다.
+    try {
+      final repaired = await db.repairIncomingFilesWithLocalPath();
+      if (repaired > 0) {
+        bleLogSink?.call('${DateTime.now().toIso8601String()} '
+            'repaired $repaired ghost-failed incoming file(s)');
+      }
+    } catch (_) {}
     // "가까워지면 전달" 큐 복원: 지난 세션에서 멀티홉 예산에 걸려 보류된
     // 발신 파일들 — 상대가 직접(1홉) 나타나면 자동 재전송된다.
     try {
@@ -1595,6 +1605,23 @@ class MeshController extends MeshFrontend
       knownPeersSave = (uuids) {
         try {
           file.writeAsStringSync(jsonEncode(uuids));
+        } catch (_) {}
+      };
+      // 완료된 수신 전송 id: 재시작 후 스토어가 재전달한 META를 알아보고
+      // 유령 수신(바이트 없는 "수신 실패" 말풍선)을 만들지 않기 위해서다.
+      final completedFile = File(p.join(dir.path, 'completed_transfers.json'));
+      completedTransfersLoad = () async {
+        try {
+          if (!completedFile.existsSync()) return const <String>[];
+          return (jsonDecode(await completedFile.readAsString()) as List)
+              .cast<String>();
+        } catch (_) {
+          return const <String>[];
+        }
+      };
+      completedTransfersSave = (tids) {
+        try {
+          completedFile.writeAsStringSync(jsonEncode(tids));
         } catch (_) {}
       };
       // 본딩 기록(peerHex → 식별자): 본딩된 식별자를 스테일 망각에서

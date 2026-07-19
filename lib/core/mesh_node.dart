@@ -18,6 +18,14 @@ import 'router/store_forward.dart';
 import 'transfer/fast_lane.dart';
 import 'transfer/file_transfer.dart';
 
+/// 완료된 수신 전송 id의 영속화 훅(앱 계층이 작은 JSON 파일로 연결).
+/// 없으면 완료 기억이 메모리에만 남아, 재시작 후 스토어가 재전달한 META를
+/// 새 수신으로 착각한다 — 바이트는 영영 오지 않으므로 "수신 실패" 유령
+/// 말풍선이 생기고, 심하면 이미 받은 말풍선의 상태를 뒤집는다(2026-07-20
+/// 02:02 gold 관찰).
+Future<List<String>> Function()? completedTransfersLoad;
+void Function(List<String> tids)? completedTransfersSave;
+
 /// ACK 페이로드 종류(ACK 프레임에서 복호화와 무관한 페이로드의 첫 바이트).
 class _AckKind {
   static const int message = 0; // 뒤에 16바이트 acked msgId가 이어짐
@@ -488,6 +496,10 @@ class MeshNode {
       _events.add(NodeError('Bluetooth not available/authorized'));
       return false;
     }
+    try {
+      _completedTransfers
+          .addAll(await completedTransfersLoad?.call() ?? const []);
+    } catch (_) {} // 기록 없음/손상 — 최악은 유령 META 1회
     _subs.add(transport.inbound.listen(_onPacket));
     _subs.add(transport.linkEvents.listen(_onLinkEvent));
     await transport.start();
@@ -837,16 +849,18 @@ class MeshNode {
     // 않게 한다(예: 수신자가 떠났거나, 최종 ACK가 유실된 경우).
     _armSenderWatchdog(tid, sender.meta.name);
 
-    // 1. META를 보낸다.
+    // 1. META를 보낸다. 프레임 msgId를 기억해 전송이 끝나면(성공·실패·취소
+    // ·보류 무관) 영속 사본을 스토어에서 지운다 — 지우지 않으면 수신자가
+    // 재시작한 뒤 재전달돼 유령 수신을 만든다.
     final metaCipher = await crypto.encrypt(sender.meta.encode(), kex);
-    await _dispatch(
-      router.originate(
-        type: FrameType.fileMeta,
-        dst: dst,
-        payload: metaCipher,
-        flags: FrameFlags.encrypted,
-      ),
+    final metaFrame = router.originate(
+      type: FrameType.fileMeta,
+      dst: dst,
+      payload: metaCipher,
+      flags: FrameFlags.encrypted,
     );
+    _metaMsgIdByTid[tid] = metaFrame.msgIdHex;
+    await _dispatch(metaFrame);
 
     // 2. 바이트를 전달한다. 큰 파일은 Wi-Fi fast lane을 시도한다; 어떤
     // 실패든(fast lane 없음, 공유 기능 없음, 연결/스트림 오류) BLE 청킹으로
@@ -921,6 +935,7 @@ class MeshNode {
       final s = _senders.remove(tid);
       _senderTimers.remove(tid)?.cancel();
       s?.close();
+      _purgeMeta(tid);
       _events.add(FileDeferred(tid, dst, sender.meta.name, hops));
       return;
     }
@@ -1110,6 +1125,7 @@ class MeshNode {
         sender.close();
         _senderTimers.remove(tid);
         _streaming.remove(tid);
+        _purgeMeta(tid);
         bleLogSink?.call('FT send timeout: $name');
         _events.add(FileFailed(tid, name, incoming: false));
         _events.add(NodeError('File transfer timed out: $name'));
@@ -1124,6 +1140,7 @@ class MeshNode {
       sender.close();
       _senderTimers.remove(transferIdHex)?.cancel();
       _streaming.remove(transferIdHex);
+      _purgeMeta(transferIdHex);
       bleLogSink?.call('FT send cancelled: $transferIdHex');
     }
   }
@@ -1451,9 +1468,17 @@ class MeshNode {
         break;
       case FrameType.fileMeta:
         final meta = FileMeta.decode(payload);
-        // 이미 진행 중이거나 완료된 전송의 재offer는 무시한다.
-        if (_receivers.containsKey(meta.transferIdHex) ||
-            _completedTransfers.contains(meta.transferIdHex)) {
+        // 이미 진행 중인 전송의 재offer는 무시한다.
+        if (_receivers.containsKey(meta.transferIdHex)) break;
+        // 이미 완료한 전송의 META가 되돌아왔다(스토어 재전달, 우리 재시작
+        // 후 흔함): 새 수신을 만들면 바이트가 영영 오지 않아 유령 "수신
+        // 실패"가 된다. 완료 ACK만 다시 보내 송신 측이 영속 사본을 지우게
+        // 한다.
+        if (_completedTransfers.contains(meta.transferIdHex)) {
+          bleLogSink?.call(
+              'FT recv meta ignored (already complete): ${meta.name}');
+          await _sendFileAck(
+              frame.src, FileAck(meta.transferId, true, const []));
           break;
         }
         // 피어가 제공한 manifest는 아무것도 신뢰하지 않는다: 전송 측은
@@ -1690,10 +1715,20 @@ class MeshNode {
     }
   }
 
+  /// 발신 전송별 META 프레임 msgId — 전송 종료 시 영속 사본 정리에 쓴다.
+  final Map<String, String> _metaMsgIdByTid = {};
+
+  /// 전송이 어떤 이유로든 끝났다: 스토어의 영속 META를 지워 재전달을 막는다.
+  void _purgeMeta(String transferIdHex) {
+    final msgId = _metaMsgIdByTid.remove(transferIdHex);
+    if (msgId != null) store.remove(msgId);
+  }
+
   void _retireSender(String transferIdHex) {
     _senders.remove(transferIdHex)?.close();
     _senderTimers.remove(transferIdHex)?.cancel();
     _streaming.remove(transferIdHex);
+    _purgeMeta(transferIdHex);
   }
 
   // ---------------------------------------------------------------------------
@@ -2140,6 +2175,7 @@ class MeshNode {
     while (_completedTransfers.length > cap) {
       _completedTransfers.remove(_completedTransfers.first);
     }
+    completedTransfersSave?.call(_completedTransfers.toList());
   }
 
   /// 완료/중단된 전송에 대한 수신 측 상태를 모두 정리한다.

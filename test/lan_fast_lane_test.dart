@@ -277,6 +277,55 @@ void main() {
     sender.destroy();
   });
 
+  test('전달 완료 후 META 영속 사본이 정리되고 완료 tid가 저장된다', () async {
+    // 유령 META 회귀 방지(2026-07-20 02:02 gold): 완료된 전송의 META가
+    // 스토어에 남아 수신자 재시작 후 재전달되면 "수신 실패" 유령 말풍선이
+    // 생겼다. 송신 측 정리 + 수신 측 완료 기억 영속화를 검증한다.
+    final savedCompleted = <String>[];
+    completedTransfersSave = (tids) {
+      savedCompleted
+        ..clear()
+        ..addAll(tids);
+    };
+    completedTransfersLoad = null;
+    addTearDown(() {
+      completedTransfersSave = null;
+      completedTransfersLoad = null;
+    });
+
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = TestNode(MeshNode(
+        identity: idA, displayName: 'A', transport: radio.create(idA.peerId)));
+    final b = TestNode(MeshNode(
+        identity: idB, displayName: 'B', transport: radio.create(idB.peerId)));
+    await a.node.start();
+    await b.node.start();
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    final baseline = a.node.store.durableBytes;
+    final rnd = Random(88);
+    final fileBytes = Uint8List.fromList(
+        List.generate(64 * 1024, (_) => rnd.nextInt(256)));
+    final tid = await a.node.sendFile(idB.peerId,
+        bytes: fileBytes, name: 'purge.bin', mime: 'application/octet-stream');
+
+    await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == tid,
+        timeout: const Duration(seconds: 20));
+    // 송신 측: 완료 즉시 영속 META가 스토어에서 사라진다.
+    expect(a.node.store.durableBytes, baseline,
+        reason: '완료된 전송의 META가 스토어에 남아 있다(유령 재전달 위험)');
+    // 수신 측: 완료 tid가 영속 저장돼 재시작 후에도 재전달 META를 알아본다.
+    expect(savedCompleted, contains(tid));
+
+    await a.node.dispose();
+    await b.node.dispose();
+  });
+
   test('멀티홉 BLE 예산: 대용량은 보류(FileDeferred), 소용량은 통과한다',
       () async {
     // 패스트레인 없는 3-노드 라인 A—R—B (A와 B는 2홉).

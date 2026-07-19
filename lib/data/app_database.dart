@@ -241,6 +241,24 @@ class AppDatabase {
   }
 
   /// 갱신된 행 수를 반환한다 (0 = 메시지가 아직 영구 저장되지 않음).
+  /// 유령 META(스토어 재전달)가 받은 파일 말풍선을 failed로 뒤집은 것을
+  /// 복구한다: 로컬 파일 경로가 붙어 있는(=완주했던) 수신 파일 메시지를
+  /// received로 되돌린다. 갱신된 행 수를 반환한다.
+  Future<int> repairIncomingFilesWithLocalPath() async {
+    final db = await _database;
+    return db.update(
+      'messages',
+      {'status': MsgStatus.received.index},
+      where:
+          'kind = ? AND direction = ? AND status = ? AND file_path IS NOT NULL',
+      whereArgs: [
+        MsgKind.file.index,
+        MsgDirection.incoming.index,
+        MsgStatus.failed.index,
+      ],
+    );
+  }
+
   /// 보류(queued) 상태의 발신 파일 메시지들 — 재기동 후 "가까워지면 전달"
   /// 큐를 복원하는 데 쓴다.
   Future<List<ChatMessage>> queuedOutgoingFiles() async {
