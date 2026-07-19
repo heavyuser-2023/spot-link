@@ -277,6 +277,54 @@ void main() {
     sender.destroy();
   });
 
+  test('멀티홉 BLE 예산: 대용량은 보류(FileDeferred), 소용량은 통과한다',
+      () async {
+    // 패스트레인 없는 3-노드 라인 A—R—B (A와 B는 2홉).
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idR = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = TestNode(MeshNode(
+        identity: idA, displayName: 'A', transport: radio.create(idA.peerId)));
+    final r = TestNode(MeshNode(
+        identity: idR, displayName: 'R', transport: radio.create(idR.peerId)));
+    final b = TestNode(MeshNode(
+        identity: idB, displayName: 'B', transport: radio.create(idB.peerId)));
+    for (final n in [a, r, b]) {
+      await n.node.start();
+    }
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idR.peerId);
+    radio.connect(idR.peerId, idB.peerId);
+    // announce 전파로 A가 B를 2홉으로 알게 될 때까지 대기.
+    await waitFor<PeerAnnounced>(
+        a, (e) => e.contact.peerId == idB.peerId && e.hops >= 2);
+
+    // ① 예산(2홉 = 512KB) 초과 파일 → FileDeferred, 수신 없음.
+    final rnd = Random(55);
+    final big = Uint8List.fromList(
+        List.generate(700 * 1024, (_) => rnd.nextInt(256)));
+    await a.node.sendFile(idB.peerId,
+        bytes: big, name: 'big.bin', mime: 'application/octet-stream');
+    final deferred = await waitFor<FileDeferred>(a, (e) => true);
+    expect(deferred.to, idB.peerId);
+    expect(deferred.hops, greaterThanOrEqualTo(2));
+
+    // ② 예산 이내 파일은 2홉 BLE로 그대로 전달된다.
+    final small = Uint8List.fromList(
+        List.generate(300 * 1024, (_) => rnd.nextInt(256)));
+    await a.node.sendFile(idB.peerId,
+        bytes: small, name: 'small.bin', mime: 'application/octet-stream');
+    final got = await waitFor<FileReceived>(b, (e) => e.meta.name == 'small.bin',
+        timeout: const Duration(seconds: 30));
+    expect(File(got.path).readAsBytesSync(), small);
+
+    await a.node.dispose();
+    await r.node.dispose();
+    await b.node.dispose();
+  });
+
   test('송신자-호스트 모드(Android→iPhone 방향)로 완주한다', () async {
     // 수신자는 AP를 못 만드는 iPhone 흉내(inbound=hosted만), 송신자는
     // 그룹을 호스트하는 Android 흉내 — OFFER→ACCEPT→HOSTINFO→조인·다이얼

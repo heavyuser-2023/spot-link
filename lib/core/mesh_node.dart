@@ -98,6 +98,18 @@ class ReactionReceived extends NodeEvent {
 /// 파일 바이트가 실제로 이동하는 경로가 확정된 순간('wifi' = fast lane 직결,
 /// 'ble' = 블루투스 청킹). 송신·수신 양쪽에서 발생하며 UI가 말풍선에
 /// 경로 칩을 그리는 근거다.
+/// 멀티홉 BLE 예산을 초과해 보류된 발신 파일. 전송은 실패가 아니라
+/// 대기(queued) 상태가 되고, 상대가 직접(1홉)으로 나타나면 앱 계층이
+/// 자동 재전송한다 — 중간 노드의 라디오·배터리를 수 분간 점유하는
+/// 멀티홉 BLE 대용량 전송을 막는 문지기.
+class FileDeferred extends NodeEvent {
+  final String transferIdHex;
+  final PeerId to;
+  final String name;
+  final int hops;
+  FileDeferred(this.transferIdHex, this.to, this.name, this.hops);
+}
+
 class TransferLane extends NodeEvent {
   final String transferIdHex;
   final String lane; // 'wifi' | 'ble'
@@ -328,6 +340,14 @@ class MeshNode {
 
   /// 전송 측이 BLE 청킹으로 폴백하기 전에 fast-lane ACCEPT를 얼마나 기다리는지.
   static const Duration fastLaneNegotiateWindow = Duration(seconds: 5);
+
+  /// 멀티홉 BLE 폴백의 파일 크기 예산. 1홉은 당사자 둘의 라디오만 쓰므로
+  /// 무제한(느려도 그들의 선택); 2홉부터는 중간 노드가 모든 청크를 받았다
+  /// 다시 쏘는 제3자 비용이 걸리므로 작게 잡는다. 예산 초과는 실패가 아니라
+  /// [FileDeferred] — 직접 만나면 자동 재전송된다. Wi-Fi 패스트레인은 이
+  /// 게이트보다 먼저 시도되므로(도달만 하면 홉 수 무관) 잃는 기회가 없다.
+  static int bleBudgetBytes(int hops) =>
+      hops <= 2 ? 512 * 1024 : 200 * 1024;
 
   /// fast-lane 와이어의 세그먼트 모드 매직. 레거시 형식의 첫 u32는 파일 전체
   /// 암호문 길이(u32 fileSize + GCM 오버헤드)라 이 값이 나올 수 없다.
@@ -891,6 +911,18 @@ class MeshNode {
       bleLogSink?.call(
         'FT fast lane unavailable → BLE fallback: ${sender.meta.name}',
       );
+    }
+    // 멀티홉 BLE 예산 게이트: Wi-Fi가 못 살린 대용량은 중계 노드들을 수 분간
+    // 점유하는 대신 보류한다 — 상대가 직접 나타나면 자동 재전송된다.
+    final hops = _lastHops[dst.hex] ?? 1;
+    if (hops >= 2 && sender.meta.fileSize > bleBudgetBytes(hops)) {
+      bleLogSink?.call('FT deferred (${sender.meta.fileSize}B > '
+          '$hops-hop BLE budget): ${sender.meta.name}');
+      final s = _senders.remove(tid);
+      _senderTimers.remove(tid)?.cancel();
+      s?.close();
+      _events.add(FileDeferred(tid, dst, sender.meta.name, hops));
+      return;
     }
     _streaming.add(tid);
     await _streamChunks(sender, dst, kex);

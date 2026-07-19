@@ -241,6 +241,20 @@ class AppDatabase {
   }
 
   /// 갱신된 행 수를 반환한다 (0 = 메시지가 아직 영구 저장되지 않음).
+  /// 보류(queued) 상태의 발신 파일 메시지들 — 재기동 후 "가까워지면 전달"
+  /// 큐를 복원하는 데 쓴다.
+  Future<List<ChatMessage>> queuedOutgoingFiles() async {
+    final db = await _database;
+    final rows = await db.query('messages',
+        where: 'status = ? AND direction = ? AND kind = ?',
+        whereArgs: [
+          MsgStatus.queued.index,
+          MsgDirection.outgoing.index,
+          MsgKind.file.index,
+        ]);
+    return rows.map(ChatMessage.fromMap).toList();
+  }
+
   Future<int> updateStatusByMsgId(String msgId, MsgStatus status) async {
     final db = await _database;
     return db.update('messages', {'status': status.index},

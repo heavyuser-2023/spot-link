@@ -154,6 +154,11 @@ class MeshController extends MeshFrontend
   /// 꺼짐" 배너에 머무르게 된다. 느린 틱마다 시작을 재시도하면 재시작 없이 두
   /// 경우 모두 복구한다.
   Timer? _startRetryTimer;
+
+  /// 멀티홉 BLE 예산 초과로 보류된 발신 파일(peerHex → msgId들). 상대가
+  /// 직접(1홉) 나타나는 순간 자동 재전송된다. DB의 queued 상태와 함께
+  /// 이중으로 기억돼 재기동을 견딘다.
+  final Map<String, Set<String>> _deferredFiles = {};
   bool _restarting = false;
 
   /// 앱이 현재 foreground에 있는지 여부. 수신 메시지는 foreground가 아닐 때(화면
@@ -248,6 +253,13 @@ class MeshController extends MeshFrontend
 
   Future<void> init() async {
     await _wireKnownPeersStore();
+    // "가까워지면 전달" 큐 복원: 지난 세션에서 멀티홉 예산에 걸려 보류된
+    // 발신 파일들 — 상대가 직접(1홉) 나타나면 자동 재전송된다.
+    try {
+      for (final m in await db.queuedOutgoingFiles()) {
+        (_deferredFiles[m.peerHex] ??= {}).add(m.msgId);
+      }
+    } catch (_) {}
     // 수신 전송은 우리 컨테이너의 디스크에서 조립된다(systemTemp가 아님 —
     // iOS는 압박을 받으면 이를 비울 수 있고, 전송 도중이면 part 파일이 손상된다).
     try {
@@ -801,6 +813,11 @@ class MeshController extends MeshFrontend
           lastViaHex.remove(contact.peerId.hex);
         }
         await _rememberAnnounced(contact, avatar: avatar);
+        // 직접(1홉)으로 승격됐다: 멀티홉 예산에 걸려 보류됐던 파일들을
+        // 자동 재전송한다(이제 패스트레인/1홉 BLE 모두 가능).
+        if (hops == 1 && _deferredFiles.containsKey(contact.peerId.hex)) {
+          unawaited(_flushDeferredFiles(contact.peerId.hex));
+        }
         // QR로 검증된 친구가 직접 링크로 살아 있다: OS 본딩을 유도해 이후의
         // 주소 회전이 대기 연결을 죽이지 못하게 한다(세션당 1회, 전송
         // 계층에서 중복 방지).
@@ -887,6 +904,12 @@ class MeshController extends MeshFrontend
       case FileFailed(:final transferIdHex):
         transferProgress.remove(transferIdHex);
         await _applyStatus(transferIdHex, MsgStatus.failed);
+      case FileDeferred(:final transferIdHex, :final to):
+        // 실패가 아니라 대기: 말풍선이 "만나면 자동 전달"로 표시되고,
+        // 상대가 직접 나타나면 재전송된다.
+        transferProgress.remove(transferIdHex);
+        await _applyStatus(transferIdHex, MsgStatus.queued);
+        (_deferredFiles[to.hex] ??= {}).add(transferIdHex);
       case NodeError(:final message):
         lastError = message;
         reportError(message);
@@ -1366,11 +1389,11 @@ class MeshController extends MeshFrontend
 
   /// 실패한 파일 전송을, 전송 시점에 저장해 둔 로컬 사본으로부터 다시 보낸다.
   @override
-  Future<void> retryFile(ChatMessage failed) async {
+  Future<bool> retryFile(ChatMessage failed, {bool quiet = false}) async {
     final path = failed.filePath;
     if (path == null || !await File(path).exists()) {
-      reportError(systemS.errFileGoneRetry);
-      return;
+      if (!quiet) reportError(systemS.errFileGoneRetry);
+      return false;
     }
     final name = failed.fileName ?? p.basename(path);
     final tid = await node.sendFilePath(
@@ -1380,8 +1403,8 @@ class MeshController extends MeshFrontend
       mime: lookupMimeType(name) ?? 'application/octet-stream',
     );
     if (tid == null) {
-      reportError('Still unable to send — no route yet');
-      return;
+      if (!quiet) reportError('Still unable to send — no route yet');
+      return false;
     }
     if (failed.id != null) {
       await db.updateMessageDelivery(failed.id!, tid, MsgStatus.sending);
@@ -1390,6 +1413,20 @@ class MeshController extends MeshFrontend
         newMsgId: tid, status: MsgStatus.sending);
     _bumpRev();
     notifyListeners();
+    return true;
+  }
+
+  /// 보류된 파일들을 자동 재전송한다. 실패(경로 소실 직후 등)하면 조용히
+  /// 큐에 되돌려 다음 1홉 announce 때 다시 시도한다.
+  Future<void> _flushDeferredFiles(String peerHex) async {
+    final ids = _deferredFiles.remove(peerHex);
+    if (ids == null || ids.isEmpty) return;
+    for (final msgId in ids) {
+      final m = await _messageIn(peerHex, msgId);
+      if (m == null) continue; // 사용자가 지웠음 — 그대로 잊는다
+      final ok = await retryFile(m, quiet: true);
+      if (!ok) (_deferredFiles[peerHex] ??= {}).add(msgId);
+    }
   }
 
   Future<void> _onText(PeerId from, String text, String msgId,
