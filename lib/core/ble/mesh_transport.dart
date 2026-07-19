@@ -59,6 +59,10 @@ class MeshLink {
   /// heartbeat를 몇 분 넘도록 조용한 링크는 좀비이며 제거된다.
   DateTime lastActivity = DateTime.now();
 
+  /// 이 링크로 수신한 패킷 수. 0인 채 12초가 지나면 신생 좀비(link up은
+  /// 됐지만 ATT 트래픽이 전혀 흐르지 않는 반쯤 죽은 연결)로 판정한다.
+  int rxPackets = 0;
+
   int maxPacketSize;
   final L2Reassembler reassembler = L2Reassembler();
 
@@ -857,9 +861,12 @@ class MeshTransport implements MeshTransportInterface {
               .timeout(const Duration(seconds: 10));
         }
       } catch (e) {
-        // write 실패/타임아웃은 링크가 죽었다는 뜻이다; teardown한다.
-        _log('BLE send failed on ${link.id} ($e) — tearing down');
-        _tearDown(link.id);
+        // write 실패/타임아웃은 링크가 죽었다는 뜻이다. 부기 제거에 그치지
+        // 않고 물리 절단+재연결 재장전까지 — 죽은 ACL을 남겨두면 상대는
+        // 광고를 안 하고(자기 쪽 링크가 살아있다고 믿음) 우리는 스캔만
+        // 도는 3분짜리 상호 교착이 된다(2026-07-19 09:46 관찰).
+        _log('BLE send failed on ${link.id} ($e) — cutting');
+        _cutLink(link);
         return;
       }
     }
@@ -1650,6 +1657,7 @@ class MeshTransport implements MeshTransportInterface {
   void _ingest(MeshLink link, Uint8List packet) {
     if (_disposed) return;
     link.lastActivity = DateTime.now();
+    link.rxPackets++;
     final full = link.reassembler.offer(packet);
     if (full != null) {
       _inbound.add(InboundPacket(link, full));
@@ -1660,6 +1668,39 @@ class MeshTransport implements MeshTransportInterface {
     if (_disposed) return;
     _log('BLE link up ${link.id} (${link.role.name})');
     _linkEvents.add(LinkEvent(link, true));
+    // 신생 링크 좀비 워치독: 정상이면 상대 ANNOUNCE가 수 초 내 도착한다.
+    // link up 후 12초 동안 단 한 패킷도 안 왔다면 반쯤 죽은 ACL이다 —
+    // 이런 링크는 write-without-response를 조용히 삼켜 아무 에러도 없이
+    // 수 분간 "연결됨"으로 남는다(2026-07-18 19:23·07-19 09:46 heavy↔gold:
+    // 앱 재시작으로만 복구되던 사건). 부기만 지우지 말고 물리 절단까지.
+    Timer(const Duration(seconds: 12), () {
+      final l = _links[link.id];
+      if (l == null || !identical(l, link) || l.rxPackets > 0) return;
+      _log('BLE link zombie (no rx 12s) — cutting ${link.id}');
+      _cutLink(l);
+    });
+  }
+
+  /// 링크를 진짜로 끊는다. [_tearDown](부기 제거)에 더해, central 링크는
+  /// 물리 disconnect를 시도해 죽은 ACL이 다음 dial에 재사용되는 것을 막고
+  /// pending reconnect를 다시 걸어준다 — 예전 send-실패 경로는 부기만 지워서,
+  /// iOS가 살려둔 반쯤 죽은 ACL로 재-dial이 즉시 "성공"하며 좀비가 재발했다.
+  /// peripheral 링크는 기록 제거만으로 linkless self-heal(광고 재확립)이
+  /// 다시 돌기 시작한다 — 좀비를 쥔 3분 동안 광고가 침묵하던 것의 수정.
+  void _cutLink(MeshLink link) {
+    final peripheral =
+        link.role == LinkRole.central ? link.peripheral : null;
+    _tearDown(link.id);
+    if (peripheral != null && _started) {
+      // ACL이 실제로 내려간 뒤에 재연결을 걸어야 새 dial이 죽은 경로를
+      // 재사용하지 않는다(disconnect 이벤트 핸들러와는 멱등이라 안전).
+      unawaited(_central
+          .disconnect(peripheral)
+          .then((_) {}, onError: (_) {})
+          .whenComplete(() {
+        if (_started && !_disposed) _pendingReconnect(peripheral);
+      }));
+    }
   }
 
   void _tearDown(String linkId) {
