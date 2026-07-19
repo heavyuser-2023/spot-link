@@ -25,6 +25,9 @@ class Permissions {
       Permission.bluetoothConnect,
       Permission.notification,
       Permission.locationWhenInUse,
+      // Wi-Fi Direct 패스트레인(그룹 생성/발견)에 Android 13+가 요구.
+      // 거부돼도 BLE 폴백이라 필수는 아니다(best-effort).
+      Permission.nearbyWifiDevices,
     ].request();
 
     // 필수 = BLE 권한 3종. 알림/위치는 최선의 노력(best-effort)이다(구/신 OS

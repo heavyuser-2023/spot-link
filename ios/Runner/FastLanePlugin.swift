@@ -1,6 +1,7 @@
 import Flutter
 import Foundation
 import MultipeerConnectivity
+import NetworkExtension
 import UIKit
 
 /// MultipeerConnectivity (AWDL) iOS fast lane for file bytes.
@@ -109,7 +110,15 @@ class FastLanePlugin: NSObject, FlutterStreamHandler {
     let tid = args?["transferId"] as? String
     switch call.method {
     case "capabilities":
-      result(["multipeer"])
+      // 비대칭 능력: multipeer는 양방향(iOS↔iOS), wifiDirect는 송신 전용 —
+      // iOS는 Android Wi-Fi Direct 그룹(SoftAP)에 NEHotspotConfiguration으로
+      // 접속(클라이언트)할 수는 있지만 AP를 만들 수 없어 수신 호스트는 불가.
+      result(["tx": ["multipeer", "wifiDirect"], "rx": ["multipeer"]])
+    case "joinWifi":
+      guard let ssid = args?["ssid"] as? String,
+            let pass = args?["passphrase"] as? String
+      else { result(false); return }
+      joinWifi(ssid: ssid, passphrase: pass, result: result)
     case "prepareInbound":
       guard let tid = tid else { result(nil); return }
       prepareInbound(tid, result: result)
@@ -129,6 +138,33 @@ class FastLanePlugin: NSObject, FlutterStreamHandler {
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
+    }
+  }
+
+  /// Android Wi-Fi Direct 그룹(SoftAP)에 레거시 Wi-Fi 클라이언트로 접속한다.
+  /// 영속 설정(joinOnce=false)이라 같은 SSID(상대의 영속 그룹)에는 두 번째
+  /// 조인부터 시스템 동의 팝업이 없다. 전송 후 그룹 오너가 사라지면 iOS가
+  /// 스스로 연결을 해제한다. TCP 다이얼은 Dart가 담당한다.
+  private func joinWifi(ssid: String, passphrase: String,
+                        result: @escaping FlutterResult) {
+    let conf = NEHotspotConfiguration(
+      ssid: ssid, passphrase: passphrase, isWEP: false)
+    conf.joinOnce = false
+    NEHotspotConfigurationManager.shared.apply(conf) { [weak self] error in
+      if let error = error as NSError? {
+        // 이미 접속돼 있음 = 성공.
+        if error.domain == NEHotspotConfigurationErrorDomain,
+           error.code == NEHotspotConfigurationError.alreadyAssociated.rawValue {
+          self?.log("joinWifi: already associated with \(ssid)")
+          DispatchQueue.main.async { result(true) }
+          return
+        }
+        self?.log("joinWifi failed: \(error.localizedDescription)")
+        DispatchQueue.main.async { result(false) }
+        return
+      }
+      self?.log("joinWifi: associated with \(ssid)")
+      DispatchQueue.main.async { result(true) }
     }
   }
 

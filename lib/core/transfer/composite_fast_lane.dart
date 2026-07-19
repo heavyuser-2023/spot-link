@@ -14,9 +14,20 @@ class CompositeFastLane implements FastLaneInterface {
   Set<FastLaneKind> get capabilities =>
       {for (final l in lanes) ...l.capabilities};
 
+  @override
+  Set<FastLaneKind> get inboundCapabilities =>
+      {for (final l in lanes) ...l.inboundCapabilities};
+
   FastLaneInterface? _laneFor(FastLaneKind kind) {
     for (final l in lanes) {
       if (l.capabilities.contains(kind)) return l;
+    }
+    return null;
+  }
+
+  FastLaneInterface? _laneForInbound(FastLaneKind kind) {
+    for (final l in lanes) {
+      if (l.inboundCapabilities.contains(kind)) return l;
     }
     return null;
   }
@@ -25,7 +36,7 @@ class CompositeFastLane implements FastLaneInterface {
   Future<FastLaneInbound?> prepareInbound(
       String transferIdHex, FastLaneKind kind,
       {bool tidPreamble = false}) async {
-    return _laneFor(kind)
+    return _laneForInbound(kind)
         ?.prepareInbound(transferIdHex, kind, tidPreamble: tidPreamble);
   }
 

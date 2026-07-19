@@ -330,6 +330,9 @@ class _BrokenNativeLane implements FastLaneInterface {
   Set<FastLaneKind> get capabilities => {FastLaneKind.wifiAware};
 
   @override
+  Set<FastLaneKind> get inboundCapabilities => {FastLaneKind.wifiAware};
+
+  @override
   Future<FastLaneInbound?> prepareInbound(
       String transferIdHex, FastLaneKind kind,
       {bool tidPreamble = false}) async {

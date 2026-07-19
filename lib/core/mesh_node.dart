@@ -1665,15 +1665,21 @@ class MeshNode {
   // 전송은 대신 BLE로 완료된다.
   // ---------------------------------------------------------------------------
 
-  /// 값이 클수록 = 선호됨. AP 없는 네이티브 P2P가 LAN 소켓보다 우선한다.
-  static int _lanePreference(FastLaneKind k) =>
-      k == FastLaneKind.lanSocket ? 1 : 2;
+  /// 값이 클수록 = 선호됨. multipeer(iOS끼리, 셋업 최속) > Wi-Fi Direct/
+  /// Aware(그룹 생성+접속 필요) > LAN 소켓(공유 AP 필요).
+  static int _lanePreference(FastLaneKind k) => switch (k) {
+        FastLaneKind.multipeer => 3,
+        FastLaneKind.wifiAware || FastLaneKind.wifiDirect => 2,
+        FastLaneKind.lanSocket => 1,
+      };
 
   static Uint8List _u32be(int v) =>
       Uint8List(4)..buffer.asByteData().setUint32(0, v, Endian.big);
 
   Future<void> _handleFastOffer(PeerId from, Uint8List payload) async {
-    if (fastLane == null || fastLane!.capabilities.isEmpty) return; // → BLE
+    if (fastLane == null || fastLane!.inboundCapabilities.isEmpty) {
+      return; // → BLE
+    }
     if (payload.length < 17) return;
     final transferId = Uint8List.fromList(payload.sublist(0, 16));
     final tid = MsgId.hex(transferId);
@@ -1707,7 +1713,9 @@ class MeshNode {
     final senderMask = payload[16];
     // OFFER flags(bit0: tid 프리앰블 지원) — 구버전 송신자의 오퍼에는 없다.
     final senderFlags = payload.length >= 18 ? payload[17] : 0;
-    final candidates = fastLane!.capabilities
+    // 수신 후보 = 우리가 '수신 호스트'가 될 수 있는 수단 ∩ 송신자 마스크.
+    // 송신/수신 능력은 비대칭일 수 있다(예: iOS는 wifiDirect 송신만 가능).
+    final candidates = fastLane!.inboundCapabilities
         .where((k) => (senderMask & (1 << k.code)) != 0)
         .toList()
       ..sort((a, b) => _lanePreference(b).compareTo(_lanePreference(a)));

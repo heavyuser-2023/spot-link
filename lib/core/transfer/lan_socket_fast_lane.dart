@@ -80,6 +80,9 @@ class LanSocketFastLane implements FastLaneInterface {
   @override
   Set<FastLaneKind> get capabilities => {FastLaneKind.lanSocket};
 
+  @override
+  Set<FastLaneKind> get inboundCapabilities => {FastLaneKind.lanSocket};
+
   static Uint8List _hexToBytes(String hex) {
     final out = Uint8List(hex.length ~/ 2);
     for (var i = 0; i < out.length; i++) {
@@ -149,7 +152,7 @@ class LanSocketFastLane implements FastLaneInterface {
         return;
       }
       if (expected == null) {
-        adopt(_SocketSession(socket));
+        adopt(SocketFastLaneSession(socket));
         return;
       }
       // 프리앰블 검증: 첫 16바이트가 transferId와 일치하는 연결만 세션으로
@@ -183,7 +186,7 @@ class LanSocketFastLane implements FastLaneInterface {
         }
         validated = true;
         if (all.length > 16) ctrl.add(Uint8List.sublistView(all, 16));
-        adopt(_SocketSession(socket, incoming: ctrl.stream));
+        adopt(SocketFastLaneSession(socket, incoming: ctrl.stream));
       }, onError: (_) {
         guard.cancel();
         if (!ctrl.isClosed) ctrl.close();
@@ -211,21 +214,23 @@ class LanSocketFastLane implements FastLaneInterface {
     try {
       final socket = await Socket.connect(ip, port,
           timeout: const Duration(seconds: 6));
-      return _SocketSession(socket);
+      return SocketFastLaneSession(socket);
     } catch (_) {
       return null; // 도달할 수 없음 → BLE 폴백
     }
   }
 }
 
-class _SocketSession implements FastLaneSession {
+/// TCP 소켓 위의 FastLaneSession. lanSocket 레인과 iOS의 Wi-Fi Direct
+/// 클라이언트 경로(조인 후 그룹 오너로 다이얼)가 공유한다.
+class SocketFastLaneSession implements FastLaneSession {
   final Socket _socket;
 
   /// 프리앰블 검증이 소켓 스트림을 이미 구독한 경우, 나머지 바이트가 흐르는
   /// 대체 스트림(단일 구독인 Socket은 재구독이 불가능하다).
   final Stream<Uint8List>? _incoming;
   bool _closed = false;
-  _SocketSession(this._socket, {Stream<Uint8List>? incoming})
+  SocketFastLaneSession(this._socket, {Stream<Uint8List>? incoming})
       : _incoming = incoming;
 
   @override

@@ -46,6 +46,9 @@ class FakeFastLane implements FastLaneInterface {
   FakeFastLane(this.medium, this.capabilities);
 
   @override
+  Set<FastLaneKind> get inboundCapabilities => capabilities;
+
+  @override
   Future<FastLaneInbound?> prepareInbound(
     String transferIdHex,
     FastLaneKind kind, {

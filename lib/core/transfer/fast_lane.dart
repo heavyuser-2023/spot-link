@@ -55,9 +55,15 @@ abstract class FastLaneSession {
 /// 제어 평면(발견, 협상, 전달 ACK)은 BLE에 그대로 남고, 이 인터페이스는 파일의
 /// *바이트*만 옮긴다.
 abstract class FastLaneInterface {
-  /// 이 기기가 지금 제안할 수 있는 것(비어 있으면 ⇒ 사용 가능한 패스트레인이
-  /// 없어 모든 전송이 BLE에 머문다).
+  /// 이 기기가 **송신**(connect) 측으로 쓸 수 있는 수단(비어 있으면 ⇒ 사용
+  /// 가능한 패스트레인이 없어 모든 전송이 BLE에 머문다).
   Set<FastLaneKind> get capabilities;
+
+  /// 이 기기가 **수신**(prepareInbound) 측으로 쓸 수 있는 수단. 기본은
+  /// [capabilities]와 같지만 비대칭 레인이 있다: iOS는 Android의 Wi-Fi
+  /// Direct 그룹(SoftAP)에 클라이언트로 **접속(송신)** 은 되지만, AP를 만들
+  /// 수 없어 **수신 호스트**는 될 수 없다.
+  Set<FastLaneKind> get inboundCapabilities => capabilities;
 
   /// 수신자 측: 들어오는 전송 하나를 수신 대기하기 시작하고 BLE로 되돌려 보낼
   /// 연결 정보를 반환한다. 불가능하면 null을 반환한다(→ BLE). 반환된 세션은

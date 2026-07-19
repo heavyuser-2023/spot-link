@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io' show Platform, Socket;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'fast_lane.dart';
+import 'lan_socket_fast_lane.dart';
 
 /// 플랫폼 채널을 통해 네이티브 P2P Wi-Fi 전송을 등에 업은 패스트레인:
 /// **Android Wi-Fi Direct**와 **iOS MultipeerConnectivity**. 둘 다 AP 없는
@@ -36,7 +39,8 @@ class PlatformFastLane implements FastLaneInterface {
   static final PlatformFastLane instance = PlatformFastLane._();
   PlatformFastLane._();
 
-  Set<FastLaneKind> _caps = const {};
+  Set<FastLaneKind> _txCaps = const {};
+  Set<FastLaneKind> _rxCaps = const {};
   bool _wired = false;
 
   /// 전송별 배관(plumbing).
@@ -44,7 +48,13 @@ class PlatformFastLane implements FastLaneInterface {
   final Map<String, Completer<bool>> _connected = {};
 
   @override
-  Set<FastLaneKind> get capabilities => _caps;
+  Set<FastLaneKind> get capabilities => _txCaps;
+
+  /// 송신/수신 능력은 비대칭이다: iOS는 Android Wi-Fi Direct 그룹(SoftAP)에
+  /// **클라이언트로 접속(송신)** 은 되지만 AP를 만들 수 없어 수신 호스트는
+  /// 될 수 없다. 네이티브가 {tx, rx} 두 목록으로 알려준다.
+  @override
+  Set<FastLaneKind> get inboundCapabilities => _rxCaps;
 
   /// 네이티브 기능(capabilities)을 조회하고, 하나라도 있을 때만 이벤트 스트림을
   /// 구독한다. 반복 호출해도 안전하며, 절대 예외를 던지지 않는다. 네이티브
@@ -52,17 +62,25 @@ class PlatformFastLane implements FastLaneInterface {
   /// capabilities가 비어 있고 이벤트 채널을 전혀 건드리지 않는다.
   Future<void> warmUp() async {
     try {
-      final list = await _method.invokeListMethod<String>('capabilities');
-      final caps = <FastLaneKind>{};
-      for (final name in list ?? const <String>[]) {
-        final k = _kindByName(name);
-        if (k != null) caps.add(k);
+      final raw = await _method.invokeMethod<dynamic>('capabilities');
+      Set<FastLaneKind> parse(dynamic names) => {
+            for (final n in (names as List?) ?? const [])
+              if (_kindByName(n as String) != null) _kindByName(n)!,
+          };
+      if (raw is Map) {
+        // 신형 계약: {tx: [...], rx: [...]} — 비대칭 능력.
+        _txCaps = parse(raw['tx']);
+        _rxCaps = parse(raw['rx']);
+      } else {
+        // 구형 계약(단일 목록): 대칭으로 취급.
+        _txCaps = parse(raw);
+        _rxCaps = _txCaps;
       }
-      _caps = caps;
     } catch (_) {
-      _caps = const {}; // 네이티브 핸들러 없음 → LAN/BLE 전용
+      _txCaps = const {};
+      _rxCaps = const {}; // 네이티브 핸들러 없음 → LAN/BLE 전용
     }
-    if (_caps.isNotEmpty) _wireEvents();
+    if (_txCaps.isNotEmpty || _rxCaps.isNotEmpty) _wireEvents();
   }
 
   static FastLaneKind? _kindByName(String n) => switch (n) {
@@ -131,7 +149,7 @@ class PlatformFastLane implements FastLaneInterface {
       String transferIdHex, FastLaneKind kind,
       // 네이티브 P2P는 discoveryInfo/컨텍스트로 이미 tid를 대조한다 — 무시.
       {bool tidPreamble = false}) async {
-    if (!_caps.contains(kind)) return null;
+    if (!_rxCaps.contains(kind)) return null;
     _wireEvents();
     Uint8List? blob;
     try {
@@ -166,7 +184,12 @@ class PlatformFastLane implements FastLaneInterface {
   @override
   Future<FastLaneSession?> connect(
       String transferIdHex, FastLaneOffer offer) async {
-    if (!_caps.contains(offer.kind)) return null;
+    if (!_txCaps.contains(offer.kind)) return null;
+    // iOS → Android Wi-Fi Direct: 네이티브는 Wi-Fi 조인만 하고(NEHotspot
+    // Configuration), TCP는 Dart가 그룹 오너(192.168.49.1)로 직접 다이얼한다.
+    if (offer.kind == FastLaneKind.wifiDirect && Platform.isIOS) {
+      return _connectWifiDirectAsClient(offer);
+    }
     _wireEvents();
     final connected = _connected[transferIdHex] = Completer<bool>();
     _incoming[transferIdHex] = StreamController<Uint8List>();
@@ -192,6 +215,48 @@ class PlatformFastLane implements FastLaneInterface {
       return null;
     }
     return _PlatformSession(this, transferIdHex);
+  }
+
+  /// iOS가 Android Wi-Fi Direct 그룹에 레거시 Wi-Fi 클라이언트로 접속한 뒤
+  /// 그룹 오너의 TCP 리스너로 다이얼한다. blob 형식(GO가 광고):
+  /// "ssid\npassphrase\nip\nport" (utf8).
+  ///
+  /// 시간 예산: 수신자의 인바운드 창이 25초이므로 조인 12초 + 다이얼
+  /// 2×(4초+2초) ≈ 최악 24초 안에 끝낸다.
+  Future<FastLaneSession?> _connectWifiDirectAsClient(
+      FastLaneOffer offer) async {
+    final parts = utf8.decode(offer.blob).split('\n');
+    if (parts.length < 4) return null;
+    final ssid = parts[0];
+    final pass = parts[1];
+    final ip = parts[2];
+    final port = int.tryParse(parts[3]) ?? 0;
+    if (ssid.isEmpty || port == 0) return null;
+    bool joined;
+    try {
+      joined = await _method.invokeMethod<bool>('joinWifi', {
+            'ssid': ssid,
+            'passphrase': pass,
+          }).timeout(const Duration(seconds: 12)) ??
+          false;
+    } catch (e) {
+      logSink?.call('FT wifiDirect join failed: $e');
+      return null;
+    }
+    if (!joined) return null;
+    // 조인 직후 DHCP/라우팅이 안정될 때까지 몇 초 걸린다 — 재시도로 흡수.
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final socket = await Socket.connect(ip, port,
+            timeout: const Duration(seconds: 4));
+        logSink?.call('FT wifiDirect joined "$ssid" + dialed $ip:$port');
+        return SocketFastLaneSession(socket);
+      } catch (_) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+      }
+    }
+    logSink?.call('FT wifiDirect joined but dial failed ($ip:$port)');
+    return null;
   }
 
   Future<void> _send(String tid, Uint8List data) async {

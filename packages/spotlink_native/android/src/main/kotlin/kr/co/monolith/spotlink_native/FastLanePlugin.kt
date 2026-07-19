@@ -1,11 +1,13 @@
 package kr.co.monolith.spotlink_native
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiNetworkSpecifier
+import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import android.os.Handler
@@ -71,14 +73,18 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         val tid = call.argument<String>("transferId")
         when (call.method) {
             "capabilities" -> {
-                // wifiDirect는 실기기 2대 검증 전까지 광고하지 않는다.
-                // 이유: ① 이 경로는 런타임 검증이 안 됐고, ② 송신 측
-                // WifiNetworkSpecifier.requestNetwork는 Android 10+에서 시스템
-                // 승인 다이얼로그를 띄워 조용한 자동 전송이 불가능하며,
-                // ③ 선호도상 lanSocket보다 앞서므로 광고하는 순간 같은 Wi-Fi의
-                // 확실한 lanSocket을 가려 성공률을 오히려 떨어뜨린다.
-                // 재활성화 조건: WifiP2pManager.connect 기반 재구현 + 검증.
-                result.success(emptyList<String>())
+                // 기내(공유 AP 없음) 시나리오용으로 재활성화(2026-07-20).
+                // 수신(rx) = 영속 그룹의 오너(SoftAP 호스트), 송신(tx) =
+                // WifiNetworkSpecifier로 상대 그룹에 접속(시스템 확인 1탭).
+                // iOS 피어는 NEHotspotConfiguration으로 이 그룹에 레거시
+                // 클라이언트로 접속한다(Android GO ← iOS 송신 방향 지원).
+                // NOTE: 실기기 2대 런타임 검증은 아직 미완 — 실패 시 모든
+                // 경로가 BLE로 폴백하므로 회귀 위험은 없다.
+                val ok = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                    context.packageManager
+                        .hasSystemFeature("android.hardware.wifi.direct")
+                val caps = if (ok) listOf("wifiDirect") else emptyList<String>()
+                result.success(mapOf("tx" to caps, "rx" to caps))
             }
             "prepareInbound" -> {
                 if (tid == null) { result.success(null); return }
@@ -106,31 +112,76 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         }
     }
 
-    // 수신 측: 그룹을 생성하고, 소켓에서 대기하며, SSID+pass+ip:port를 광고한다.
+    /// 기기당 한 번 생성해 재사용하는 그룹 자격(SSID/암호). 영속 모드 +
+    /// 고정 자격이라 iOS의 NEHotspotConfiguration이 같은 SSID로 저장돼
+    /// 두 번째 전송부터는 조인 동의 팝업이 없다.
+    private fun stableGroupConfig(): WifiP2pConfig? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        val prefs: SharedPreferences =
+            context.getSharedPreferences("spotlink_fastlane", Context.MODE_PRIVATE)
+        var name = prefs.getString("go_ssid", null)
+        var pass = prefs.getString("go_pass", null)
+        if (name == null || pass == null) {
+            val alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+            val rnd = java.security.SecureRandom()
+            fun rand(n: Int) = (1..n).map { alphabet[rnd.nextInt(alphabet.length)] }
+                .joinToString("")
+            name = "DIRECT-SL" + rand(6) // 규격: ^DIRECT-[a-zA-Z0-9]{2}…
+            pass = rand(12) // WPA2 8–63자
+            prefs.edit().putString("go_ssid", name).putString("go_pass", pass).apply()
+        }
+        return WifiP2pConfig.Builder()
+            .setNetworkName(name)
+            .setPassphrase(pass)
+            .enablePersistentMode(true)
+            .build()
+    }
+
+    // 수신 측: 영속 그룹(SoftAP)을 만들고, 소켓에서 대기하며,
+    // SSID+pass+ip:port를 광고한다. iOS/Android 송신자가 이 그룹에 접속해
+    // 그룹 오너(192.168.49.1)의 리스너로 다이얼한다.
     @Suppress("MissingPermission")
     private fun prepareInbound(tid: String, result: MethodChannel.Result) {
         val mgr = p2p
         val ch = p2pChannel
-        if (mgr == null || ch == null) { result.success(null); return }
-        mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() {
-                mgr.requestGroupInfo(ch) { group ->
-                    if (group == null) { result.success(null); return@requestGroupInfo }
-                    // 그룹 오너 주소는 192.168.49.1로 고정되어 있다.
-                    val ownerIp = "192.168.49.1"
-                    val t = Transfer(tid)
-                    transfers[tid] = t
-                    // 임시 포트에 바인딩한 뒤 실제 포트를 광고한다 — 고정 포트
-                    // (예전 8988)는 동시 수신·TIME_WAIT 잔상과 충돌했고, 바인딩
-                    // 전에 blob부터 만들어 실패를 놓쳤다.
-                    val port = t.listen()
-                    if (port == null) { result.success(null); return@requestGroupInfo }
-                    val blob = "${group.networkName}\n${group.passphrase}\n$ownerIp\n$port"
-                        .toByteArray(Charsets.UTF_8)
-                    result.success(blob)
+        val config = stableGroupConfig()
+        if (mgr == null || ch == null || config == null) {
+            result.success(null); return
+        }
+
+        // 그룹 생성 직후 정보가 즉시 조회되지 않을 수 있다 — 짧게 재시도.
+        fun advertise(attempt: Int) {
+            mgr.requestGroupInfo(ch) { group ->
+                if (group == null || !group.isGroupOwner) {
+                    if (attempt < 5) {
+                        main.postDelayed({ advertise(attempt + 1) }, 400)
+                    } else {
+                        result.success(null)
+                    }
+                    return@requestGroupInfo
                 }
+                // 그룹 오너 주소는 192.168.49.1로 고정되어 있다.
+                val ownerIp = "192.168.49.1"
+                val t = Transfer(tid)
+                transfers[tid] = t
+                // 임시 포트에 바인딩한 뒤 실제 포트를 광고한다 — 고정 포트
+                // (예전 8988)는 동시 수신·TIME_WAIT 잔상과 충돌했고, 바인딩
+                // 전에 blob부터 만들어 실패를 놓쳤다.
+                val port = t.listen()
+                if (port == null) { result.success(null); return@requestGroupInfo }
+                val blob = "${group.networkName}\n${group.passphrase}\n$ownerIp\n$port"
+                    .toByteArray(Charsets.UTF_8)
+                result.success(blob)
             }
-            override fun onFailure(reason: Int) { result.success(null) }
+        }
+
+        mgr.createGroup(ch, config, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() { advertise(0) }
+            override fun onFailure(reason: Int) {
+                // BUSY = 직전 전송의 그룹이 아직 살아 있음 — 자격이 같으므로
+                // 그대로 재사용한다. 그 외 실패도 조회로 확인 후 포기한다.
+                advertise(0)
+            }
         })
     }
 
