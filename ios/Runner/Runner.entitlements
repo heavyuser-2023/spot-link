@@ -2,7 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- 유료 Apple Developer Program 등록 후 아래 키를 복원할 것:
+	     iOS→Android Wi-Fi Direct 전송(joinWifi)에 필요. 무료 개인 팀은
+	     Hotspot 캐퍼빌리티를 지원하지 않아 서명이 거부된다(2026-07-20).
 	<key>com.apple.developer.networking.HotspotConfiguration</key>
 	<true/>
+	-->
 </dict>
 </plist>

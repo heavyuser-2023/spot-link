@@ -113,7 +113,15 @@ class FastLanePlugin: NSObject, FlutterStreamHandler {
       // 비대칭 능력: multipeer는 양방향(iOS↔iOS), wifiDirect는 송신 전용 —
       // iOS는 Android Wi-Fi Direct 그룹(SoftAP)에 NEHotspotConfiguration으로
       // 접속(클라이언트)할 수는 있지만 AP를 만들 수 없어 수신 호스트는 불가.
-      result(["tx": ["multipeer", "wifiDirect"], "rx": ["multipeer"]])
+      //
+      // hotspotEntitlementAvailable: NEHotspotConfiguration은 유료 개발자
+      // 계정 전용(무료 개인 팀은 Hotspot 캐퍼빌리티 서명 거부, 2026-07-20).
+      // 유료 등록 후 true로 바꾸고 Runner.entitlements의 주석 키를 복원하면
+      // iPhone→Android Wi-Fi Direct 전송이 활성화된다. 그 전까지는 해당
+      // 조합이 BLE로 폴백한다.
+      let hotspotEntitlementAvailable = false
+      let tx = hotspotEntitlementAvailable ? ["multipeer", "wifiDirect"] : ["multipeer"]
+      result(["tx": tx, "rx": ["multipeer"]])
     case "joinWifi":
       guard let ssid = args?["ssid"] as? String,
             let pass = args?["passphrase"] as? String
