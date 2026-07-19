@@ -219,6 +219,7 @@ class MeshTransport implements MeshTransportInterface {
   Timer? _rssiTimer;
   Timer? _selfHealTimer;
   int _linklessTicks = 0;
+  int _linkedTicks = 0;
   static const Duration _rssiPollInterval = Duration(seconds: 5);
 
   /// central 링크별 연속 RSSI read 실패 횟수 — 좀비 링크 탐지기의 근거.
@@ -554,17 +555,37 @@ class MeshTransport implements MeshTransportInterface {
       // 타임아웃난다). ANNOUNCE heartbeat은 약 15초마다 도착하므로, 몇 분간의
       // 침묵은 central이 떠났다는 뜻이다.
       for (final link in _links.values.toList()) {
+        // ANNOUNCE heartbeat는 ~15초마다 도착한다 — 6회(90초) 침묵이면 죽은
+        // 링크다. 예전 3분은 죽은 P-링크가 "링크 있음"으로 버티는 동안
+        // self-heal이 침묵해, 상대와의 상호 교착을 그만큼 연장시켰다.
         if (link.role == LinkRole.peripheral &&
             DateTime.now().difference(link.lastActivity) >
-                const Duration(minutes: 3)) {
-          _log('BLE peripheral link stale (silent 3m) — dropping ${link.id}');
+                const Duration(seconds: 90)) {
+          _log('BLE peripheral link stale (silent 90s) — dropping ${link.id}');
           _tearDown(link.id);
         }
       }
       if (_links.isNotEmpty) {
         _linklessTicks = 0;
+        // 링크가 있어도 라디오를 완전히 방치하면 안 된다: iOS는 긴 세션에서
+        // scan 결과 전달을 조용히 멈출 수 있고, 광고도 격이 떨어질 수 있다 —
+        // 이 상태로는 이미 연결된 피어와는 잘 지내지만 **세 번째 기기를 영영
+        // 발견하지 못한다**. 2분마다 한 번 부드럽게 재확립한다(멱등 광고
+        // start + scan 재활용; 기존 링크는 건드리지 않는다).
+        _linkedTicks++;
+        if (_linkedTicks % 8 == 0) {
+          _log('BLE upkeep (linked): re-asserting discovery');
+          if (_peripheral.state == BluetoothLowEnergyState.poweredOn &&
+              _servicePublished) {
+            unawaited(_startAdvertising());
+          }
+          if (_powerMode == PowerMode.active) {
+            unawaited(_stopScanning().then((_) => _startScanning()));
+          }
+        }
         return;
       }
+      _linkedTicks = 0;
       _linklessTicks++;
       _log('BLE self-heal: no links — re-asserting radio');
       // Deep heal: 약 3분 연속 링크 없음 → GATT service도 republish한다.
@@ -1160,6 +1181,13 @@ class MeshTransport implements MeshTransportInterface {
       // 링크가 없으면 알려진 피어 대기 연결도 다시 걸어, 앱 재시작이 주던
       // "즉시 재발견"을 포그라운드 복귀가 그대로 갖게 한다.
       if (_links.isEmpty) unawaited(_reconnectKnownPeers());
+      // 자동 경로가 쌓아 둔 백오프도 비운다(boost와 같은 근거): 사용자가
+      // 앱을 열었다 = 지금 찾으라는 신호다. 백그라운드에서 쌓인 프로브
+      // 백오프(최대 10분)와 다이얼 쿨다운이 복귀 직후의 재발견을 억누르면
+      // 안 된다.
+      _probeMisses.clear();
+      _probeBackoff.clear();
+      _lastDialAt.clear();
     }
     if (_powerMode == PowerMode.active) {
       unawaited(_stopScanning().then((_) => _startScanning()));
