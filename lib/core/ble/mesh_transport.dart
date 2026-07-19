@@ -71,6 +71,7 @@ class MeshLink {
   final GATTCharacteristic? remoteTx; // 여기에 write 한다
   final GATTCharacteristic? remoteRx; // 여기서 notify를 받는다
   final GATTCharacteristic? remoteBond; // 암호화 읽기 → 본딩 유도(없으면 구버전)
+  final GATTCharacteristic? remoteInfo; // 신생 링크 능동 생존 확인용 read 대상
 
   // peripheral 역할 핸들(원격 central이 우리에게 연결한 경우).
   final Central? central;
@@ -87,6 +88,7 @@ class MeshLink {
     this.remoteTx,
     this.remoteRx,
     this.remoteBond,
+    this.remoteInfo,
     this.central,
   });
 
@@ -301,6 +303,16 @@ class MeshTransport implements MeshTransportInterface {
           if (_links.containsKey('C:$uuid') || _connecting.contains(uuid)) {
             continue;
           }
+          // 좀비 출생 경로 차단: 이전 프로세스/세션이 남긴 반쯤 죽은 시스템
+          // ACL 위로 connect가 즉시 "성공"하면 트래픽 0의 좀비로 태어난다
+          // (2026-07-19 19:40:06 관찰 — 부팅 3초 만에 link up, write 전부
+          // 타임아웃). 링크 부기가 없는 peripheral의 잔존 연결은 정의상
+          // 죽은 것이므로, 걸기 전에 끊어 새 ACL을 강제한다.
+          try {
+            await _central
+                .disconnect(peripheral)
+                .timeout(const Duration(seconds: 2));
+          } catch (_) {}
           _pendingReconnect(peripheral);
           armed++;
         } catch (_) {} // 형식이 잘못됐거나 알 수 없는 id — 대신 scan이 찾아준다
@@ -1541,7 +1553,7 @@ class MeshTransport implements MeshTransportInterface {
       // 다시 dial할 수 없었다(관찰됨: idle 상태의 두 폰이 establish 도중 서로 20분
       // 넘게 막혀 있었다). 위의 connect()는 non-probe 경로에서 일부러 상한 없이
       // 둔다 — iOS의 pending reconnect는 설계상 몇 분 뒤에 완료된다.
-      final (tx, rx, bond, maxPacket) = await () async {
+      final (tx, rx, bond, info, maxPacket) = await () async {
         var services = await _central.discoverGATT(peripheral);
         var hasSvc = services.any((s) => s.uuid == BleConstants.serviceUuid);
         // SpotLink service가 없는 SpotLink advertiser는 거의 언제나 재실행
@@ -1566,11 +1578,12 @@ class MeshTransport implements MeshTransportInterface {
         }
         final svc =
             services.firstWhere((s) => s.uuid == BleConstants.serviceUuid);
-        GATTCharacteristic? tx, rx, bond;
+        GATTCharacteristic? tx, rx, bond, info;
         for (final c in svc.characteristics) {
           if (c.uuid == BleConstants.txCharacteristicUuid) tx = c;
           if (c.uuid == BleConstants.rxCharacteristicUuid) rx = c;
           if (c.uuid == BleConstants.bondCharacteristicUuid) bond = c;
+          if (c.uuid == BleConstants.infoCharacteristicUuid) info = c;
         }
         if (tx == null || rx == null) {
           throw StateError('characteristics not found');
@@ -1591,7 +1604,7 @@ class MeshTransport implements MeshTransportInterface {
 
         await _central.setCharacteristicNotifyState(peripheral, rx,
             state: true);
-        return (tx, rx, bond, maxPacket);
+        return (tx, rx, bond, info, maxPacket);
       }()
           .timeout(const Duration(seconds: 25));
 
@@ -1611,6 +1624,7 @@ class MeshTransport implements MeshTransportInterface {
         remoteTx: tx,
         remoteRx: rx,
         remoteBond: bond,
+        remoteInfo: info,
         maxPacketSize: maxPacket.clamp(BleConstants.defaultMaxPacketSize, 512),
       )..remoteShortId = remoteId;
       _links[linkId] = link;
@@ -1721,6 +1735,25 @@ class MeshTransport implements MeshTransportInterface {
       _log('BLE link zombie (no rx 12s) — cutting ${link.id}');
       _cutLink(l);
     });
+    // 능동 생존 확인(central 링크): 수동 12초를 기다리지 않고 INFO를 한 번
+    // 읽는다 — ATT 왕복이 강제되므로 반쯤 죽은 ACL은 8초 안에 발각되고
+    // 즉시 절단+재다이얼로 이어진다. 상대가 일시 정지에서 깨어나는 중이라
+    // 읽기가 늦는 경우엔 절단해도 대기 재연결이 곧바로 되살린다(딸꾹질
+    // 한 번, 손실 없음). peripheral 역할 링크는 mesh의 ANNOUNCE notify가
+    // 10초 타임아웃으로 같은 역할을 이미 한다.
+    if (link.role == LinkRole.central &&
+        link.peripheral != null &&
+        link.remoteInfo != null) {
+      unawaited(_central
+          .readCharacteristic(link.peripheral!, link.remoteInfo!)
+          .timeout(const Duration(seconds: 8))
+          .then((_) {}, onError: (_) {
+        final l = _links[link.id];
+        if (l == null || !identical(l, link) || l.rxPackets > 0) return;
+        _log('BLE liveness probe failed — cutting ${link.id}');
+        _cutLink(l);
+      }));
+    }
   }
 
   /// 링크를 진짜로 끊는다. [_tearDown](부기 제거)에 더해, central 링크는
