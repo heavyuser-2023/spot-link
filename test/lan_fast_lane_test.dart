@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:spot_link/core/ble/mesh_transport.dart' show bleLogSink;
 import 'package:spot_link/core/crypto/identity.dart';
 import 'package:spot_link/core/mesh_node.dart';
 import 'package:spot_link/core/transfer/composite_fast_lane.dart';
@@ -275,6 +276,73 @@ void main() {
     await session.close();
     intruder.destroy();
     sender.destroy();
+  });
+
+  test('다중 파일이 한 세션으로 배치 스트리밍된다(협상 1회)', () async {
+    // 2026-07-20 11:17 회귀 방지: 10장 일괄 전송에서 2번째 파일부터 연속
+    // 협상이 실패(멀티피어 잔상 광고)하며 BLE로 낙하 → 병렬 청킹 전멸.
+    // 이제 첫 협상의 세션으로 나머지를 이어 보낸다(fastLaneMagicNext).
+    final savedSeg = MeshNode.fastLaneSegmentBytes;
+    MeshNode.fastLaneSegmentBytes = 96 * 1024;
+    addTearDown(() => MeshNode.fastLaneSegmentBytes = savedSeg);
+    final logs = <String>[];
+    bleLogSink = logs.add;
+    addTearDown(() => bleLogSink = null);
+
+    LanSocketFastLane lan() => LanSocketFastLane(
+          bindHost: InternetAddress.loopbackIPv4,
+          localAddresses: () async => [InternetAddress.loopbackIPv4],
+        );
+    final radio = FakeRadio();
+    final idA = await Identity.generate();
+    final idB = await Identity.generate();
+    final a = TestNode(MeshNode(
+        identity: idA,
+        displayName: 'A',
+        transport: radio.create(idA.peerId),
+        fastLane: lan()));
+    final b = TestNode(MeshNode(
+        identity: idB,
+        displayName: 'B',
+        transport: radio.create(idB.peerId),
+        fastLane: lan()));
+    await a.node.start();
+    await b.node.start();
+    a.node.addContact(ContactIdentity.fromBundle(idB.publicBundle));
+    b.node.addContact(ContactIdentity.fromBundle(idA.publicBundle));
+    radio.connect(idA.peerId, idB.peerId);
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    // 사진 5장을 한꺼번에(협상은 첫 파일만 하게).
+    final rnd = Random(66);
+    final files = <String, Uint8List>{};
+    final tids = <String>[];
+    for (var i = 0; i < 5; i++) {
+      final bytes = Uint8List.fromList(
+          List.generate(400 * 1024 + i, (_) => rnd.nextInt(256)));
+      files['photo_$i.jpg'] = bytes;
+      final tid = await a.node.sendFile(idB.peerId,
+          bytes: bytes, name: 'photo_$i.jpg', mime: 'image/jpeg');
+      tids.add(tid!);
+    }
+
+    // 5장 전부 수신 + 바이트 일치.
+    for (final name in files.keys) {
+      final got = await waitFor<FileReceived>(b, (e) => e.meta.name == name,
+          timeout: const Duration(seconds: 30));
+      expect(File(got.path).readAsBytesSync(), files[name]);
+    }
+    // 송신 측 전달 확인 5건.
+    for (final tid in tids) {
+      await waitFor<DeliveryConfirmed>(a, (e) => e.msgId == tid,
+          timeout: const Duration(seconds: 20));
+    }
+    // 실제로 배치가 사용됐는지(같은 세션 연속 스트리밍) 로그로 확인.
+    expect(logs.any((l) => l.contains('FT batch send done')), isTrue,
+        reason: '배치 미사용 — 파일마다 협상했다(회귀)');
+
+    await a.node.dispose();
+    await b.node.dispose();
   });
 
   test('전달 완료 후 META 영속 사본이 정리되고 완료 tid가 저장된다', () async {

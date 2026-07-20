@@ -361,6 +361,12 @@ class MeshNode {
   /// 암호문 길이(u32 fileSize + GCM 오버헤드)라 이 값이 나올 수 없다.
   static const int fastLaneMagicSegmented = 0xFFFFFFFF;
 
+  /// 배치 연속 매직: 한 파일의 종료 마커(0) 뒤에 이어지면 "같은 세션으로
+  /// 다음 파일을 계속한다"는 뜻 — [tid 16바이트][세그먼트 매직][세그먼트…]가
+  /// 따라온다. 연속 협상(특히 multipeer의 잔상 광고 문제)을 제거해 다중
+  /// 파일 전송을 한 번의 협상으로 끝낸다. ACCEPT flags bit2로 협상된다.
+  static const int fastLaneMagicNext = 0xFFFFFFFE;
+
   /// fast-lane 세그먼트 평문 크기 — 전송 중 RAM 상주 상한을 정한다.
   /// 테스트 전용으로 축소 가능(멀티 세그먼트 경로 검증).
   static int fastLaneSegmentBytes = 4 * 1024 * 1024;
@@ -392,6 +398,18 @@ class MeshNode {
   /// BLE 대역을 통째로 태우는 폭풍이 관찰됐다(2026-07-17 21:52).
   final Set<String> _fastQueued = {};
 
+  /// 같은 상대에게 fast-lane 차례를 기다리는 파일들(dstHex → tid FIFO).
+  /// 락 소유자가 자기 파일을 마친 뒤 이 목록을 같은 세션으로 이어 보낸다.
+  final Map<String, List<String>> _fastBatchCandidates = {};
+
+  /// 배치로 이미 전송된 tid — 자기 차례가 왔을 때 재전송/BLE 낙하를 막는다.
+  final Set<String> _batchDelivered = {};
+
+  /// BLE 파일 스트림 직렬화 체인 — 한 링크에 대용량 청킹이 병렬로 흐르면
+  /// 서로의 대역을 잡아먹고 전부 타임아웃난다(2026-07-20 11:17: 9파일 병렬
+  /// 낙하 → 전멸). fast lane과 별개 체인이라 Wi-Fi 전송을 막지 않는다.
+  Future<void> _bleStreamChain = Future<void>.value();
+
   /// 재전송 루프가 이미 도는 transferId — ACK가 3초마다 도착하는데 64청크
   /// 재전송은 그보다 오래 걸리므로, 겹치면 같은 청크의 중복 사본만 쌓인다.
   final Set<String> _resending = {};
@@ -401,9 +419,11 @@ class MeshNode {
   /// 협상+스트림을 한 건씩 직렬화한다. BLE 폴백은 락 밖에서 돌린다.
   Future<void> _fastLaneChain = Future<void>.value();
 
-  /// Fast-lane 연결이 방금 실패했을 때의 짧은 쿨다운(피어별) — 줄 선 나머지
-  /// 파일이 각자 25초씩 또 실패하며 줄 서지 않게 한다. 피어별인 이유: 한
-  /// 상대와의 실패가 다른 상대와의 fast lane까지 막으면 안 된다.
+  /// Fast-lane 연결이 방금 실패했을 때의 짧은 쿨다운(피어×수단별,
+  /// `dstHex/kind` 키) — 줄 선 나머지 파일이 각자 25초씩 또 실패하며
+  /// 줄 서지 않게 한다. 수단별인 이유: multipeer 한 번의 실패가 lanSocket
+  /// 등 다른 수단의 시도까지 막으면 대기열 전체가 BLE로 오염된다
+  /// (2026-07-20 11:17 관찰).
   final Map<String, DateTime> _fastLaneCooldownUntil = {};
 
   /// [turnTimeout]은 "차례 대기"에만 적용된다(자기 body 실행 시간은 무제한 —
@@ -892,6 +912,8 @@ class MeshNode {
       });
       final queuedAt = DateTime.now();
       _fastQueued.add(tid); // 시작 전 — 수신 측 조바심 ACK에 재전송 금지
+      // 배치 후보 등록: 앞 파일의 락 소유자가 자기 세션으로 이어 보낼 수 있다.
+      (_fastBatchCandidates[dst.hex] ??= []).add(tid);
       bool ok;
       try {
         // 협상·Wi-Fi 스트림만 직렬화. 실패 후 BLE 폴백은 락 밖에서 병행 가능.
@@ -919,8 +941,12 @@ class MeshNode {
       } finally {
         feeder.cancel();
         _fastQueued.remove(tid);
+        _fastBatchCandidates[dst.hex]?.remove(tid);
       }
       if (ok) return; // fast lane이 전달을 완수함(전달 ACK는 BLE로 도착)
+      // 차례 타임아웃(90초) 등으로 락에서 밀려났지만 그 사이 앞 파일의
+      // 세션에 편승해 이미 전송됐을 수 있다 — BLE 중복 전송 금지.
+      if (_batchDelivered.remove(tid)) return;
       if (!_senders.containsKey(tid)) return; // 그 사이에 취소됨/폐기됨
       bleLogSink?.call(
         'FT fast lane unavailable → BLE fallback: ${sender.meta.name}',
@@ -939,8 +965,29 @@ class MeshNode {
       _events.add(FileDeferred(tid, dst, sender.meta.name, hops));
       return;
     }
-    _streaming.add(tid);
-    await _streamChunks(sender, dst, kex);
+    // BLE 낙하도 직렬화: 한 링크에 대용량 청킹이 병렬로 흐르면 서로의
+    // 대역을 잡아먹고 전부 타임아웃난다(2026-07-20 11:17: 9파일 병렬 → 전멸).
+    // 대기 중에는 조바심 ACK 재전송을 금지하고(_fastQueued) 워치독을 계속
+    // 먹여준다. 수신자의 첫-바이트 대기 상한(5분)이 대기 시간의 상한이다.
+    _fastQueued.add(tid);
+    final bleFeeder = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (_senders.containsKey(tid)) _armSenderWatchdog(tid, sender.meta.name);
+    });
+    final gate = Completer<void>();
+    final prevBle = _bleStreamChain;
+    _bleStreamChain = gate.future;
+    try {
+      await prevBle.catchError((_) {});
+      if (_batchDelivered.remove(tid)) return; // 대기 중 배치로 전송됨
+      if (!_senders.containsKey(tid)) return; // 취소/폐기됨
+      _fastQueued.remove(tid);
+      _streaming.add(tid);
+      await _streamChunks(sender, dst, kex);
+    } finally {
+      if (!gate.isCompleted) gate.complete();
+      bleFeeder.cancel();
+      _fastQueued.remove(tid);
+    }
   }
 
   /// 전송 측 fast path: BLE로 offer하고, ACCEPT를 기다리고, Wi-Fi로 연결한 뒤,
@@ -955,15 +1002,12 @@ class MeshNode {
     // 대기열에서 기다리는 사이 취소/타임아웃됐을 수 있다 — 죽은 전송이
     // fast lane을 점유하지 않게 한다.
     if (!_senders.containsKey(tid)) return false;
-    final now = DateTime.now();
-    final coolUntil = _fastLaneCooldownUntil[dst.hex];
-    if (coolUntil != null && now.isBefore(coolUntil)) {
-      bleLogSink?.call(
-        'FT fast skip (cooldown '
-        '${coolUntil.difference(now).inSeconds}s): '
-        '${sender.meta.name}',
-      );
-      return false;
+    if (_batchDelivered.remove(tid)) return true; // 앞 파일의 세션에 편승 완료
+    // 이 파일은 이제 락 소유자다 — 배치 후보 목록에서 자신을 뺀다.
+    _fastBatchCandidates[dst.hex]?.remove(tid);
+    bool cooled(FastLaneKind k) {
+      final until = _fastLaneCooldownUntil['${dst.hex}/${k.name}'];
+      return until != null && DateTime.now().isBefore(until);
     }
     // 협상 → 연결. 선택된 수단의 연결이 실패하면 그 수단을 제외하고 한 번 더
     // 오퍼한다 — 예: multipeer가 라디오 혼잡으로 죽어도 같은 Wi-Fi의
@@ -973,8 +1017,15 @@ class MeshNode {
     FastLaneSession? session;
     _FastAccept? accept;
     for (var attempt = 0; attempt < 2 && session == null; attempt++) {
-      final caps = fastLane!.capabilities.difference(excluded);
-      if (caps.isEmpty) break;
+      final caps = fastLane!.capabilities
+          .difference(excluded)
+          .where((k) => !cooled(k))
+          .toSet();
+      if (caps.isEmpty) {
+        bleLogSink?.call('FT fast skip (all kinds cooling): '
+            '${sender.meta.name}');
+        break;
+      }
       // Offer 페이로드: transferId(16) + capsBitmask(1) + flags(1).
       // flags bit0: lanSocket tid 프리앰블 지원 — 구버전 수신자는 여분
       // 바이트를 무시한다.
@@ -1018,20 +1069,21 @@ class MeshNode {
           : await fastLane!.connect(tid, accept.offer);
       if (session == null) {
         excluded.add(accept.offer.kind);
+        // 실패한 그 수단만 식힌다 — 다른 수단·다른 파일의 시도는 막지 않는다.
+        _fastLaneCooldownUntil['${dst.hex}/${accept.offer.kind.name}'] =
+            DateTime.now().add(const Duration(seconds: 15));
         final remaining = fastLane!.capabilities.difference(excluded);
         bleLogSink?.call('FT fast connect null (${accept.offer.kind.name})'
             '${remaining.isEmpty ? ' → BLE' : ' → 남은 수단으로 재오퍼'}');
       }
     }
     if (session == null || accept == null) {
-      // 이 피어와의 연속 실패 패턴을 짧게 차단(다른 피어는 영향 없음).
-      _fastLaneCooldownUntil[dst.hex] =
-          DateTime.now().add(const Duration(seconds: 15));
       return false;
     }
     final acc = accept; // non-null 프로모션
     try {
-      _fastLaneCooldownUntil.remove(dst.hex); // 성공 → 쿨다운 해제
+      _fastLaneCooldownUntil
+          .remove('${dst.hex}/${acc.offer.kind.name}'); // 성공 → 쿨다운 해제
       _fastActive.add(tid);
       // idle 워치독 급식은 [_deliverFile]의 feeder가 대기열~스트림 전 구간을
       // 덮는다.
@@ -1067,6 +1119,11 @@ class MeshNode {
           }
         }
         await session.add(_u32be(0)); // 종료 마커
+        if (acc.batch) {
+          // 같은 상대에게 줄 서 있는 파일들을 이 세션으로 이어 보낸다 —
+          // 연속 협상이 사라져 multipeer 잔상 광고 실패의 근원이 차단된다.
+          await _streamBatchTail(session, dst, kex);
+        }
       } else {
         // 레거시 수신자(ACCEPT에 flags 없음): 파일 전체를 하나의 암호화된
         // 길이 접두 blob으로 보낸다 — 구버전 호환 경로.
@@ -1104,6 +1161,56 @@ class MeshNode {
       // 락 체인 정지 진단용 경계 마커: 이 줄이 없고 'send done'만 있으면
       // close 경로 어딘가에 매달린 것이다.
       bleLogSink?.call('FT fast session closed: ${sender.meta.name}');
+    }
+  }
+
+  /// 같은 상대에게 fast-lane 차례를 기다리는 세그먼트-지원 파일들을 방금 쓴
+  /// 세션으로 이어 스트리밍한다. 각 파일: [연속 매직][tid 16B][세그먼트
+  /// 스트림]. 개별 완료 ACK는 기존대로 BLE로 도착해 각 sender를 은퇴시킨다.
+  /// 여기서의 실패는 앞서 성공한 파일들에 영향을 주지 않는다 — 남은 파일은
+  /// 각자의 차례에서 새로 협상한다.
+  Future<void> _streamBatchTail(
+      FastLaneSession session, PeerId dst, Uint8List kex) async {
+    while (true) {
+      final list = _fastBatchCandidates[dst.hex];
+      if (list == null || list.isEmpty) return;
+      final tid = list.removeAt(0);
+      final sender = _senders[tid];
+      if (sender == null || !_fastQueued.contains(tid)) continue; // 취소됨
+      bleLogSink?.call('FT batch: ${sender.meta.name} on same session');
+      _fastActive.add(tid);
+      try {
+        _events.add(TransferLane(tid, 'wifi'));
+        await session.add(_u32be(fastLaneMagicNext));
+        await session.add(sender.meta.transferId);
+        await session.add(_u32be(fastLaneMagicSegmented));
+        final size = sender.meta.fileSize;
+        var lastPct = 0;
+        for (var off = 0; off < size; off += fastLaneSegmentBytes) {
+          final len = min(fastLaneSegmentBytes, size - off);
+          final cipher =
+              await crypto.encrypt(await sender.readRange(off, len), kex);
+          await session.add(_u32be(cipher.length));
+          await session.add(cipher);
+          final sentBytes = min(off + fastLaneSegmentBytes, size);
+          final pct = (sentBytes * 100) ~/ size;
+          if (pct >= lastPct + 5 && sentBytes < size) {
+            lastPct = pct;
+            _events.add(FileProgress(tid, sentBytes / size, true));
+          }
+        }
+        await session.add(_u32be(0));
+        _batchDelivered.add(tid);
+        bleLogSink?.call('FT batch send done: ${sender.meta.name} '
+            '(${sender.meta.fileSize}B)');
+        _events.add(FileProgress(tid, 1.0, true));
+      } catch (e) {
+        // 세션이 중간에 죽음: 이 파일과 나머지는 각자의 차례에서 재협상한다.
+        bleLogSink?.call('FT batch error: $e — remaining files renegotiate');
+        return;
+      } finally {
+        _fastActive.remove(tid);
+      }
     }
   }
 
@@ -1834,7 +1941,7 @@ class MeshNode {
     accept[16] = chosen.code;
     ByteData.view(accept.buffer).setUint16(17, blob.length, Endian.big);
     accept.setRange(19, 19 + blob.length, blob);
-    accept[19 + blob.length] = 0x01 | (armedPreamble ? 0x02 : 0);
+    accept[19 + blob.length] = 0x01 | (armedPreamble ? 0x02 : 0) | 0x04;
     await _dispatch(
       router.originate(
         type: FrameType.fileFastAccept,
@@ -1902,13 +2009,13 @@ class MeshNode {
 
       // 완료 공통 경로: manifest 해시 검증(finalize) 후 서명된 "complete" ACK로
       // 전송 측을 멈추고 그쪽 말풍선을 전달됨으로 바꾼다(BLE 경로 재사용).
-      Future<void> completeReceive(FileReceiver receiver) async {
+      Future<void> completeReceive(FileReceiver receiver, String tidHex) async {
         final path = await receiver.finalize();
         bleLogSink?.call('FT fast recv complete: ${receiver.meta.name}');
-        _events.add(FileProgress(tid, 1.0, false));
+        _events.add(FileProgress(tidHex, 1.0, false));
         _events.add(FileReceived(from, receiver.meta, path));
-        _completeReceiver(tid);
-        _rememberCompleted(tid);
+        _completeReceiver(tidHex);
+        _rememberCompleted(tidHex);
         final completeAck = receiver.buildAck();
         await _sendFileAck(from, completeAck);
         _repeatCompletionAck(from, completeAck);
@@ -1918,11 +2025,55 @@ class MeshNode {
       int? need; // 다음에 기대하는 바이트 수(레거시: 전체, 세그먼트: 하나)
       var plainOff = 0; // 세그먼트 모드: 지금까지 기록한 평문 오프셋
       var lastPct = 0;
+      var curTid = tid; // 배치 연속 시 현재 스트리밍 중인 전송
+      // 배치 연속 하위 상태: 0=일반, 1=종료 마커 뒤 u32 대기(EOF or 연속 매직),
+      // 2=다음 tid(16B) 대기, 3=다음 파일의 세그먼트 매직 대기.
+      var nextState = 0;
       await for (final part in session.incoming) {
         q.add(part);
         qLen += part.length;
-        _rxLastChunk[tid] = DateTime.now(); // idle 감시 타이머에 먹여준다
+        _rxLastChunk[curTid] = DateTime.now(); // idle 감시 타이머에 먹여준다
         while (true) {
+          if (nextState == 1) {
+            // 앞 파일 완료 — 같은 세션으로 다음 파일이 이어질 수 있다.
+            if (qLen < 4) break;
+            final v = u32(take(4));
+            if (v != fastLaneMagicNext) {
+              bleLogSink?.call('FT fast recv: unexpected trailer — closing');
+              return;
+            }
+            nextState = 2;
+            continue;
+          }
+          if (nextState == 2) {
+            if (qLen < 16) break;
+            final nextTid = MsgId.hex(take(16));
+            final receiver = _receivers[nextTid];
+            if (receiver == null) {
+              // META가 아직 없거나 이미 완료된 전송 — 이 세션으로는 더
+              // 진행할 수 없다. 남은 파일은 각자의 협상으로 온다.
+              bleLogSink?.call('FT batch recv: no receiver for $nextTid');
+              return;
+            }
+            curTid = nextTid;
+            _fastActive.add(curTid);
+            _events.add(TransferLane(curTid, 'wifi'));
+            bleLogSink?.call('FT batch recv: ${receiver.meta.name}');
+            nextState = 3;
+            continue;
+          }
+          if (nextState == 3) {
+            if (qLen < 4) break;
+            if (u32(take(4)) != fastLaneMagicSegmented) {
+              bleLogSink?.call('FT batch recv: bad segment magic — closing');
+              return;
+            }
+            plainOff = 0;
+            lastPct = 0;
+            need = null;
+            nextState = 0;
+            continue;
+          }
           if (segmented == null) {
             if (qLen < 4) break;
             final v = u32(take(4));
@@ -1942,19 +2093,24 @@ class MeshNode {
               if (need == 0) {
                 // 종료 마커 — 모든 세그먼트가 부분 파일에 기록됐다.
                 // BLE 청크가 이미 finalize로 몰고 갔다면 건너뛴다(이중 방지).
-                final receiver = _receivers[tid];
-                if (receiver == null || !_finalizing.add(tid)) return;
+                final receiver = _receivers[curTid];
+                if (receiver == null || !_finalizing.add(curTid)) return;
                 try {
                   if (plainOff != receiver.meta.fileSize) {
                     throw StateError('segmented size mismatch: '
                         '$plainOff != ${receiver.meta.fileSize}');
                   }
                   receiver.sealSeeded();
-                  await completeReceive(receiver);
+                  await completeReceive(receiver, curTid);
                 } finally {
-                  _finalizing.remove(tid);
+                  _finalizing.remove(curTid);
+                  _fastActive.remove(curTid);
                 }
-                return;
+                // 반환하지 않는다 — 배치 연속(다음 파일)이 이어질 수 있다.
+                // 송신자가 끝냈다면 스트림 EOF로 루프가 자연 종료된다.
+                need = null;
+                nextState = 1;
+                continue;
               }
               continue;
             }
@@ -1963,15 +2119,15 @@ class MeshNode {
             need = null;
             final plain = await crypto.decrypt(segCipher, kex);
             // decrypt를 기다리는 동안 BLE 경로가 완주했을 수 있다 — 재확인.
-            final receiver = _receivers[tid];
+            final receiver = _receivers[curTid];
             if (receiver == null) return;
             receiver.seedSegment(plainOff, plain);
             plainOff += plain.length;
             final pct = (plainOff * 100) ~/ receiver.meta.fileSize;
             if (pct >= lastPct + 5 && plainOff < receiver.meta.fileSize) {
               lastPct = pct;
-              _events.add(
-                  FileProgress(tid, plainOff / receiver.meta.fileSize, false));
+              _events.add(FileProgress(
+                  curTid, plainOff / receiver.meta.fileSize, false));
             }
             continue;
           }
@@ -1983,7 +2139,7 @@ class MeshNode {
           try {
             final bytes = await crypto.decrypt(cipher, kex);
             receiver.seedAssembled(bytes);
-            await completeReceive(receiver);
+            await completeReceive(receiver, tid);
           } finally {
             _finalizing.remove(tid);
           }
@@ -2303,6 +2459,10 @@ class _FastAccept {
   _FastAccept(this.offer, [this.flags = 0]);
 
   bool get segmented => flags & 0x01 != 0;
+
+  /// 수신자가 배치 연속([MeshNode.fastLaneMagicNext])을 이해한다 — 같은
+  /// 세션으로 여러 파일을 이어 보낼 수 있다.
+  bool get batch => flags & 0x04 != 0;
 
   /// 수신자가 lanSocket tid 프리앰블 검증을 무장했다 — 첫 16바이트로
   /// transferId를 보내야 세션으로 인정받는다.
