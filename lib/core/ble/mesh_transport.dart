@@ -855,24 +855,28 @@ class MeshTransport implements MeshTransportInterface {
     } catch (_) {
       return; // 이 링크에서 framing하기엔 프레임이 너무 큼
     }
+    // withResponse flush는 '버스트'(여러 패킷으로 쪼개지는 파일 청크)에서만
+    // 필요하다: iOS가 큐가 차면 write-without-response를 조용히 버리므로,
+    // ATT 왕복으로 큐를 비워줘야 청크가 증발하지 않는다. 반면 단일 패킷
+    // 제어 프레임(ANNOUNCE·ACK·짧은 텍스트)은 버스트가 아니므로 flush가
+    // 불필요하다 — 그런데도 6번째마다 withResponse를 강제하면, 삼성 One UI의
+    // 백그라운드 GATT 서버가 그 ATT 응답을 10초 안에 못 줘 링크 전체가
+    // 절단되고 재연결 플랩 루프에 빠진다(2026-07-24 12:38~ 삼성 최신폰:
+    // C링크 39회 write-timeout 절단, ANNOUNCE 교환 불가 → "못 찾음").
+    // 그래서 단일 패킷 프레임은 언제나 withoutResponse로 보낸다.
+    final isBurst = packets.length > 1;
     for (final p in packets) {
       try {
         if (link.role == LinkRole.central) {
-          // iOS는 큐가 차면 write-without-response 패킷을 조용히 버린다
-          // (플러그인이 readiness를 확인하지 않고 즉시 완료 처리한다). 그래서
-          // 긴 파일 청크 폭주가 증발해버린다. 그래서 몇 패킷마다 한 번씩
-          // response를 받는(WITH response) write를 한다: ATT 왕복이 다음으로
-          // 넘어가기 전에 큐를 비워준다.
-          //
-          // 모든 write에 상한 필수: 반쯤 죽은 링크의 withResponse ATT 응답이
-          // 영영 안 오면 이 await가 무한 대기가 되고, broadcast를 기다리는
-          // 호출자(파일 META 디스패치 → sendFilePath → UI 전송 루프)까지
-          // 전부 얼어붙는다(2026-07-17 22:31 관찰: 파일 3의 META에서 정지,
-          // 파일 4·5는 시작조차 못 함). 타임아웃 = 죽은 링크로 판정하고
-          // teardown — 다음 발견/대기연결이 새 링크를 만든다.
-          link.txBurst++;
-          final flush = link.txBurst >= 6;
-          if (flush) link.txBurst = 0;
+          // 버스트일 때만 몇 패킷마다 response write로 큐를 비운다.
+          final bool flush;
+          if (isBurst) {
+            link.txBurst++;
+            flush = link.txBurst >= 6;
+            if (flush) link.txBurst = 0;
+          } else {
+            flush = false;
+          }
           await _central
               .writeCharacteristic(
                 link.peripheral!,
@@ -1774,20 +1778,47 @@ class MeshTransport implements MeshTransportInterface {
   /// iOS가 살려둔 반쯤 죽은 ACL로 재-dial이 즉시 "성공"하며 좀비가 재발했다.
   /// peripheral 링크는 기록 제거만으로 linkless self-heal(광고 재확립)이
   /// 다시 돌기 시작한다 — 좀비를 쥔 3분 동안 광고가 침묵하던 것의 수정.
+  /// 키별 최근 절단 시각들 — 플랩(짧은 시간 반복 절단) 감지용.
+  final Map<String, List<DateTime>> _cutHistory = {};
+  static const int _flapCutThreshold = 3;
+  static const Duration _flapWindow = Duration(seconds: 90);
+  static const Duration _flapRest = Duration(seconds: 60);
+
   void _cutLink(MeshLink link) {
     final peripheral =
         link.role == LinkRole.central ? link.peripheral : null;
+    final key = link.id.substring(2);
     _tearDown(link.id);
-    if (peripheral != null && _started) {
-      // ACL이 실제로 내려간 뒤에 재연결을 걸어야 새 dial이 죽은 경로를
-      // 재사용하지 않는다(disconnect 이벤트 핸들러와는 멱등이라 안전).
-      unawaited(_central
-          .disconnect(peripheral)
-          .then((_) {}, onError: (_) {})
-          .whenComplete(() {
-        if (_started && !_disposed) _pendingReconnect(peripheral);
-      }));
-    }
+    if (peripheral == null || !_started) return;
+
+    // 플랩 차단기: 같은 상대를 90초 안에 세 번 이상 잘랐다면, 즉시 재연결을
+    // 걸어봤자 또 잘린다(삼성 One UI의 느린 GATT 서버 = link up→write
+    // 타임아웃→절단→재연결 타이트 루프, 2026-07-24 관찰). 이때는 즉시
+    // 재연결을 재장전하지 않고 잠시 쉰다 — 상대는 자기 쪽 링크(우리 P:
+    // 방향)로 여전히 우리에게 닿고, 이후 정식 discovery가 백오프를 두고
+    // 다시 붙여준다. (gold의 반쯤 죽은 링크 1회성 복구는 임계 미만이라
+    // 그대로 즉시 재연결된다.)
+    final now = DateTime.now();
+    final hist = _cutHistory[key] ??= [];
+    hist.removeWhere((t) => now.difference(t) > _flapWindow);
+    hist.add(now);
+    final flapping = hist.length >= _flapCutThreshold;
+
+    unawaited(_central
+        .disconnect(peripheral)
+        .then((_) {}, onError: (_) {})
+        .whenComplete(() {
+      if (!_started || _disposed) return;
+      if (flapping) {
+        _log('BLE flap breaker: resting ${_flapRest.inSeconds}s on $key '
+            '(${hist.length} cuts/${_flapWindow.inSeconds}s)');
+        // dial 쿨다운을 미래로 밀어, discovery가 곧바로 다시 dial하지 못하게.
+        _lastDialAt[key] = now.add(_flapRest);
+        _cutHistory.remove(key); // 카운터 리셋 — 쉰 뒤 새로 판단
+      } else {
+        _pendingReconnect(peripheral);
+      }
+    }));
   }
 
   void _tearDown(String linkId) {
