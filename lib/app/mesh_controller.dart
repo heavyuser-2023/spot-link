@@ -226,7 +226,13 @@ class MeshController extends MeshFrontend
 
   /// 피어별 평활화된 신호 강도: 원시 BLE RSSI는 심하게 흔들리므로, 지수 이동
   /// 평균(EMA)으로 근접 UI가 떨리지 않게 한다.
+  /// 마지막으로 SpotLink 광고(또는 링크 RSSI)를 관측한 시각 — 웨이크 넛지의
+  /// "정말 근처에 친구가 있나" 증거로 쓴다. iOS에서 링크 0일 때의 샘플은
+  /// 곧 SpotLink 매칭 광고를 봤다는 뜻이다.
+  DateTime? _lastRssiAt;
+
   void _onRssi(RssiSample s) {
+    _lastRssiAt = DateTime.now();
     final peer = s.peer;
     if (peer == null) return; // 출처를 알 수 없는 측정값
     final hex = peer.hex;
@@ -520,6 +526,31 @@ class MeshController extends MeshFrontend
     if (resumed && started) unawaited(node.wakeUp());
   }
 
+  /// 웨이크 넛지의 친구 증거: 최근 비콘 리전 진입 또는 최근 SpotLink 광고
+  /// 관측. 이벤트 타임스탬프는 UTC(Z)로 기록된다.
+  Future<bool> _friendNearbyEvidence() async {
+    final rssi = _lastRssiAt;
+    if (rssi != null &&
+        DateTime.now().difference(rssi) < const Duration(seconds: 60)) {
+      return true;
+    }
+    try {
+      final now = DateTime.now().toUtc();
+      for (final e in await BeaconWake.wakeEvents()) {
+        if (!e.startsWith('beacon-enter')) continue; // 복원 웨이크는 증거 아님
+        final sp = e.lastIndexOf(' ');
+        if (sp < 0) continue;
+        final ts = DateTime.tryParse(e.substring(sp + 1));
+        if (ts != null && now.difference(ts) < const Duration(minutes: 3)) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    bleLogSink?.call('${DateTime.now().toIso8601String()} '
+        'wake nudge suppressed (no friend evidence)');
+    return false;
+  }
+
   /// 백그라운드에서 오프라인에 갇혀 있을 때 사용자가 앱을 열도록 넛지한다.
   /// [_presenceTimer]에서 10초마다 폴링하여, 한 번도 링크되지 않은 백그라운드
   /// 재기동과, 링크가 올라왔다가 나중에 끊긴 경우를 모두 다룬다(iOS 27은
@@ -537,6 +568,14 @@ class MeshController extends MeshFrontend
     final s = WidgetsBinding.instance.lifecycleState;
     final foreground = s == AppLifecycleState.resumed;
     if (foreground || !started || linkCount > 0) return;
+    // 친구 증거 게이트: "백그라운드 재기동 + 링크 없음"만으로는 친구가
+    // 근처라는 뜻이 아니다 — iOS 프리워밍·BLE 상태 복원도 같은 모양으로
+    // 앱을 깨운다(2026-07-24 09:07 오탐 3연발 관찰). 알림은 (a) 최근
+    // 몇 분 내 비콘 리전 진입(진짜 친구의 토치)으로 깨어났거나 (b) 최근
+    // 60초 안에 SpotLink 광고를 실제로 봤을 때만 보낸다. 증거는 쿨다운
+    // 스탬프를 태우기 전에 확인한다 — 증거가 늦게 도착하면 다음 10초
+    // 폴에서 넛지가 나간다.
+    if (!await _friendNearbyEvidence()) return;
     try {
       final dir = await getApplicationDocumentsDirectory();
       final stamp = File(p.join(dir.path, 'wake_nudge_at'));
@@ -550,7 +589,7 @@ class MeshController extends MeshFrontend
       return; // 영속화된 쿨다운 없음 → 알림 폭주 위험을 감수하지 않는다
     }
     bleLogSink?.call('${DateTime.now().toIso8601String()} wake nudge shown '
-        '(background relaunch, linkless 10s)');
+        '(background relaunch, linkless 10s, friend evidence ok)');
     await NotificationService.showMessage(
       conversationKey: 'wake-nudge',
       title: systemS.notifWakeNudgeTitle,
