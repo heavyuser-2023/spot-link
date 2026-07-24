@@ -1319,6 +1319,23 @@ class MeshNode {
       // 우리 자신을 소개하고 store-and-forward 저장소 목록(inventory)을 동기화한다.
       await _sendAnnounce(e.link.id);
       await _sendHave(e.link.id);
+      // peripheral 링크(상대가 우리에게 붙음): 상대가 우리 서비스 discovery
+      // 와 write handle 확보를 끝낼 때까지 announce를 몇 번 더 밀어 넣는다.
+      // 삼성 One UI 등 느린 GATT 클라이언트가 뒤늦게 준비를 마쳤을 때 우리를
+      // 인식하고 자기 announce로 답하게 해, 좀비로 오판돼 끊기기 전에 링크가
+      // 살아나게 한다(2026-07-24 삼성 무한 재연결 루프 대응). 링크가 이미
+      // 죽었으면 sendToLink가 no-op이라 안전하다.
+      if (e.link.role == LinkRole.peripheral) {
+        final linkId = e.link.id;
+        for (final secs in const [3, 8, 16, 24]) {
+          Timer(Duration(seconds: secs), () {
+            // 링크가 이미 사라졌거나 노드가 멈췄으면 sendToLink가 no-op이다.
+            unawaited(transport
+                .sendToLink(linkId, _announceFrame().encode())
+                .catchError((_) {}));
+          });
+        }
+      }
       // 새로 생긴 링크는 확인받지 못한 텍스트를 재시도하기에 가장 좋은 순간이다 —
       // 재전송 틱이나 HAVE/WANT 왕복을 기다리지 말고 지금 바로 새 파이프로 밀어
       // 넣는다. 수신자는 중복을 제거하며, 이것은 공짜 기회다: maxTextAttempts에

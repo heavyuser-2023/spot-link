@@ -1725,14 +1725,26 @@ class MeshTransport implements MeshTransportInterface {
     _log('BLE link up ${link.id} (${link.role.name})');
     _linkEvents.add(LinkEvent(link, true));
     // 신생 링크 좀비 워치독: 정상이면 상대 ANNOUNCE가 수 초 내 도착한다.
-    // link up 후 12초 동안 단 한 패킷도 안 왔다면 반쯤 죽은 ACL이다 —
+    // link up 후 이 창 동안 단 한 패킷도 안 왔다면 반쯤 죽은 ACL이다 —
     // 이런 링크는 write-without-response를 조용히 삼켜 아무 에러도 없이
     // 수 분간 "연결됨"으로 남는다(2026-07-18 19:23·07-19 09:46 heavy↔gold:
     // 앱 재시작으로만 복구되던 사건). 부기만 지우지 말고 물리 절단까지.
-    Timer(const Duration(seconds: 12), () {
+    //
+    // 역할별 창: central(우리가 dial → GATT 셋업까지 끝내고 link up)은
+    // 통신 준비가 이미 완료돼 12초 무수신이면 진짜 좀비다. peripheral(상대가
+    // 우리에게 붙음 — subscribe만 해도 link up)은 상대가 우리 128비트
+    // 서비스를 discover하고 TX write handle을 확보하기까지 더 걸린다. 특히
+    // 삼성 One UI는 이 준비가 12초를 넘겨, 12초 컷이 삼성이 준비를 끝내려는
+    // 찰나마다 끊고 삼성은 새 주소로 재연결 — 무한 재연결 루프가 됐다
+    // (2026-07-24 12:38 삼성 최신폰 관찰: 5분간 P링크 up→12초 컷 반복,
+    // 단 한 번도 안정화 못 함). 30초를 줘 상대의 느린 준비를 견딘다.
+    final window = link.role == LinkRole.central
+        ? const Duration(seconds: 12)
+        : const Duration(seconds: 30);
+    Timer(window, () {
       final l = _links[link.id];
       if (l == null || !identical(l, link) || l.rxPackets > 0) return;
-      _log('BLE link zombie (no rx 12s) — cutting ${link.id}');
+      _log('BLE link zombie (no rx ${window.inSeconds}s) — cutting ${link.id}');
       _cutLink(l);
     });
     // 능동 생존 확인(central 링크): 수동 12초를 기다리지 않고 INFO를 한 번
