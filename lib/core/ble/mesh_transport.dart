@@ -8,6 +8,7 @@ import 'package:flutter/services.dart' show MethodChannel;
 import '../model/peer_id.dart';
 import 'ble_constants.dart';
 import 'framing.dart';
+import 'radio_health.dart';
 import 'radio_profile.dart';
 
 /// BLE 진단 로깅: 디버그 빌드에서는 항상 켜져 있고, 릴리스에서는
@@ -137,6 +138,9 @@ abstract class MeshTransportInterface {
 
   /// 지금 무선이 사용 가능한(또는 불가능한) 이유.
   RadioStatus get radioStatus;
+
+  /// 링크가 없을 때 **왜 없는지**에 대한 판정. 로그·UI·자동복구의 공통 근거다.
+  RadioHealth get health;
 
   /// 무선이 사용 가능해지면(권한 허용 / 어댑터 전원 켜짐) true를, 더 이상
   /// 사용 불가능해지면 false를 내보낸다. 첫 start가 실패해도 재시도할 수
@@ -489,6 +493,35 @@ class MeshTransport implements MeshTransportInterface {
         _ => RadioStatus.unknown,
       };
 
+  /// [RadioHealth.searching]으로 볼 유예 — 이 안에서는 무선이 일하는 중이다.
+  static const Duration _searchingGrace = Duration(seconds: 45);
+
+  RadioHealth _lastHealth = RadioHealth.stopped;
+
+  @override
+  RadioHealth get health => RadioHealth.classify(
+        started: _started,
+        poweredOff: _central.state == BluetoothLowEnergyState.poweredOff,
+        unauthorized: _central.state == BluetoothLowEnergyState.unauthorized,
+        linkCount: _links.length,
+        sinceProgress: DateTime.now().difference(_lastRadioProgress),
+        flapping: _cutHistory.values.any((h) => h.length >= _flapCutThreshold),
+        searchingGrace: _searchingGrace,
+        agedAfter: _hardResetAfterSilence,
+      );
+
+  /// 상태가 바뀔 때만 로그를 남긴다 — 다음 사건에서 사람이 로그를 손으로
+  /// 해독하지 않고 "왜 못 찾았는지"를 바로 읽을 수 있게 하는 것이 목적이다.
+  void _logHealthTransition() {
+    final now = health;
+    if (now == _lastHealth) return;
+    _lastHealth = now;
+    _log('BLE health: ${now.name} '
+        '(links=${_links.length} '
+        'sinceProgress=${DateTime.now().difference(_lastRadioProgress).inSeconds}s '
+        'profile=${profile.name})');
+  }
+
   @override
   Stream<bool> get availabilityChanged => _central.stateChanged.map((e) {
         _log('BLE state changed: ${e.state}');
@@ -578,6 +611,7 @@ class MeshTransport implements MeshTransportInterface {
     // 멱등이다("already started"는 무해하다).
     _selfHealTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!_started) return;
+      _logHealthTransition();
       // 좀비 peripheral 링크: 어떤 스택도 모든 곳에서 신뢰할 만한 "central
       // 이 떠남" 콜백을 쏘지 않으며, 죽은 P-링크는 UI에 거짓말을 하는 동시에
       // 새로 들어오는 연결에 대해 GATT 서버를 막아버릴 수 있다(삼성에서
@@ -687,8 +721,11 @@ class MeshTransport implements MeshTransportInterface {
   /// 것은 네이티브 핸들이었을 뿐이다).
   Future<void> _maybeHardResetCentral() async {
     if (_hardResetting || _disposed || !_started) return;
+    // 판정을 단일 근거로 쓴다: 자체 복구가 필요한 상태(stackAged)에서만 돈다.
+    // 링크 플랩(상대 스택 문제)이나 quiet(주변에 아무도 없음)에서 우리 스택을
+    // 재초기화하는 것은 오진이다 — 판정 로직이 그 구분을 보증한다.
+    if (!health.needsSelfRepair) return;
     final now = DateTime.now();
-    if (now.difference(_lastRadioProgress) < _hardResetAfterSilence) return;
     final last = _lastHardReset;
     if (last != null && now.difference(last) < _hardResetMinGap) return;
     _hardResetting = true;
@@ -1814,6 +1851,7 @@ class MeshTransport implements MeshTransportInterface {
     if (_disposed) return;
     _lastRadioProgress = DateTime.now();
     _log('BLE link up ${link.id} (${link.role.name})');
+    _logHealthTransition();
     _linkEvents.add(LinkEvent(link, true));
     // 신생 링크 좀비 워치독: 정상이면 상대 ANNOUNCE가 수 초 내 도착한다.
     // link up 후 이 창 동안 단 한 패킷도 안 왔다면 반쯤 죽은 ACL이다 —

@@ -534,6 +534,11 @@ class MeshController extends MeshFrontend
   /// 웨이크 넛지의 친구 증거: 최근 비콘 리전 진입 또는 최근 SpotLink 광고
   /// 관측. 이벤트 타임스탬프는 UTC(Z)로 기록된다.
   Future<bool> _friendNearbyEvidence() async {
+    // 1순위: 무선 판정. quiet/stackAged는 '상대 신호를 본 적 없음'이므로
+    // 이 상태로 알림을 보내면 오탐이다([RadioHealth.hasPeerEvidence]).
+    // 판정 자체가 최근 발견·링크 진전을 근거로 하므로 RSSI 관측과 겹치되,
+    // 프리워밍/복원 웨이크를 걸러내는 기준이 코드 한 곳에 모인다.
+    if (node.radioHealth.hasPeerEvidence) return true;
     final rssi = _lastRssiAt;
     if (rssi != null &&
         DateTime.now().difference(rssi) < const Duration(seconds: 60)) {

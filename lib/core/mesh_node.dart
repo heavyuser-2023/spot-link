@@ -6,6 +6,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'ble/mesh_transport.dart';
+import 'ble/radio_health.dart';
 import 'crypto/identity.dart';
 import 'crypto/session.dart';
 import 'model/announce.dart';
@@ -495,6 +496,10 @@ class MeshNode {
 
   /// 직접 이웃들의 신호 강도 측정값(근접 UI용).
   Stream<RssiSample> get rssiSamples => transport.rssiSamples;
+
+  /// 링크가 없을 때 **왜 없는지**에 대한 판정. 앱 계층이 알림·배너·자동복구
+  /// 결정에 쓰는 공통 근거다([RadioHealth] 참고).
+  RadioHealth get radioHealth => transport.health;
 
   /// 연락처를 등록하여 ANNOUNCE 이전에도 그들에게 암호화하고 그들로부터 복호화할
   /// 수 있게 한다(예: QR 스캔으로 추가).

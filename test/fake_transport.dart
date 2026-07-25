@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:spot_link/core/ble/framing.dart';
 import 'package:spot_link/core/ble/mesh_transport.dart';
+import 'package:spot_link/core/ble/radio_health.dart';
 import 'package:spot_link/core/model/peer_id.dart';
 
 /// An in-memory radio that connects several [FakeTransport]s in an arbitrary
@@ -103,6 +104,10 @@ class FakeTransport implements MeshTransportInterface {
   @override
   RadioStatus get radioStatus =>
       ready ? RadioStatus.ready : RadioStatus.unknown;
+
+  @override
+  RadioHealth get health =>
+      linkCount > 0 ? RadioHealth.linked : RadioHealth.searching;
 
   @override
   Future<bool> ensureReady() async => ready;
