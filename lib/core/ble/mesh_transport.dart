@@ -248,6 +248,15 @@ class MeshTransport implements MeshTransportInterface {
   final Map<String, int> _rssiFails = {};
   static const int _staleRssiFailures = 3;
 
+  /// 우리 RX 특성을 구독한 원격 central들(UUID). **링크 객체보다 오래 산다**:
+  /// P-링크는 전송 타임아웃 등으로 부기가 버려질 수 있는데, 그때 상대의 GATT
+  /// 연결과 구독은 그대로 살아 있다. 예전에는 새 링크 객체가 구독 상태를
+  /// false로 시작해 우리 notify가 **로그도 에러도 없이 영구히 버려졌다** —
+  /// 상대→우리 방향만 살아 있는 반쪽 링크가 되어 "보이는데 메시지가 안 가는"
+  /// 증상이 났다(2026-07-25 19:54 heavy↔gold: 전송 타임아웃으로 P-링크 교체
+  /// 후 2시간 동안 heavy→gold 무음).
+  final Set<String> _subscribedCentrals = {};
+
   /// 최근에 링크된 피어의 peripheral 식별자들로, 가장 최근 것이 뒤에 온다.
   /// [knownPeersLoad]/[knownPeersSave]로 영속화되어, 새로 실행되는 경우(iOS의
   /// 상태 복원 재실행 포함) scan 없이도 알려진 모든 피어에 대한 pending
@@ -1008,7 +1017,15 @@ class MeshTransport implements MeshTransportInterface {
               )
               .timeout(const Duration(seconds: 10));
         } else {
-          if (!link.centralSubscribed || _localRx == null) return;
+          if (!link.centralSubscribed || _localRx == null) {
+            // 절대 조용히 버리지 않는다: 이 링크로는 내보낼 수 없다는 뜻이고,
+            // 그대로 두면 "연결됨"으로 보이면서 우리 메시지만 사라진다.
+            // 부기를 지워 상대가 재연결·재구독하게 만든다.
+            _log('BLE send skipped on ${link.id} '
+                '(central not subscribed) — dropping half-open link');
+            _tearDown(link.id);
+            return;
+          }
           await _peripheral
               .notifyCharacteristic(
                 link.central!,
@@ -1173,6 +1190,12 @@ class MeshTransport implements MeshTransportInterface {
       // 첫 접촉 시 링크를 생성하고 link-up을 내보낸다(see _peripheralLinkFor).
       final link = _peripheralLinkFor(e.central);
       link.centralSubscribed = e.state;
+      final key = e.central.uuid.toString();
+      if (e.state) {
+        _subscribedCentrals.add(key);
+      } else {
+        _subscribedCentrals.remove(key);
+      }
       if (e.state) {
         // notification 하나당 얼마나 밀어넣을 수 있는지 알아내, peripheral
         // 역할 링크가 작은 기본 패킷 크기에 갇혀 있지 않게 한다.
@@ -1212,7 +1235,10 @@ class MeshTransport implements MeshTransportInterface {
     // 바로 이 연결을 허물어버리는 것을 막는다("central이 붙어 있는데도 우리는
     // 링크가 없다고 여기는" 루프로, iPhone↔Android를 단방향으로 만들었던
     // 원인이다).
-    final link = MeshLink(id: id, role: LinkRole.peripheral, central: central);
+    final link = MeshLink(id: id, role: LinkRole.peripheral, central: central)
+      // 이 central이 이미 구독 중이라면 그 사실을 물려받는다 — 링크 객체가
+      // 교체돼도 상대는 재구독하지 않는다([_subscribedCentrals] 참고).
+      ..centralSubscribed = _subscribedCentrals.contains(central.uuid.toString());
     _links[id] = link;
     _emitUp(link);
     return link;

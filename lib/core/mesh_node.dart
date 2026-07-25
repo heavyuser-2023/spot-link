@@ -790,6 +790,11 @@ class MeshNode {
       ttl: durableTtl,
     );
     _awaitingAck[frame.msgIdHex] = _PendingText(frame);
+    // 전송 시도를 로그에 남긴다: "메시지가 안 간다"는 신고에 예전에는 로그가
+    // 한 줄도 없어(전송 경로가 조용했다) 시도조차 했는지 알 수 없었다.
+    // 링크 수를 함께 찍어 '내보낼 길이 있었는가'를 즉시 판별한다.
+    bleLogSink?.call('MSG send ${frame.msgIdHex.substring(0, 8)} '
+        '→ ${dst.short} (links=${transport.linkCount})');
     await _dispatch(frame);
     return frame.msgIdHex;
   }
