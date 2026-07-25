@@ -11,6 +11,7 @@ import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../core/ble/radio_profile.dart';
 import '../core/ble/mesh_transport.dart'
     show
         RadioStatus,
@@ -153,6 +154,10 @@ class MeshController extends MeshFrontend
   /// 블루투스를 켜거나 권한을 부여하면 앱을 재시작하기 전까지 오래된 "블루투스
   /// 꺼짐" 배너에 머무르게 된다. 느린 틱마다 시작을 재시도하면 재시작 없이 두
   /// 경우 모두 복구한다.
+  /// 이 플랫폼의 무선/웨이크 정책([RadioProfile]) — 앱 계층의 OS별 결정도
+  /// 전부 이 객체를 거친다. 새 플랫폼은 프로파일 한 줄로 편입된다.
+  final RadioProfile profile = RadioProfile.forCurrentPlatform();
+
   Timer? _startRetryTimer;
 
   /// 멀티홉 BLE 예산 초과로 보류된 발신 파일(peerHex → msgId들). 상대가
@@ -443,14 +448,14 @@ class MeshController extends MeshFrontend
       _maybeBeaconPulse();
       // 부팅 시에만 하지 않고 폴링하여, 한 번도 링크되지 않은 wake뿐 아니라
       // 나중에 끊겨 다시 맺지 못한 링크까지 넛지가 다루도록 한다.
-      if (Platform.isIOS && !headless) {
+      if (profile.reconcilesForegroundMode && !headless) {
         _reconcileForegroundMode();
         unawaited(_maybeWakeNudge());
       }
       notifyListeners();
     });
     // 적응형 BLE 전력(Android 전용). 지금 한 번, 그리고 느린 틱마다 평가한다.
-    if (Platform.isAndroid) {
+    if (profile.usesAdaptivePower) {
       unawaited(_evaluateAdaptivePower());
       _adaptiveTimer = Timer.periodic(
           _adaptiveInterval, (_) => unawaited(_evaluateAdaptivePower()));
@@ -460,7 +465,7 @@ class MeshController extends MeshFrontend
 
   /// [_battery] 참고. Android 전용; 수동 절약 토글이 켜져 있으면 no-op이다.
   Future<void> _evaluateAdaptivePower() async {
-    if (!Platform.isAndroid || powerSaver) return;
+    if (!profile.usesAdaptivePower || powerSaver) return;
     try {
       final state = await _battery.batteryState;
       final charging = state == BatteryState.charging ||
@@ -603,7 +608,7 @@ class MeshController extends MeshFrontend
   /// (2026-07-17 사례: 16:34 링크 다운 후 17분 단절 — 쿨다운이 남아 있으면
   /// 정작 재발견이 막힌 구간에 잠금화면 구제가 침묵한다).
   Future<void> _relaxWakeNudgeCooldown() async {
-    if (!Platform.isIOS || headless) return;
+    if (!profile.supportsBeaconWake || headless) return;
     try {
       final dir = await getApplicationDocumentsDirectory();
       final stamp = File(p.join(dir.path, 'wake_nudge_at'));
@@ -626,7 +631,12 @@ class MeshController extends MeshFrontend
   /// (2) 연타가 펄스를 연쇄시켜 로테이션 웨이크를 계속 침묵시키지 않도록
   /// [_manualPulseCooldown] 안에 한 번만.
   void _maybeBeaconPulse({bool force = false}) {
-    if (!Platform.isIOS || headless || !_foreground || _beaconPulsing) return;
+    if (!profile.supportsBeaconWake ||
+        headless ||
+        !_foreground ||
+        _beaconPulsing) {
+      return;
+    }
     final since = _linklessSince;
     if (since == null || linkCount > 0) return;
     if (force) {
@@ -681,7 +691,7 @@ class MeshController extends MeshFrontend
         _startRetryTimer = null;
         // iOS/macOS 스캔 모드는 앱의 현재 foreground 상태를 따른다.
         node.setForeground(_foreground);
-        if (Platform.isAndroid) unawaited(_evaluateAdaptivePower());
+        if (profile.usesAdaptivePower) unawaited(_evaluateAdaptivePower());
         notifyListeners();
       }
     } finally {
@@ -847,7 +857,7 @@ class MeshController extends MeshFrontend
         if (hadLinks && count == 0) unawaited(_relaxWakeNudgeCooldown());
         // 토폴로지 변화는 빠른 (재)합류를 위해 잠깐의 low-latency 버스트를 얻는다.
         _lastTopoChange = DateTime.now();
-        if (Platform.isAndroid) unawaited(_evaluateAdaptivePower());
+        if (profile.usesAdaptivePower) unawaited(_evaluateAdaptivePower());
         BackgroundService.updateStatus(count);
         notifyListeners();
       case PeerAnnounced(:final contact, :final hops, :final via, :final avatar):
@@ -1181,7 +1191,7 @@ class MeshController extends MeshFrontend
     // 연쇄 방지) — 스와이프킬로 우리 리전 안에 갇힌 상대는 스캔·대기연결로는
     // 절대 못 구하고 EXIT+ENTER만이 깨울 수 있다.
     _maybeBeaconPulse(force: true);
-    if (Platform.isAndroid) {
+    if (profile.supportsScanPowerTuning) {
       // 60초 저지연 스캔 버스트: 적응형 전력의 "최근 토폴로지 변화" 창을
       // 재활용한다(수동 절약 토글이 켜져 있으면 그 하드 플로어가 이긴다).
       _lastTopoChange = DateTime.now();
@@ -1593,7 +1603,7 @@ class MeshController extends MeshFrontend
     // 업그레이드 프롬프트를 여전히 띄우지만, 사용자가 한 번 거부하면 iOS는 그
     // 호출을 무시한다 — 그때는 배너 + 설정 바로가기가 유일한 탈출구다.
     beaconNeedsAlways =
-        Platform.isIOS && beaconMonitoring && s['auth'] != 'always';
+        profile.supportsBeaconWake && beaconMonitoring && s['auth'] != 'always';
     // 모니터링은 기본값이 ON이지만(BeaconPlugin.swift 참고) "항상" 위치 권한이
     // 있어야만 동작한다 — 최초 실행 때 한 번 요청한다.
     // 비콘-웨이크 RX(리전 진입 시 종료된 앱을 재실행)는 authorizedAlways가
@@ -1602,7 +1612,7 @@ class MeshController extends MeshFrontend
     // whenInUse 상태에서 다시 요청하면 일회성 "항상 허용으로 변경?" 업그레이드
     // 프롬프트가 뜬다; 사용자가 거부하면 iOS는 이후 호출을 무시하므로, 반복해도
     // 무해하게 유지된다.
-    if (Platform.isIOS &&
+    if (profile.supportsBeaconWake &&
         beaconMonitoring &&
         (s['auth'] == 'notDetermined' || s['auth'] == 'whenInUse')) {
       await BeaconWake.requestAlways();

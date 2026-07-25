@@ -267,6 +267,52 @@ BLE 실효 처리량은 낮고(수 KB~수십 KB/s), 멀티홉이면 더 느림. 
 - Android/iOS가 같은 커스텀 GATT 서비스·프레이밍을 쓰면 상호 연결 가능.
 - MTU/쓰기 방식 차이 흡수 위해 Link Manager에서 플랫폼별 정규화.
 
+### 11.4 RadioProfile — 플랫폼 정책의 단일 지점 (구현됨)
+
+위 11.1~11.3의 대응책은 실기기 사건마다 하나씩 추가되면서 한때 전송·앱 계층
+**25곳의 `Platform.isX` 분기**로 흩어져 있었다. 그 결과 두 가지 구조적 문제가
+있었다:
+
+1. **macOS가 우연히 2등 시민이 됐다.** 모든 분기의 else로 떨어져 ① 필터 스캔만
+   돌았고(→ iOS 27 포그라운드 iPhone을 발견 못 함 — 상대가 dial해 주기만 기다림),
+   ② 식별자 기반 대기 연결과 ③ 스택 하드리셋도 받지 못했다. 같은 CoreBluetooth인데도.
+2. 새 플랫폼을 붙이려면 25곳을 전부 감사해야 했다.
+
+이제 모든 OS별 결정은 [`lib/core/ble/radio_profile.dart`](../lib/core/ble/radio_profile.dart)의
+**이름을 가진 정책 값**이고, 메커니즘(타이머·상태기계·복구 경로)은 전부 플랫폼
+중립이다. 전송·앱 계층의 `Platform.isX` 분기는 **0개**다.
+
+| 정책 | ios | android | darwin-desktop | generic(미지의 플랫폼) |
+|---|---|---|---|---|
+| `scanAlwaysUnfiltered` | – | ✓ | – | ✓ |
+| `alternatesScanWindows` | ✓ | – | ✓ | – |
+| `switchesScanModeOnForeground` | ✓ | – | ✓ | – |
+| `usesPendingConnect` | ✓ | – | ✓ | – |
+| `connectTimeout` | 무제한 | 20s | 무제한 | 20s |
+| `pausesScanWhileConnecting` | – | ✓ | – | – |
+| `probesAppleDevices` | – | ✓ | – | – |
+| `supportsScanPowerTuning` | – | ✓ | – | – |
+| `needsStackHardReset` | ✓ | – | ✓ | – |
+| `supportsBeaconWake` | ✓ | – | – | – |
+| `usesAdaptivePower` | – | ✓ | – | – |
+
+각 값의 **근거(어떤 실기기 사건에서 나왔는지)** 는 프로파일 파일의 doc 주석에
+붙어 있다 — 값과 이유가 분리되지 않게 하는 것이 이 설계의 핵심이다.
+
+#### 새 플랫폼 추가 체크리스트
+
+1. `RadioProfile`에 프로파일 상수를 추가하고 `forCurrentPlatform()`에 분기 한 줄
+   추가. **다른 파일은 건드리지 않는다.**
+2. 아무 값도 모르겠으면 그냥 `generic`을 쓴다 — 최적은 아니지만 **절대 침묵하지
+   않는다**(무필터 스캔 + 상한 있는 connect + OS 보장 전제 기능 전부 끔).
+3. 실기기에서 관찰하며 하나씩 켠다. 판정용 로그 시그니처:
+   - `BLE start: ... profile=<name>` — 어떤 정책으로 돌았는지
+   - `BLE scanning started (unfiltered|filtered)` — 스캔 모드 교대 확인
+   - `BLE discovered <id>` — 발견 경로가 살아 있는지
+   - `BLE hard reset: ...` — 세션 노화 자동복구가 돌았는지
+4. `test/radio_profile_test.dart`에 새 프로파일을 불변식 목록에 넣는다. 불변식이
+   모순 설정(예: 대기 연결도 없고 connect 상한도 없음 → dial 영구 정지)을 잡아준다.
+
 ---
 
 ## 12. 전력 관리

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
@@ -9,6 +8,7 @@ import 'package:flutter/services.dart' show MethodChannel;
 import '../model/peer_id.dart';
 import 'ble_constants.dart';
 import 'framing.dart';
+import 'radio_profile.dart';
 
 /// BLE 진단 로깅: 디버그 빌드에서는 항상 켜져 있고, 릴리스에서는
 /// `flutter build ios --release --dart-define=BLE_LOG=true` 로 켠다.
@@ -174,6 +174,11 @@ enum PowerMode {
 
 class MeshTransport implements MeshTransportInterface {
   final PeerId myShortId;
+
+  /// 이 플랫폼의 무선 정책. 모든 OS별 결정은 이 객체를 거치며, 아래 메커니즘
+  /// 들은 플랫폼 중립이다 — 새 플랫폼은 [RadioProfile]에 항목 하나만 추가하면
+  /// 된다. 테스트는 임의 프로파일을 주입해 정책 동작을 검증한다.
+  final RadioProfile profile;
 
   /// INFO characteristic으로 노출할 전체 공개 번들.
   final Uint8List infoValue;
@@ -416,7 +421,7 @@ class MeshTransport implements MeshTransportInterface {
   bool _servicePublished = false;
 
   void _scheduleReconnect(Peripheral peripheral, String key) {
-    if (!Platform.isIOS || _disposed || !_started) return;
+    if (!profile.usesPendingConnect || _disposed || !_started) return;
     final attempt = (_reconnectAttempts[key] ?? 0) + 1;
     _reconnectAttempts[key] = attempt;
     final delay = switch (attempt) {
@@ -447,7 +452,8 @@ class MeshTransport implements MeshTransportInterface {
     required this.myShortId,
     required this.infoValue,
     this.maxLinks = 8,
-  });
+    RadioProfile? profile,
+  }) : profile = profile ?? RadioProfile.forCurrentPlatform();
 
   @override
   Stream<InboundPacket> get inbound => _inbound.stream;
@@ -527,8 +533,10 @@ class MeshTransport implements MeshTransportInterface {
     _wireCentral();
     _wirePeripheral();
     _wireAdapterState();
+    // 프로파일 이름을 남긴다: 나중에 로그만 보고 '어떤 정책으로 돌았는지'를
+    // 알 수 있어야 플랫폼별 사건을 귀속할 수 있다.
     _log('BLE start: central=${_central.state} peripheral=${_peripheral.state} '
-        'me=${myShortId.short}');
+        'me=${myShortId.short} profile=${profile.name}');
     try {
       _bondedPeers.addAll(await bondedPeersLoad?.call() ?? const {});
       if (_bondedPeers.isNotEmpty) {
@@ -557,7 +565,7 @@ class MeshTransport implements MeshTransportInterface {
     // iOS: 이전에 링크했던 모든 피어에 대해서도 pending connect를 세워 둔다 —
     // 백그라운드 iPhone은 scan에는 보이지 않지만 식별자로 하는 connect로는
     // 도달 가능하고, 상태 복원 재실행 후에는 이것이 mesh를 다시 꿰매준다.
-    if (Platform.isIOS) {
+    if (profile.usesPendingConnect) {
       unawaited(_reconnectKnownPeers());
     }
     // 연결된 링크의 신호 세기를 폴링해, advertisement이 멈춘 뒤에도 UI가 각
@@ -623,7 +631,7 @@ class MeshTransport implements MeshTransportInterface {
       // 19.5시간 동안 발견 0건, 본딩 식별자 pending은 90초마다 만료 반복).
       // 네이티브 캐시(낡은 CBPeripheral 핸들 + 매달린 completion)를 비워
       // 프로세스 재시작 없이 같은 효과를 낸다.
-      if (Platform.isIOS) unawaited(_maybeHardResetCentral());
+      if (profile.needsStackHardReset) unawaited(_maybeHardResetCentral());
       final deep = _linklessTicks % 8 == 0;
       if (deep && _pendingKeys.isNotEmpty) {
         // 걸려 있는 pending들이 있는데도 몇 분간 링크 없음: 그것들은 죽은
@@ -642,7 +650,9 @@ class MeshTransport implements MeshTransportInterface {
         // 식별자로 돌아온다면(백그라운드, 같은 세션) 더 이상 그것을 기다리는
         // 게 아무것도 없었던 것이다.
         Timer(const Duration(seconds: 3), () {
-          if (_started && Platform.isIOS) unawaited(_reconnectKnownPeers());
+          if (_started && profile.usesPendingConnect) {
+            unawaited(_reconnectKnownPeers());
+          }
         });
       }
       if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
@@ -767,7 +777,7 @@ class MeshTransport implements MeshTransportInterface {
     _probeBackoff.clear();
     _lastDialAt.clear();
     wake();
-    if (Platform.isIOS) await _reconnectKnownPeers();
+    if (profile.usesPendingConnect) await _reconnectKnownPeers();
   }
 
   Future<void> _pollRssi() async {
@@ -1195,9 +1205,11 @@ class MeshTransport implements MeshTransportInterface {
       //   남긴다). 거기서 iPhone 피어를 실제로 찾아내는 것은 이름 매칭이다.
       // - iOS 백그라운드: unfiltered scan은 아무것도 전달하지 않으므로(OS
       //   규칙) UUID 필터가 필요하다 — [setForeground]가 모드를 바꿔준다.
-      final unfiltered = Platform.isAndroid ||
-          _diagUnfilteredScan ||
-          (Platform.isIOS && _foregroundScan && !_overflowPhase);
+      final unfiltered = profile.useUnfilteredScan(
+        foreground: _foregroundScan,
+        overflowPhase: _overflowPhase,
+        diagOverride: _diagUnfilteredScan,
+      );
       await _central.startDiscovery(
         serviceUUIDs: unfiltered ? null : [BleConstants.serviceUuid],
       );
@@ -1253,7 +1265,7 @@ class MeshTransport implements MeshTransportInterface {
   void setForeground(bool foreground) {
     if (_foregroundScan == foreground) return;
     _foregroundScan = foreground;
-    if (!_started || !Platform.isIOS) return;
+    if (!_started || !profile.switchesScanModeOnForeground) return;
     _scanModeTimer?.cancel();
     _scanModeTimer = null;
     _overflowPhase = false;
@@ -1313,7 +1325,7 @@ class MeshTransport implements MeshTransportInterface {
 
   /// Android BLE scan 모드를 설정하고 다시 scan해 적용한다(그 외에서는 no-op).
   Future<void> setScanMode(int code) async {
-    if (!Platform.isAndroid || _scanModeCode == code) return;
+    if (!profile.supportsScanPowerTuning || _scanModeCode == code) return;
     _scanModeCode = code;
     try {
       await _scanPowerChannel.invokeMethod('setScanMode', code);
@@ -1351,7 +1363,7 @@ class MeshTransport implements MeshTransportInterface {
     _scanModeTimer?.cancel();
     _scanModeTimer = null;
     _overflowPhase = false;
-    if (!Platform.isIOS || _diagUnfilteredScan) return;
+    if (!profile.alternatesScanWindows || _diagUnfilteredScan) return;
     if (!_started || !_foregroundScan || _powerMode != PowerMode.active) {
       return;
     }
@@ -1438,7 +1450,7 @@ class MeshTransport implements MeshTransportInterface {
   static const int _maxConcurrentProbes = 1;
 
   bool _isIosProbeCandidate(DiscoveredEventArgs e) {
-    if (!Platform.isAndroid) return false;
+    if (!profile.probesAppleDevices) return false;
     if (e.rssi < -70) return false; // 가까운 기기만 dial할 가치가 있다
     if (_activeProbes.length >= _maxConcurrentProbes) return false;
     final uuid = e.peripheral.uuid.toString();
@@ -1534,7 +1546,7 @@ class MeshTransport implements MeshTransportInterface {
   /// 경쟁하지 않게 한다; 피어가 다시 나타나면 언제든 완료된다 — 몇 분 뒤여도
   /// 괜찮다.
   void _pendingReconnect(Peripheral peripheral) {
-    if (!Platform.isIOS) return;
+    if (!profile.usesPendingConnect) return;
     if (_disposed || !_started) return;
     final key = peripheral.uuid.toString();
     if (_links.containsKey('C:$key') || _connecting.contains(key)) return;
@@ -1601,7 +1613,7 @@ class MeshTransport implements MeshTransportInterface {
     var connected = false; // _central.connect가 성공했는가?
     var serviceMissing = false; // 연결됐지만 SpotLink service가 없음
     if (probe) _activeProbes.add(key);
-    final pauseScan = Platform.isAndroid;
+    final pauseScan = profile.pausesScanWhileConnecting;
     try {
       // Android: connect 동안 scanning을 멈춰, 무선이 scan + connect로 갈라지지
       // 않게 한다(status 133). iOS는 계속 scan한다 — 그 pending reconnect는
@@ -1614,10 +1626,10 @@ class MeshTransport implements MeshTransportInterface {
         // 막힌 dial이 scan을 영원히 일시정지된 채로 붙들지 못하게 한다; iOS의
         // non-probe connect는 상한 없이 둔다(pending reconnect는 설계상 몇 분 뒤에
         // 완료된다).
-        if (probe) {
-          await _central.connect(peripheral).timeout(const Duration(seconds: 8));
-        } else if (Platform.isAndroid) {
-          await _central.connect(peripheral).timeout(const Duration(seconds: 20));
+        final connectBudget =
+            probe ? const Duration(seconds: 8) : profile.connectTimeout;
+        if (connectBudget != null) {
+          await _central.connect(peripheral).timeout(connectBudget);
         } else {
           await _central.connect(peripheral);
         }
@@ -1772,7 +1784,7 @@ class MeshTransport implements MeshTransportInterface {
   /// 무선 오류가 아니다. (이 파일이 flutter/services 의존성을 갖지 않도록
   /// 문자열로 매칭한다.)
   bool _isUnknownIdentifier(Object err) =>
-      Platform.isIOS && err.toString().contains('illegalArgument');
+      profile.isUnknownIdentifierError(err);
 
   PeerId? _shortIdFromAdvertisement(Advertisement adv) {
     for (final m in adv.manufacturerSpecificData) {
