@@ -36,6 +36,20 @@ final class CentralManagerImpl
     _initialize();
   }
 
+  /// SpotLink fork: hard-reset the native central stack without restarting the
+  /// process. Calls the same `initialize()` the constructor uses, which stops
+  /// scanning, cancels every peripheral connection and — decisively — clears
+  /// the cached CBPeripheral handles and all pending completion closures.
+  ///
+  /// Why this exists: after a long-lived session (~19h observed on iOS 27),
+  /// CoreBluetooth silently stopped both delivering scan results and
+  /// completing pending connects. The stale CBPeripheral handles kept being
+  /// dialed forever ("pending reconnect expired" every 90s) while a freshly
+  /// launched process linked to the very same peer in 4 seconds
+  /// (2026-07-25 13:09 heavy↔gold). Clearing the native caches restores the
+  /// stack in place, so users no longer have to force-quit the app.
+  Future<void> hardReset() => _api.initialize();
+
   @override
   BluetoothLowEnergyState get state => _state;
   @override

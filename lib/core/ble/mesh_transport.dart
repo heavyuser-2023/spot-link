@@ -222,6 +222,16 @@ class MeshTransport implements MeshTransportInterface {
   Timer? _selfHealTimer;
   int _linklessTicks = 0;
   int _linkedTicks = 0;
+
+  /// 마지막으로 무언가를 발견하거나 링크한 시각. CoreBluetooth가 조용히
+  /// 죽었는지 판정하는 유일한 관측 가능 신호다.
+  DateTime _lastRadioProgress = DateTime.now();
+
+  /// 하드리셋 중복 방지 + 최소 간격.
+  DateTime? _lastHardReset;
+  bool _hardResetting = false;
+  static const Duration _hardResetAfterSilence = Duration(minutes: 4);
+  static const Duration _hardResetMinGap = Duration(minutes: 10);
   static const Duration _rssiPollInterval = Duration(seconds: 5);
 
   /// central 링크별 연속 RSSI read 실패 횟수 — 좀비 링크 탐지기의 근거.
@@ -605,6 +615,15 @@ class MeshTransport implements MeshTransportInterface {
       // 타임아웃나게 만든다; removeAll+add로 스택에 새 것을 준다.
       // 가벼운 heal(advertise/scan 재가동)은 15초 tick마다; 더 무거운 GATT
       // republish는 약 2분마다만 해서 connect 중인 피어를 방해하지 않게 한다.
+      // 하드리셋 워치독: 링크도 발견도 몇 분간 전무하면 CoreBluetooth가
+      // 조용히 죽은 것이다(iOS 27, ~19시간 세션에서 관찰). 스캔 stop→start와
+      // GATT republish는 같은 네이티브 매니저 위에서 도는 것이라 이 상태를
+      // 치료하지 못했다 — 앱 강제 재시작만이 답이었다(2026-07-25 13:09:
+      // 재시작 4초 만에 gold와 링크, 밀린 메시지 18건 즉시 전달. 그전
+      // 19.5시간 동안 발견 0건, 본딩 식별자 pending은 90초마다 만료 반복).
+      // 네이티브 캐시(낡은 CBPeripheral 핸들 + 매달린 completion)를 비워
+      // 프로세스 재시작 없이 같은 효과를 낸다.
+      if (Platform.isIOS) unawaited(_maybeHardResetCentral());
       final deep = _linklessTicks % 8 == 0;
       if (deep && _pendingKeys.isNotEmpty) {
         // 걸려 있는 pending들이 있는데도 몇 분간 링크 없음: 그것들은 죽은
@@ -650,6 +669,60 @@ class MeshTransport implements MeshTransportInterface {
         _probeBackoff.clear();
       }
     });
+  }
+
+  /// [_hardResetAfterSilence] 동안 발견·링크가 전무하면 네이티브 central
+  /// 스택을 제자리에서 재초기화한다. 리셋 후에는 광고·스캔을 다시 세우고
+  /// 알려진 피어 대기 연결을 재장전한다(식별자는 그대로 유효하다 — 죽은
+  /// 것은 네이티브 핸들이었을 뿐이다).
+  Future<void> _maybeHardResetCentral() async {
+    if (_hardResetting || _disposed || !_started) return;
+    final now = DateTime.now();
+    if (now.difference(_lastRadioProgress) < _hardResetAfterSilence) return;
+    final last = _lastHardReset;
+    if (last != null && now.difference(last) < _hardResetMinGap) return;
+    _hardResetting = true;
+    _lastHardReset = now;
+    try {
+      _log('BLE hard reset: no discovery/link for '
+          '${now.difference(_lastRadioProgress).inSeconds}s — '
+          're-initialising native central');
+      // 우리 쪽 부기부터 비운다: 네이티브가 모든 연결을 취소하므로 남겨두면
+      // 유령 링크가 된다.
+      for (final id in _links.keys.toList()) {
+        _tearDown(id);
+      }
+      _connecting.clear();
+      _pendingKeys.clear();
+      _pendingPeripherals.clear();
+      for (final t in _pendingTimers.values) {
+        t.cancel();
+      }
+      _pendingTimers.clear();
+      _lastDialAt.clear();
+      _probeMisses.clear();
+      _probeBackoff.clear();
+      _scanning = false; // 네이티브가 스캔을 멈췄다
+      try {
+        await (_central as dynamic).hardReset();
+      } on NoSuchMethodError {
+        _log('BLE hard reset unsupported on this platform impl');
+        return;
+      }
+      // 스캔·광고를 새로 세우고 알려진 피어를 다시 겨냥한다.
+      await _startScanning();
+      _beginScanModeCycle();
+      if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
+        await _startAdvertising(restart: true);
+      }
+      await _reconnectKnownPeers();
+      _lastRadioProgress = DateTime.now(); // 재판정까지 유예
+      _log('BLE hard reset done — rescanning + known peers re-armed');
+    } catch (e) {
+      _log('BLE hard reset failed: $e');
+    } finally {
+      _hardResetting = false;
+    }
   }
 
   @override
@@ -1445,6 +1518,7 @@ class MeshTransport implements MeshTransportInterface {
       return;
     }
     _lastDialAt[key] = DateTime.now();
+    _lastRadioProgress = DateTime.now(); // 무선이 살아 있다는 증거
     _reconnectTimers.remove(key)?.cancel();
     _connecting.add(key);
     _log(probe
@@ -1726,6 +1800,7 @@ class MeshTransport implements MeshTransportInterface {
 
   void _emitUp(MeshLink link) {
     if (_disposed) return;
+    _lastRadioProgress = DateTime.now();
     _log('BLE link up ${link.id} (${link.role.name})');
     _linkEvents.add(LinkEvent(link, true));
     // 신생 링크 좀비 워치독: 정상이면 상대 ANNOUNCE가 수 초 내 도착한다.
