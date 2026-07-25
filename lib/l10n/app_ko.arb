@@ -202,6 +202,7 @@
   "homeBatterySaver": "배터리 절약",
   "homeBtPoweredOff": "블루투스가 꺼져 있습니다. 블루투스를 켜면 자동으로 주변 검색을 시작합니다.",
   "homeBtUnauthorized": "블루투스 권한이 없습니다. 설정 > SpotLink에서 블루투스를 허용해 주세요.",
+  "homeBtUnauthorizedDesktop": "블루투스 권한이 없습니다. 시스템 설정 > 개인정보 보호 및 보안 > 블루투스에서 SpotLink를 허용해 주세요.",
   "homeBtUnavailable": "블루투스가 꺼져 있거나 권한이 없어 주변 친구를 찾을 수 없습니다.",
   "homeOpenSettings": "설정 열기",
 

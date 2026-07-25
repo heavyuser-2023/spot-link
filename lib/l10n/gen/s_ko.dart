@@ -655,6 +655,10 @@ class SKo extends S {
       '블루투스 권한이 없습니다. 설정 > SpotLink에서 블루투스를 허용해 주세요.';
 
   @override
+  String get homeBtUnauthorizedDesktop =>
+      '블루투스 권한이 없습니다. 시스템 설정 > 개인정보 보호 및 보안 > 블루투스에서 SpotLink를 허용해 주세요.';
+
+  @override
   String get homeBtUnavailable => '블루투스가 꺼져 있거나 권한이 없어 주변 친구를 찾을 수 없습니다.';
 
   @override

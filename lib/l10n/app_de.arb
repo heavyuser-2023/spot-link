@@ -192,6 +192,7 @@
   "homeBatterySaver": "Energiesparen",
   "homeBtPoweredOff": "Bluetooth ist aus. Nach dem Einschalten startet die Suche automatisch.",
   "homeBtUnauthorized": "Bluetooth-Berechtigung fehlt. Erlaube Bluetooth unter Einstellungen > SpotLink.",
+  "homeBtUnauthorizedDesktop": "Bluetooth-Berechtigung fehlt. Erlaube SpotLink in Systemeinstellungen > Datenschutz & Sicherheit > Bluetooth.",
   "homeBtUnavailable": "Bluetooth ist aus oder nicht erlaubt — Freunde in der Nähe können nicht gefunden werden.",
   "homeOpenSettings": "Einstellungen öffnen",
   "guideTitle": "So funktioniert SpotLink",

@@ -192,6 +192,7 @@
   "homeBatterySaver": "Ahorro de batería",
   "homeBtPoweredOff": "El Bluetooth está apagado. Enciéndelo y la búsqueda cercana empezará sola.",
   "homeBtUnauthorized": "Falta el permiso de Bluetooth. Permítelo en Ajustes > SpotLink.",
+  "homeBtUnauthorizedDesktop": "Falta el permiso de Bluetooth. Permite SpotLink en Ajustes del Sistema > Privacidad y seguridad > Bluetooth.",
   "homeBtUnavailable": "El Bluetooth está apagado o sin permiso; no se pueden encontrar amigos cerca.",
   "homeOpenSettings": "Abrir Ajustes",
   "guideTitle": "Cómo funciona SpotLink",

@@ -674,6 +674,10 @@ class SDe extends S {
       'Bluetooth-Berechtigung fehlt. Erlaube Bluetooth unter Einstellungen > SpotLink.';
 
   @override
+  String get homeBtUnauthorizedDesktop =>
+      'Bluetooth-Berechtigung fehlt. Erlaube SpotLink in Systemeinstellungen > Datenschutz & Sicherheit > Bluetooth.';
+
+  @override
   String get homeBtUnavailable =>
       'Bluetooth ist aus oder nicht erlaubt — Freunde in der Nähe können nicht gefunden werden.';
 

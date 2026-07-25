@@ -129,4 +129,6 @@ class _FakePathProvider extends PathProviderPlatform {
   _FakePathProvider(this.root);
   @override
   Future<String?> getApplicationDocumentsPath() async => root;
+  @override
+  Future<String?> getApplicationSupportPath() async => root;
 }

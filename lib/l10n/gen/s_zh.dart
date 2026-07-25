@@ -650,6 +650,10 @@ class SZh extends S {
   String get homeBtUnauthorized => '缺少蓝牙权限。请在 设置 > SpotLink 中允许蓝牙。';
 
   @override
+  String get homeBtUnauthorizedDesktop =>
+      '缺少蓝牙权限。请在“系统设置 > 隐私与安全性 > 蓝牙”中允许 SpotLink。';
+
+  @override
   String get homeBtUnavailable => '蓝牙已关闭或未授权，无法寻找附近好友。';
 
   @override

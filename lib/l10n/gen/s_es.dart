@@ -668,6 +668,10 @@ class SEs extends S {
       'Falta el permiso de Bluetooth. Permítelo en Ajustes > SpotLink.';
 
   @override
+  String get homeBtUnauthorizedDesktop =>
+      'Falta el permiso de Bluetooth. Permite SpotLink en Ajustes del Sistema > Privacidad y seguridad > Bluetooth.';
+
+  @override
   String get homeBtUnavailable =>
       'El Bluetooth está apagado o sin permiso; no se pueden encontrar amigos cerca.';
 

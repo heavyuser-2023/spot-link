@@ -192,6 +192,7 @@
   "homeBatterySaver": "省电模式",
   "homeBtPoweredOff": "蓝牙已关闭。打开蓝牙后会自动开始搜索附近。",
   "homeBtUnauthorized": "缺少蓝牙权限。请在 设置 > SpotLink 中允许蓝牙。",
+  "homeBtUnauthorizedDesktop": "缺少蓝牙权限。请在“系统设置 > 隐私与安全性 > 蓝牙”中允许 SpotLink。",
   "homeBtUnavailable": "蓝牙已关闭或未授权，无法寻找附近好友。",
   "homeOpenSettings": "打开设置",
   "guideTitle": "SpotLink 使用指南",

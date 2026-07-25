@@ -192,6 +192,7 @@
   "homeBatterySaver": "バッテリーセーバー",
   "homeBtPoweredOff": "Bluetoothがオフです。オンにすると自動で周辺探索を始めます。",
   "homeBtUnauthorized": "Bluetoothの権限がありません。設定 > SpotLink で許可してください。",
+  "homeBtUnauthorizedDesktop": "Bluetoothの権限がありません。システム設定 > プライバシーとセキュリティ > Bluetooth で SpotLink を許可してください。",
   "homeBtUnavailable": "Bluetoothがオフか権限がないため、近くの友だちを探せません。",
   "homeOpenSettings": "設定を開く",
   "guideTitle": "SpotLinkの使い方",

@@ -5,7 +5,6 @@ import 'dart:ui';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../core/ble/mesh_transport.dart' show bleLogSink;
 import '../data/app_database.dart';
@@ -14,6 +13,7 @@ import 'background_service.dart';
 import 'mesh_controller.dart';
 import 'mesh_host.dart';
 import 'notification_service.dart';
+import 'app_paths.dart';
 
 /// Android 포그라운드 서비스 자체 isolate의 진입점 — 메시의 단일 소유자
 /// (SINGLE OWNER, v1.4.0).
@@ -94,7 +94,7 @@ class _MeshOwnerHandler extends TaskHandler {
   Future<void> _wireServiceLog() async {
     if (bleLogSink != null) return; // 이 isolate에서는 이미 연결됨
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await AppPaths.dataDir();
       final file = File(p.join(dir.path, 'ble-service.log'));
       if (file.existsSync() && file.lengthSync() > 256 * 1024) {
         file.deleteSync();

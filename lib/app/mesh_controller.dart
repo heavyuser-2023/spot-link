@@ -9,7 +9,6 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/widgets.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../core/ble/radio_profile.dart';
 import '../core/ble/mesh_transport.dart'
@@ -36,6 +35,7 @@ import '../data/identity_store.dart';
 import '../data/models.dart';
 import '../l10n/l10n.dart';
 import 'background_service.dart';
+import 'app_paths.dart';
 import 'beacon_wake.dart';
 import 'mesh_frontend.dart';
 import 'mesh_frontend_state.dart';
@@ -284,7 +284,7 @@ class MeshController extends MeshFrontend
     // 수신 전송은 우리 컨테이너의 디스크에서 조립된다(systemTemp가 아님 —
     // iOS는 압박을 받으면 이를 비울 수 있고, 전송 도중이면 part 파일이 손상된다).
     try {
-      final docs = await getApplicationDocumentsDirectory();
+      final docs = await AppPaths.dataDir();
       final incoming = Directory(p.join(docs.path, 'incoming'));
       if (!await incoming.exists()) {
         await incoming.create(recursive: true);
@@ -587,7 +587,7 @@ class MeshController extends MeshFrontend
     // 폴에서 넛지가 나간다.
     if (!await _friendNearbyEvidence()) return;
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await AppPaths.dataDir();
       final stamp = File(p.join(dir.path, 'wake_nudge_at'));
       final now = DateTime.now().millisecondsSinceEpoch;
       if (stamp.existsSync()) {
@@ -615,7 +615,7 @@ class MeshController extends MeshFrontend
   Future<void> _relaxWakeNudgeCooldown() async {
     if (!profile.supportsBeaconWake || headless) return;
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await AppPaths.dataDir();
       final stamp = File(p.join(dir.path, 'wake_nudge_at'));
       if (!stamp.existsSync()) return;
       final last = int.tryParse(stamp.readAsStringSync().trim()) ?? 0;
@@ -1409,7 +1409,7 @@ class MeshController extends MeshFrontend
   /// 전송"을 뜻한다.
   Future<String?> _sentPathFor(String tid, String name) async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await AppPaths.dataDir();
       final folder = Directory(p.join(dir.path, 'sent'));
       if (!await folder.exists()) await folder.create(recursive: true);
       final safeName = name.replaceAll(RegExp(r'[/\\]'), '_');
@@ -1528,7 +1528,7 @@ class MeshController extends MeshFrontend
 
   Future<void> _onFileReceived(
       PeerId from, FileMeta meta, String partPath) async {
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await AppPaths.dataDir();
     final folder = Directory(p.join(dir.path, 'received'));
     if (!await folder.exists()) await folder.create(recursive: true);
     final safeName = meta.name.replaceAll(RegExp(r'[/\\]'), '_');
@@ -1642,10 +1642,16 @@ class MeshController extends MeshFrontend
   /// 다시 준비할 수 있게 한다.
   Future<void> _wireKnownPeersStore() async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await AppPaths.dataDir();
       // 재설치로 컨테이너 UUID가 바뀌어도 저장된 파일 경로가 살아나도록
       // 현재 Documents를 DB의 경로 재해석 기준으로 준다.
       AppDatabase.documentsDir = dir.path;
+      // 데스크톱: sqflite 기본 경로가 TCC 보호 폴더라 DB를 열 수 없다 —
+      // 항상 쓸 수 있는 앱 지원 디렉터리로 강제한다([AppPaths] 참고).
+      // 모바일은 건드리지 않는다(기존 설치 데이터가 기본 경로에 있다).
+      if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+        AppDatabase.dbDir = dir.path;
+      }
       final file = File(p.join(dir.path, 'known_peers.json'));
       knownPeersLoad = () async {
         try {

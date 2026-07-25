@@ -7,7 +7,6 @@ import 'dart:typed_data';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../core/ble/mesh_transport.dart' show RadioStatus;
 import '../core/crypto/identity.dart';
@@ -24,6 +23,7 @@ import 'mesh_frontend.dart';
 import 'mesh_frontend_state.dart';
 import 'notification_service.dart';
 import 'permissions.dart';
+import 'app_paths.dart';
 
 /// Android UI 측 [MeshFrontend]: 포그라운드 서비스가 소유한 메시의
 /// 얇은 클라이언트 (headless_mesh.dart 참조). BLE 스택을 전혀 보유하지 않음 —
@@ -80,7 +80,7 @@ class RemoteMeshController extends MeshFrontend
     // UI isolate도 공유 DB에서 직접 메시지를 읽는다 — 경로 재해석 기준 주입.
     try {
       AppDatabase.documentsDir =
-          (await getApplicationDocumentsDirectory()).path;
+          (await AppPaths.dataDir()).path;
     } catch (_) {}
     FlutterForegroundTask.addTaskDataCallback(_onData);
     _wired = true;
@@ -498,7 +498,7 @@ class RemoteMeshController extends MeshFrontend
       required String mime}) async {
     // 바이트는 절대 isolate 포트를 건너가지 않는다: 대신 공유 앱 컨테이너의
     // 임시 파일을 서비스에 넘긴다 (전송이 끝나면 outbox 파일을 정리한다).
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await AppPaths.dataDir();
     final folder = Directory(p.join(dir.path, 'outbox'));
     if (!await folder.exists()) await folder.create(recursive: true);
     final safeName = name.replaceAll(RegExp(r'[/\\]'), '_');

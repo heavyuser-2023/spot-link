@@ -23,6 +23,12 @@ class _FakePathProvider extends PathProviderPlatform {
   _FakePathProvider(this.root);
   @override
   Future<String?> getApplicationDocumentsPath() async => root;
+
+  // 데스크톱(테스트 호스트 포함)은 앱 지원 디렉터리를 쓴다([AppPaths] 참고 —
+  // macOS 비샌드박스에서 ~/Documents가 TCC로 막히기 때문). 테스트에서도 같은
+  // 임시 폴더로 돌려줘 실기와 같은 경로 정책을 태운다.
+  @override
+  Future<String?> getApplicationSupportPath() async => root;
 }
 
 void main() {

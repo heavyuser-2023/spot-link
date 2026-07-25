@@ -655,6 +655,10 @@ class SJa extends S {
       'Bluetoothの権限がありません。設定 > SpotLink で許可してください。';
 
   @override
+  String get homeBtUnauthorizedDesktop =>
+      'Bluetoothの権限がありません。システム設定 > プライバシーとセキュリティ > Bluetooth で SpotLink を許可してください。';
+
+  @override
   String get homeBtUnavailable => 'Bluetoothがオフか権限がないため、近くの友だちを探せません。';
 
   @override

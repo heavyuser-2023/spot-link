@@ -24,6 +24,12 @@ class RadioProfile {
   /// 로그·진단용 이름.
   final String name;
 
+  /// 데스크톱 계열인가. 무선 정책이 아니라 **안내 문구·UX 결정**에 쓴다
+  /// (예: 권한 안내가 iOS의 "설정 > 앱"이 아니라 "시스템 설정 > 개인정보
+  /// 보호 및 보안"을 가리켜야 한다). UI가 Platform 분기를 다시 뿌리지 않게
+  /// 여기 둔다.
+  final bool isDesktop;
+
   // ---------------------------------------------------------------------------
   // 스캔 정책
   // ---------------------------------------------------------------------------
@@ -107,6 +113,20 @@ class RadioProfile {
   /// 재확인해 오판을 교정한다(iOS는 실행 직후 잠깐 `inactive`를 보고한다).
   final bool reconcilesForegroundMode;
 
+  /// 표시 이름이 없을 때 **기기 이름으로 자동 채우고 메시를 바로 시작**한다.
+  ///
+  /// 왜: 메시는 이름이 정해진 뒤에야 시작된다. 폰에서는 첫 실행에 사람이
+  /// 이름을 넣는 것이 자연스럽지만, 데스크톱 노드는 그대로 두면 **"설치되어
+  /// 실행 중인데 아무에게도 보이지 않는"** 최악의 상태로 조용히 방치된다
+  /// (2026-07-09~25 실제: 맥이 온보딩 화면에 멈춘 채 16일간 메시에 참여하지
+  /// 못했고, DB조차 만들어지지 않았다 — 배포·실행은 매번 성공했으므로 아무도
+  /// 눈치채지 못했다). 데스크톱은 호스트명으로 시작하고, 이름은 '내 정보'에서
+  /// 언제든 바꾼다.
+  ///
+  /// 미지의 플랫폼(generic)은 false로 둔다: 온보딩 화면이 보이는 것은 눈에
+  /// 띄는 상태이고, 조용한 실명보다 낫다.
+  final bool autoAdoptsDeviceName;
+
   const RadioProfile({
     required this.name,
     this.scanAlwaysUnfiltered = true,
@@ -122,6 +142,8 @@ class RadioProfile {
     this.supportsBeaconWake = false,
     this.usesAdaptivePower = false,
     this.reconcilesForegroundMode = false,
+    this.autoAdoptsDeviceName = false,
+    this.isDesktop = false,
   });
 
   static bool _never(Object _) => false;
@@ -178,6 +200,8 @@ class RadioProfile {
     connectTimeout: null,
     isUnknownIdentifierError: _isCoreBluetoothIllegalArgument,
     needsStackHardReset: true,
+    autoAdoptsDeviceName: true, // 데스크톱이 모달에서 조용히 멈추지 않게
+    isDesktop: true,
   );
 
   /// Android: 무선을 직접 다루는 대신 스캔·연결 경합과 전력을 관리해야 한다.

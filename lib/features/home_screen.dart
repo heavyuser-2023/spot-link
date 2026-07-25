@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../app/mesh_controller.dart';
 import '../core/ble/mesh_transport.dart' show RadioStatus;
+import '../core/ble/radio_profile.dart';
 import '../l10n/l10n.dart';
 import 'chats_tab.dart';
 import 'me_tab.dart';
@@ -319,7 +320,9 @@ class _BluetoothBanner extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final message = switch (status) {
       RadioStatus.poweredOff => context.s.homeBtPoweredOff,
-      RadioStatus.unauthorized => context.s.homeBtUnauthorized,
+      RadioStatus.unauthorized => RadioProfile.forCurrentPlatform().isDesktop
+          ? context.s.homeBtUnauthorizedDesktop
+          : context.s.homeBtUnauthorized,
       _ => context.s.homeBtUnavailable,
     };
     return MaterialBanner(

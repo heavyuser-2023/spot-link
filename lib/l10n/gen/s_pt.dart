@@ -667,6 +667,10 @@ class SPt extends S {
       'Sem permissão de Bluetooth. Permita em Ajustes > SpotLink.';
 
   @override
+  String get homeBtUnauthorizedDesktop =>
+      'Falta permissão de Bluetooth. Permita o SpotLink em Ajustes do Sistema > Privacidade e Segurança > Bluetooth.';
+
+  @override
   String get homeBtUnavailable =>
       'Bluetooth desligado ou sem permissão — não dá para achar amigos por perto.';
 

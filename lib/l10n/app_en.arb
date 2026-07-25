@@ -231,6 +231,7 @@
   "homeBatterySaver": "Battery saver",
   "homeBtPoweredOff": "Bluetooth is off. Turn it on and nearby discovery starts automatically.",
   "homeBtUnauthorized": "Bluetooth permission is missing. Allow Bluetooth in Settings > SpotLink.",
+  "homeBtUnauthorizedDesktop": "Bluetooth permission is missing. Allow SpotLink in System Settings > Privacy & Security > Bluetooth.",
   "homeBtUnavailable": "Bluetooth is off or unauthorized, so nearby friends can't be found.",
   "homeOpenSettings": "Open Settings",
 

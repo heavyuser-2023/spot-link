@@ -17,6 +17,13 @@ class AppDatabase {
   /// (관찰: 재설치 뒤 옛 사진 말풍선이 썸네일 없이 이름만 남고 안 열림).
   static String? documentsDir;
 
+  /// DB를 둘 디렉터리(앱 계층이 주입). **데스크톱 전용**으로 쓴다:
+  /// sqflite의 기본 경로가 macOS 비샌드박스에서 TCC 보호된 `~/Documents`로
+  /// 잡혀 DB를 아예 열 수 없었다(`error opening!: 23`, 2026-07 맥 16일 실명
+  /// 사건의 절반). 모바일은 null로 두어 기존 경로(=기존 데이터)를 유지한다.
+  /// [AppPaths] 참고.
+  static String? dbDir;
+
   static ChatMessage _fixPath(ChatMessage m) {
     final path = m.filePath;
     final docs = documentsDir;
@@ -42,7 +49,7 @@ class AppDatabase {
     if (overridePath != null) {
       path = overridePath!;
     } else {
-      final dir = await getDatabasesPath();
+      final dir = dbDir ?? await getDatabasesPath();
       path = p.join(dir, 'spotlink.db');
     }
     _db = await openDatabase(

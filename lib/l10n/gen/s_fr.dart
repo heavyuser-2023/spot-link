@@ -673,6 +673,10 @@ class SFr extends S {
       'Permission Bluetooth manquante. Autorisez-la dans Réglages > SpotLink.';
 
   @override
+  String get homeBtUnauthorizedDesktop =>
+      'Autorisation Bluetooth manquante. Autorisez SpotLink dans Réglages Système > Confidentialité et sécurité > Bluetooth.';
+
+  @override
   String get homeBtUnavailable =>
       'Bluetooth désactivé ou non autorisé : impossible de trouver des amis proches.';
 

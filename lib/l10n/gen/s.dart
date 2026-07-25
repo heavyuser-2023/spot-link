@@ -1261,6 +1261,12 @@ abstract class S {
   /// **'Bluetooth permission is missing. Allow Bluetooth in Settings > SpotLink.'**
   String get homeBtUnauthorized;
 
+  /// No description provided for @homeBtUnauthorizedDesktop.
+  ///
+  /// In en, this message translates to:
+  /// **'Bluetooth permission is missing. Allow SpotLink in System Settings > Privacy & Security > Bluetooth.'**
+  String get homeBtUnauthorizedDesktop;
+
   /// No description provided for @homeBtUnavailable.
   ///
   /// In en, this message translates to:

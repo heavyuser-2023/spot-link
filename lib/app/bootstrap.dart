@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../core/ble/mesh_transport.dart' show bleLogSink;
@@ -19,6 +18,8 @@ import 'background_service.dart';
 import 'beacon_wake.dart';
 import 'mesh_controller.dart';
 import 'notification_service.dart';
+import '../core/ble/radio_profile.dart';
+import 'app_paths.dart';
 import 'permissions.dart';
 import 'remote_mesh_controller.dart';
 
@@ -62,7 +63,7 @@ class _BootstrapState extends State<Bootstrap> {
     await initializeDateFormatting('ko', null);
     await _wireBleFileLog();
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await AppPaths.dataDir();
       _guideFlagFile = File(p.join(dir.path, 'guide_seen'));
       _guideSeen = _guideFlagFile!.existsSync();
     } catch (_) {
@@ -75,10 +76,29 @@ class _BootstrapState extends State<Bootstrap> {
     // 이름이 설정된 뒤에야 시작되므로, 폰은 광고도 스캔도 전혀 하지 않는다
     // (온라인처럼 보이지만 발견되지 않음). 대신 권한은 [_onNameChosen]에서
     // 요청한다.
-    final stored = await _identityStore.storedName();
+    var stored = await _identityStore.storedName();
     if (stored == null || stored.trim().isEmpty) {
-      if (mounted) setState(() => _stage = _Stage.onboarding);
-      return;
+      // 데스크톱: 온보딩 모달에서 멈추면 노드가 조용히 실명한다 — 기기
+      // 이름으로 시작하고, 이름은 '내 정보'에서 바꾼다
+      // ([RadioProfile.autoAdoptsDeviceName] 참고).
+      final profile = RadioProfile.forCurrentPlatform();
+      if (profile.autoAdoptsDeviceName) {
+        final derived = _deviceDerivedName();
+        try {
+          await _identityStore.setDisplayName(derived);
+          stored = derived;
+          bleLogSink?.call('onboarding auto-adopted device name "$derived" '
+              '(profile=${profile.name})');
+        } catch (e) {
+          // 키체인 실패(서명·entitlement 문제 등)는 조용히 넘기면 안 된다 —
+          // 화면에 드러내고 온보딩으로 떨어진다.
+          bleLogSink?.call('auto-onboarding failed: $e');
+        }
+      }
+      if (stored == null || stored.trim().isEmpty) {
+        if (mounted) setState(() => _stage = _Stage.onboarding);
+        return;
+      }
     }
 
     // 재방문 사용자: 서비스 + 권한을 먼저 올린 뒤 실행한다.
@@ -95,6 +115,18 @@ class _BootstrapState extends State<Bootstrap> {
         () => Permissions.request()
             .timeout(const Duration(seconds: 45), onTimeout: () => false));
     await _startMesh(stored);
+  }
+
+  /// 기기에서 유도한 표시 이름(호스트명). `.local` 접미사와 공백을 정리하고,
+  /// 비면 플랫폼 이름으로 대체한다.
+  String _deviceDerivedName() {
+    var host = '';
+    try {
+      host = Platform.localHostname;
+    } catch (_) {}
+    host = host.replaceAll(RegExp(r'\.local$'), '').trim();
+    if (host.isEmpty) host = Platform.operatingSystem;
+    return host.length > 24 ? host.substring(0, 24) : host;
   }
 
   /// 부팅 단계 하나를 실행하며, 조용히 죽는 대신 실패를 스플래시에 드러낸다 —
@@ -190,9 +222,11 @@ class _BootstrapState extends State<Bootstrap> {
   /// BLE 진단을 Documents/ble.log에 미러링하여, 릴리스 빌드를 기기에서 진단할 수
   /// 있게 한다(`devicectl device copy from --domain-type appDataContainer`로 파일을
   /// 가져온다). 콘솔 출력은 릴리스에서 버려진다.
+  Timer? _logFlushTimer;
+
   Future<void> _wireBleFileLog() async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await AppPaths.dataDir();
       final file = File(p.join(dir.path, 'ble.log'));
       // 실행을 거듭해도 크기가 제한되도록 유지한다.
       if (file.existsSync() && file.lengthSync() > 256 * 1024) {
@@ -210,8 +244,21 @@ class _BootstrapState extends State<Bootstrap> {
       } catch (_) {}
       sink.writeln(
           '=== app start$ver ${DateTime.now().toIso8601String()} ===');
-      bleLogSink = (line) =>
-          sink.writeln('${DateTime.now().toIso8601String()} $line');
+      // 주기적 플러시: IOSink는 버퍼링하므로, 로그를 적게 쓰는 플랫폼에서는
+      // 파일이 **비어 있는 채로** 남아 진단이 불가능하다(맥이 16일간 실명한
+      // 사건에서 원인 추적을 막은 요인 중 하나 — 헤더만 버퍼에 있고 디스크엔
+      // 아무것도 없었다). 더러울 때만 3초 주기로 내려쓴다.
+      var dirty = false;
+      bleLogSink = (line) {
+        sink.writeln('${DateTime.now().toIso8601String()} $line');
+        dirty = true;
+      };
+      _logFlushTimer?.cancel();
+      _logFlushTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+        if (!dirty) return;
+        dirty = false;
+        sink.flush().catchError((_) {});
+      });
 
       // 웨이크 원인 진단: 이번 부팅을 iBeacon 경로 대 BLE 상태 복원 중 어느 쪽으로
       // 귀속시키고, iBeacon 재실행이 의존하는 "항상" 위치 권한이 여전히 유효한지
@@ -261,6 +308,7 @@ class _BootstrapState extends State<Bootstrap> {
 
   @override
   void dispose() {
+    _logFlushTimer?.cancel();
     _lateWakeDrain?.cancel();
     _controller?.dispose();
     super.dispose();

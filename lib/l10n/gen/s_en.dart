@@ -665,6 +665,10 @@ class SEn extends S {
       'Bluetooth permission is missing. Allow Bluetooth in Settings > SpotLink.';
 
   @override
+  String get homeBtUnauthorizedDesktop =>
+      'Bluetooth permission is missing. Allow SpotLink in System Settings > Privacy & Security > Bluetooth.';
+
+  @override
   String get homeBtUnavailable =>
       'Bluetooth is off or unauthorized, so nearby friends can\'t be found.';
 

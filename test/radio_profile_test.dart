@@ -137,6 +137,27 @@ void main() {
       }
     });
 
+    test('자동 이름 채택은 데스크톱만 — 모바일은 사람이 정한다', () {
+      // 2026-07-09~25 사건: 맥이 온보딩 모달에 멈춘 채 16일간 메시에 참여하지
+      // 못했다(DB조차 없었고, 배포·실행은 매번 성공해 아무도 눈치채지 못했다).
+      expect(RadioProfile.darwinDesktop.autoAdoptsDeviceName, isTrue,
+          reason: '데스크톱 노드가 조용히 실명하면 안 된다');
+      expect(RadioProfile.ios.autoAdoptsDeviceName, isFalse);
+      expect(RadioProfile.android.autoAdoptsDeviceName, isFalse);
+      // 미지의 플랫폼은 온보딩 화면을 보여준다 — 눈에 띄는 상태가 조용한
+      // 실명보다 낫다.
+      expect(RadioProfile.generic.autoAdoptsDeviceName, isFalse);
+    });
+
+    test('비콘 웨이크가 없는 플랫폼은 자동 이름 또는 사람 온보딩 중 하나로 참여한다', () {
+      // 비콘 웨이크가 없다 = 상대가 우리를 깨워줄 수 없다 → 우리가 스스로
+      // 떠 있어야 한다. 데스크톱이 그 경우이고, 그래서 자동 이름이 필요하다.
+      expect(
+          RadioProfile.darwinDesktop.supportsBeaconWake ||
+              RadioProfile.darwinDesktop.autoAdoptsDeviceName,
+          isTrue);
+    });
+
     test('이름이 비어 있지 않다(진단 로그 추적성)', () {
       for (final e in all.entries) {
         expect(e.value.name, isNotEmpty);
