@@ -37,6 +37,30 @@ void main() {
       await node.dispose();
     });
 
+    test('연속 전송이 재탐색을 연쇄시키지 않는다(Android 주소 회전 방지)', () async {
+      // 재탐색은 광고를 stop→start로 교체하고, Android는 그때마다 새 RPA를
+      // 할당한다. 연달아 보내며 주소를 계속 갈아치우면 백그라운드 상대가
+      // dial을 끝낼 시간을 얻지 못해 복구가 오히려 발견을 망친다.
+      final radio = FakeRadio();
+      final id = await Identity.generate();
+      final peer = await Identity.generate();
+      final transport = radio.create(id.peerId);
+      final node =
+          MeshNode(identity: id, displayName: 'A', transport: transport);
+      await node.start();
+      node.addContact(ContactIdentity.fromBundle(peer.publicBundle));
+
+      final before = transport.wakeCount;
+      for (var i = 0; i < 5; i++) {
+        await node.sendText(peer.peerId, 'msg $i');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      expect(transport.wakeCount - before, 1,
+          reason: '5회 연속 전송이라도 재탐색은 창당 한 번이어야 한다');
+      await node.dispose();
+    });
+
     test('링크가 있으면 불필요한 재탐색을 걸지 않는다', () async {
       final radio = FakeRadio();
       final ida = await Identity.generate();

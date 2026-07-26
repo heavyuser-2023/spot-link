@@ -658,10 +658,23 @@ class MeshNode {
     transport.wake();
   }
 
+  DateTime? _lastSendRecovery;
+
   /// 보낼 링크가 없을 때의 능동 복구: 단순 wake가 아니라 전체 재탐색을 건다
   /// (백오프·쿨다운 초기화 + 알려진 피어 대기 연결 재무장). 사용자가 지금
   /// 보내려 한다는 것보다 강한 "찾아라" 신호는 없다.
+  ///
+  /// **속도 제한 필수**: 재탐색은 광고를 stop→start로 교체하는데, Android에서
+  /// 그때마다 새 랜덤 주소(RPA)가 할당된다. 연달아 보내며 주소를 계속 갈아
+  /// 치우면 백그라운드 상대(특히 iPhone)가 dial을 끝낼 시간을 얻지 못한다 —
+  /// 복구하려다 발견을 망치는 역효과다. 15초에 한 번으로 제한한다.
   Future<void> _recoverForSend() async {
+    final last = _lastSendRecovery;
+    if (last != null &&
+        DateTime.now().difference(last) < const Duration(seconds: 15)) {
+      return;
+    }
+    _lastSendRecovery = DateTime.now();
     final t = transport;
     if (t is MeshTransport) {
       await t.boost();
