@@ -445,6 +445,7 @@ class MeshController extends MeshFrontend
 
     // "nearby" 프레즌스가 시간이 지나 사라지도록 리스너를 주기적으로 갱신한다.
     _presenceTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      _superviseMaintenance();
       _maybeBeaconPulse();
       // 부팅 시에만 하지 않고 폴링하여, 한 번도 링크되지 않은 wake뿐 아니라
       // 나중에 끊겨 다시 맺지 못한 링크까지 넛지가 다루도록 한다.
@@ -529,6 +530,28 @@ class MeshController extends MeshFrontend
     _foreground = resumed;
     node.setForeground(resumed);
     if (resumed && started) unawaited(node.wakeUp());
+  }
+
+  /// 복구 장치의 감시자. **복구 장치 자체가 죽는 경우**를 잡는다.
+  ///
+  /// 전송 계층의 유지보수 틱(15초) 위에 좀비 링크 절단·광고 재확립·deep heal·
+  /// 하드리셋이 전부 얹혀 있다. 그 타이머가 조용히 멈추면 자가복구가 통째로
+  /// 꺼지는데, 스캔·광고는 다른 타이머로 계속 돌아 **겉보기엔 정상**이다
+  /// (2026-07-26 heavy: 13시간 동안 유지보수 0회, links=0인 채 메시지 전송
+  /// 실패 — 부스트를 눌러도 재무장조차 되지 않았다).
+  ///
+  /// 이 컨트롤러의 10초 타이머는 같은 사건에서 정상 동작이 확인됐으므로
+  /// 감시자로 쓴다. 하트비트가 45초 넘게 멈추면 전송 계층 유지보수를 다시
+  /// 세운다(멱등).
+  void _superviseMaintenance() {
+    if (!started) return;
+    final last = node.transport.lastMaintenanceTick;
+    final stale = last == null ||
+        DateTime.now().difference(last) > const Duration(seconds: 45);
+    if (!stale) return;
+    bleLogSink?.call('${DateTime.now().toIso8601String()} '
+        'maintenance heartbeat stale — restarting transport maintenance');
+    node.transport.restartMaintenance();
   }
 
   /// 웨이크 넛지의 친구 증거: 최근 비콘 리전 진입 또는 최근 SpotLink 광고

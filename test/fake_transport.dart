@@ -109,6 +109,17 @@ class FakeTransport implements MeshTransportInterface {
   RadioHealth get health =>
       linkCount > 0 ? RadioHealth.linked : RadioHealth.searching;
 
+  /// 페이크는 실제 유지보수 타이머가 없다 — 항상 '방금 돌았다'고 보고해
+  /// 감시자가 개입하지 않게 한다.
+  @override
+  DateTime? get lastMaintenanceTick => DateTime.now();
+
+  /// 감시자 개입 횟수(테스트에서 확인).
+  int restartMaintenanceCalls = 0;
+
+  @override
+  void restartMaintenance() => restartMaintenanceCalls++;
+
   @override
   Future<bool> ensureReady() async => ready;
 

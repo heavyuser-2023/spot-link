@@ -142,6 +142,14 @@ abstract class MeshTransportInterface {
   /// 링크가 없을 때 **왜 없는지**에 대한 판정. 로그·UI·자동복구의 공통 근거다.
   RadioHealth get health;
 
+  /// 유지보수(self-heal) 틱이 마지막으로 돈 시각. **복구 장치가 살아 있는지**를
+  /// 밖에서 확인하는 유일한 신호다 — null이면 아직 한 번도 돌지 않았다.
+  DateTime? get lastMaintenanceTick;
+
+  /// 유지보수 타이머를 다시 세운다(멱등). 감시자가 하트비트 정지를 발견했을 때
+  /// 호출한다.
+  void restartMaintenance();
+
   /// 무선이 사용 가능해지면(권한 허용 / 어댑터 전원 켜짐) true를, 더 이상
   /// 사용 불가능해지면 false를 내보낸다. 첫 start가 실패해도 재시도할 수
   /// 있도록, [start] 이전에 listen이 가능해야 한다.
@@ -507,6 +515,15 @@ class MeshTransport implements MeshTransportInterface {
 
   RadioHealth _lastHealth = RadioHealth.stopped;
 
+  /// self-heal 틱의 하트비트. 이것이 멈추면 **모든 자동복구가 꺼진 것**이다
+  /// (좀비 링크 절단·광고 재확립·deep heal·하드리셋 전부 이 틱 위에 있다).
+  /// 2026-07-26 heavy: 이 타이머가 조용히 죽어 13시간 동안 자가복구가 전무했고,
+  /// 스캔·광고는 계속 돌아 겉보기엔 정상이었다.
+  DateTime? _lastMaintenanceTick;
+
+  @override
+  DateTime? get lastMaintenanceTick => _lastMaintenanceTick;
+
   @override
   RadioHealth get health => RadioHealth.classify(
         started: _started,
@@ -618,8 +635,33 @@ class MeshTransport implements MeshTransportInterface {
     // 노드를 실행 중이지만 벙어리 상태로 남겨두곤 했다. 링크가 하나도 없는
     // 동안, advertising + scanning을 주기적으로 다시 확립한다 — 두 호출 모두
     // 멱등이다("already started"는 무해하다).
+    _startMaintenanceTimer();
+  }
+
+  @override
+  void restartMaintenance() {
+    if (!_started || _disposed) return;
+    _log('BLE maintenance restarted by supervisor '
+        '(last tick ${_lastMaintenanceTick == null ? "never" : "${DateTime.now().difference(_lastMaintenanceTick!).inSeconds}s ago"})');
+    _lastMaintenanceTick = DateTime.now();
+    _startMaintenanceTimer();
+    // 죽어 있던 동안 놓친 것들을 즉시 만회한다.
+    if (_links.isEmpty) {
+      unawaited(_startScanning());
+      if (_peripheral.state == BluetoothLowEnergyState.poweredOn) {
+        unawaited(_startAdvertising(restart: true));
+      }
+      if (profile.usesPendingConnect) unawaited(_reconnectKnownPeers());
+    }
+  }
+
+  /// 유지보수 타이머(15초): 좀비 링크 절단 → 광고·스캔 재확립 → deep heal →
+  /// 하드리셋으로 이어지는 복구 사다리 전체가 이 틱 위에서 돈다.
+  void _startMaintenanceTimer() {
+    _selfHealTimer?.cancel();
     _selfHealTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!_started) return;
+      _lastMaintenanceTick = DateTime.now();
       _logHealthTransition();
       // 좀비 peripheral 링크: 어떤 스택도 모든 곳에서 신뢰할 만한 "central
       // 이 떠남" 콜백을 쏘지 않으며, 죽은 P-링크는 UI에 거짓말을 하는 동시에
@@ -1617,8 +1659,10 @@ class MeshTransport implements MeshTransportInterface {
     // (죽은) 주소가 흔한 경우이고, 가장 최신 것이 살아 있을 가능성이 가장 높다.
     while (_pendingKeys.length >= _maxPendingReconnects) {
       final oldest = _pendingKeys.first;
-      _pendingKeys.remove(oldest);
-      final old = _pendingPeripherals.remove(oldest);
+      final old = _pendingPeripherals[oldest];
+      // 축출도 만료와 같은 이유로 즉시 슬롯을 푼다(아래 disconnect가 connect
+      // future를 완료시키지 못할 수 있다).
+      _releasePendingSlot(oldest);
       _log('BLE pending reconnect evicted $oldest');
       if (old != null) {
         // 취소하면 그것의 connect()가 throw하게 되고; 그러면 establishLink
@@ -1661,11 +1705,27 @@ class MeshTransport implements MeshTransportInterface {
       }
     }
     final p = _pendingPeripherals[key];
+    // 슬롯을 **여기서 즉시** 푼다. 예전에는 disconnect가 connect future를
+    // throw시켜 establishLink의 finally가 풀어주길 기대했는데, CoreBluetooth는
+    // 아직 성립되지 않은 pending connect를 취소해도 그 future를 완료시키지
+    // 않는 경우가 있다(네이티브 initialize()는 아예 completion 클로저를
+    // 버린다). 그러면 키가 _connecting에 영원히 남아 **그 피어에 대한 모든
+    // 재연결·발견 다이얼이 조용히 건너뛰어진다** — 스캔·광고·부스트는 정상
+    // 동작하므로 겉보기엔 멀쩡하다(2026-07-26 heavy: 10:49 만료 후 50분간
+    // links=0, 부스트를 눌러도 재무장 0건).
+    _releasePendingSlot(key);
     if (p != null) {
-      // 대기 중인 connect()를 취소한다 → 그것의 establishLink가 finally에서
-      // _connecting / _pendingKeys 슬롯을 풀어준다.
       unawaited(_central.disconnect(p).then((_) {}, onError: (_) {}));
     }
+  }
+
+  /// 대기 연결 슬롯 부기를 즉시 해제한다(멱등). 늦게 완료되는 establishLink의
+  /// finally가 다시 호출해도 무해하다.
+  void _releasePendingSlot(String key) {
+    _connecting.remove(key);
+    _pendingKeys.remove(key);
+    _pendingPeripherals.remove(key);
+    _pendingTimers.remove(key)?.cancel();
   }
 
   /// SpotLink peripheral에 연결하고 GATT 링크를 올린다. 호출자는 [key]를

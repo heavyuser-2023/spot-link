@@ -658,6 +658,19 @@ class MeshNode {
     transport.wake();
   }
 
+  /// 보낼 링크가 없을 때의 능동 복구: 단순 wake가 아니라 전체 재탐색을 건다
+  /// (백오프·쿨다운 초기화 + 알려진 피어 대기 연결 재무장). 사용자가 지금
+  /// 보내려 한다는 것보다 강한 "찾아라" 신호는 없다.
+  Future<void> _recoverForSend() async {
+    final t = transport;
+    if (t is MeshTransport) {
+      await t.boost();
+    } else {
+      t.wake();
+    }
+    await _broadcastAnnounce();
+  }
+
   /// QR로 검증된 친구와의 직접 링크에서 BLE 본딩을 유도한다.
   /// [MeshTransport.ensureBonded] 참고. BLE가 아닌 전송에서는 no-op.
   Future<void> ensureBonded(String peerHex) async {
@@ -793,8 +806,14 @@ class MeshNode {
     // 전송 시도를 로그에 남긴다: "메시지가 안 간다"는 신고에 예전에는 로그가
     // 한 줄도 없어(전송 경로가 조용했다) 시도조차 했는지 알 수 없었다.
     // 링크 수를 함께 찍어 '내보낼 길이 있었는가'를 즉시 판별한다.
+    final links = transport.linkCount;
     bleLogSink?.call('MSG send ${frame.msgIdHex.substring(0, 8)} '
-        '→ ${dst.short} (links=${transport.linkCount})');
+        '→ ${dst.short} (links=$links)');
+    // 링크가 없는데 사람이 보내려 한다 = 지금 당장 복구를 시도할 가장 강한
+    // 신호다. 예전에는 프레임이 store-and-forward로 조용히 쌓이기만 하고
+    // 무선 쪽은 아무 일도 하지 않아, 사용자가 보낼수록 답답해지기만 했다
+    // (2026-07-26 heavy: links=0으로 전송 → 이후 50분간 아무 재연결 시도 없음).
+    if (links == 0) unawaited(_recoverForSend());
     await _dispatch(frame);
     return frame.msgIdHex;
   }
