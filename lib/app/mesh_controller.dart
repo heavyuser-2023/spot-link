@@ -212,6 +212,15 @@ class MeshController extends MeshFrontend
   @override
   RadioStatus get radioStatus => node.transport.radioStatus;
 
+  /// 생성 시각 — 무선 판정의 과도 구간을 재는 기준.
+  final DateTime _createdAt = DateTime.now();
+
+  @override
+  bool get radioVerdictSettled =>
+      started ||
+      radioStatus == RadioStatus.poweredOff ||
+      DateTime.now().difference(_createdAt) > const Duration(seconds: 8);
+
   @override
   PeerId get myId => identity.peerId;
 

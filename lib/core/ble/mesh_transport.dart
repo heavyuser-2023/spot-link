@@ -659,6 +659,11 @@ class MeshTransport implements MeshTransportInterface {
   /// 하드리셋으로 이어지는 복구 사다리 전체가 이 틱 위에서 돈다.
   void _startMaintenanceTimer() {
     _selfHealTimer?.cancel();
+    // 첫 틱은 15초 뒤다. 하트비트를 지금 찍어두지 않으면 10초마다 도는
+    // 감시자가 부팅 직후 '한 번도 안 돌았다'며 불필요한 재기동을 건다
+    // (2026-07-27 22:29:04 관찰: 부팅 10초 만에 last tick never로 오탐,
+    // Android였다면 이 시점에 광고 주소까지 회전됐을 것).
+    _lastMaintenanceTick = DateTime.now();
     _selfHealTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!_started) return;
       _lastMaintenanceTick = DateTime.now();
@@ -702,6 +707,17 @@ class MeshTransport implements MeshTransportInterface {
       }
       _linkedTicks = 0;
       _linklessTicks++;
+      // 링크 0이 이어질 때, **무선이 무엇을 보고는 있는지**를 주기적으로
+      // 남긴다. 예전에는 "안 붙는다"는 신고에 스캔 로그만 잔뜩 있고 상대를
+      // 봤는지조차 알 수 없었다(2026-07-27 S21: heavy 로그에 S21 흔적 0,
+      // 발견 자체가 없었는지 발견 후 실패였는지 구분 불가).
+      if (_linklessTicks % 4 == 0) {
+        final seen = _lastDialAt.length;
+        _log('BLE linkless ${_linklessTicks * 15}s: '
+            'dialed=$seen connecting=${_connecting.length} '
+            'pending=${_pendingKeys.length} known=${_knownPeers.length} '
+            'probeMiss=${_probeMisses.length}');
+      }
       _log('BLE self-heal: no links — re-asserting radio');
       // Deep heal: 약 3분 연속 링크 없음 → GATT service도 republish한다.
       // 막히거나 낡은 서버(엔진 handoff 잔여물)는 들어오는 모든 connect를

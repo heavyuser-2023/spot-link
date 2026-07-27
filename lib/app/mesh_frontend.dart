@@ -62,6 +62,14 @@ abstract class MeshFrontend extends ChangeNotifier {
   int get peerCount;
   String? get lastError;
   RadioStatus get radioStatus;
+
+  /// 무선 상태 판정이 **믿을 만한가**. 앱 시작 직후 CoreBluetooth/Android
+  /// 스택은 잠시 `unknown`이나 `unauthorized`를 보고한다(권한 프롬프트가 아직
+  /// 떠 있는 동안 포함). 그 과도 상태를 그대로 오류 배너로 그리면 정상 시작
+  /// 중에도 "블루투스 권한 없음"이 20초 넘게 떠 있다(2026-07-27 신고).
+  /// 확정 전에는 배너를 숨긴다 — 단, 명백한 [RadioStatus.poweredOff]는 즉시
+  /// 보여준다(그건 과도 상태가 아니다).
+  bool get radioVerdictSettled;
   bool get powerSaver;
   void setPowerSaver(bool saver);
 

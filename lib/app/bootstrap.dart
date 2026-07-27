@@ -228,9 +228,28 @@ class _BootstrapState extends State<Bootstrap> {
     try {
       final dir = await AppPaths.dataDir();
       final file = File(p.join(dir.path, 'ble.log'));
-      // 실행을 거듭해도 크기가 제한되도록 유지한다.
-      if (file.existsSync() && file.lengthSync() > 256 * 1024) {
-        file.deleteSync();
+      // 크기 제한은 두되 **꼬리를 남긴다**. 예전에는 256KB를 넘으면 파일을
+      // 통째로 지웠는데, 그 결과 부팅 직후에는 언제나 "이번 세션"만 남아
+      // 정작 사건이 일어난 몇 시간 전 기록이 사라졌다(2026-07-27: 낮 동안의
+      // S21 미연결을 조사하려 했으나 로그가 22:28 부팅분뿐이라 불가능).
+      // 최근 192KB를 보존해 직전 사건까지 거슬러 볼 수 있게 한다.
+      try {
+        if (file.existsSync() && file.lengthSync() > 256 * 1024) {
+          const keep = 192 * 1024;
+          final raf = file.openSync(mode: FileMode.read);
+          raf.setPositionSync(file.lengthSync() - keep);
+          final tail = raf.readSync(keep);
+          raf.closeSync();
+          // 잘린 첫 줄은 버린다(중간부터 시작하지 않게).
+          final nl = tail.indexOf(0x0a);
+          file.writeAsBytesSync(
+              nl >= 0 && nl + 1 < tail.length ? tail.sublist(nl + 1) : tail);
+        }
+      } catch (_) {
+        // 꼬리 보존 실패는 로깅을 막지 않는다 — 최악이라도 새로 쓴다.
+        try {
+          if (file.existsSync()) file.deleteSync();
+        } catch (_) {}
       }
       final sink = file.openWrite(mode: FileMode.append);
       // 실행 중인 바이너리의 버전을 찍는다: 설치된 업데이트는 재실행할 때만

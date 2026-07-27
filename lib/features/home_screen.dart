@@ -68,7 +68,10 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: Column(
         children: [
-          if (!c.started) _BluetoothBanner(status: c.radioStatus),
+          // 시작 중의 과도 상태(unknown/일시 unauthorized)를 오류로 그리지
+          // 않는다 — 정상 부팅에도 "블루투스 권한 없음"이 20초 넘게 떠 있었다.
+          if (!c.started && c.radioVerdictSettled)
+            _BluetoothBanner(status: c.radioStatus),
           Expanded(child: IndexedStack(index: _index, children: tabs)),
         ],
       ),

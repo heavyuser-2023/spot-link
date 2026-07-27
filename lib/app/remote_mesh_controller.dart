@@ -365,6 +365,14 @@ class RemoteMeshController extends MeshFrontend
   @override
   RadioStatus get radioStatus =>
       (_blePermMissing && !_started) ? RadioStatus.unauthorized : _radio;
+
+  final DateTime _createdAt = DateTime.now();
+
+  @override
+  bool get radioVerdictSettled =>
+      started ||
+      radioStatus == RadioStatus.poweredOff ||
+      DateTime.now().difference(_createdAt) > const Duration(seconds: 8);
   @override
   bool get powerSaver => _powerSaver;
 
