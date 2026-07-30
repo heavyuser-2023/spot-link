@@ -72,6 +72,40 @@ class RemoteMeshController extends MeshFrontend
   Completer<void>? _firstSnap;
   bool _wired = false;
 
+  /// 서비스 isolate로부터 마지막으로 **어떤** 브리지 메시지든 받은 시각.
+  /// 살아 있는 메시는 프레즌스 틱(10초)마다 notifyListeners → snapshot을
+  /// 보내므로, 이것이 이만큼 오래 침묵하면 isolate가 죽은 것이다 —
+  /// Java 서비스 껍데기는 계속 "실행 중"으로 보고돼 [BackgroundService.start]
+  /// 재시도가 전부 no-op이 되는 좀비 상태([BackgroundService.restart] 참고).
+  DateTime? _lastServiceData;
+  DateTime? _lastRevive;
+  static const Duration _serviceSilence = Duration(seconds: 45);
+  static const Duration _reviveCooldown = Duration(seconds: 60);
+
+  /// keepalive 틱마다: 좀비 서비스(껍데기 생존 + isolate 침묵)를 감지하면
+  /// 강제 재시작한다. 2026-07-30 확진 사건 — 안드로이드 메시가 죽은 채
+  /// 프로세스만 살아 토치를 쏘고, 사용자가 옆에서 앱을 열어도(=이 컨트롤러가
+  /// 붙어도) 아무것도 메시를 되살리지 못했다 — 의 UI측 회생 경로.
+  Future<void> _maybeReviveService() async {
+    final last = _lastServiceData;
+    // 첫 snapshot 전은 기존 start()+hello 재시도 경로가 다루되, 그 경로가
+    // 좀비에 막혀 있으면(= init부터 침묵) 여기로 넘어온다.
+    final silentFor = DateTime.now()
+        .difference(last ?? _bootAt);
+    if (silentFor < _serviceSilence) return;
+    final lastTry = _lastRevive;
+    if (lastTry != null &&
+        DateTime.now().difference(lastTry) < _reviveCooldown) {
+      return;
+    }
+    _lastRevive = DateTime.now();
+    try {
+      await BackgroundService.restart();
+    } catch (_) {} // 재시작 실패 — 다음 쿨다운 후 재시도
+  }
+
+  final DateTime _bootAt = DateTime.now();
+
   /// 브리지를 올린다: 소유 서비스가 실행 중인지 확인한 뒤 그 첫 상태
   /// snapshot을 기다린다. 타임아웃 시 예외를 던져 호출자의 재시도 루프
   /// (부트스트랩 스플래시)가 계속 주도권을 갖게 한다.
@@ -137,6 +171,9 @@ class RemoteMeshController extends MeshFrontend
         } catch (_) {}
         _sayHello();
       }
+      // 좀비 서비스 회생 — start()/hello가 전부 no-op이 되는 "껍데기 생존 +
+      // isolate 사망"을 감지해 강제 재시작한다([_maybeReviveService]).
+      unawaited(_maybeReviveService());
       notifyListeners();
     });
     // 웨이크 토치(iBeacon TX)는 UI 엔진 플러그인이다; 여기서 켠다.
@@ -183,6 +220,8 @@ class RemoteMeshController extends MeshFrontend
     } catch (_) {
       return;
     }
+    // 유효한 브리지 메시지 = 서비스 isolate 생존 증거([_maybeReviveService]).
+    _lastServiceData = DateTime.now();
     switch (m['t']) {
       case Bridge.typeSnapshot:
         _applySnapshot(m);

@@ -60,6 +60,24 @@ class BackgroundService {
     await FlutterForegroundTask.stopService();
   }
 
+  /// 서비스 task isolate를 **무조건 새로 태어나게** 한다.
+  ///
+  /// [start]는 `isRunningService`면 no-op이다 — 그런데 그 "실행 중"은 Java
+  /// 서비스 껍데기 기준이라, Dart isolate가 죽은 좀비 서비스도 실행 중으로
+  /// 보인다. 그 상태에서는 앱(UI)을 아무리 다시 열어도 메시가 살아나지
+  /// 않았다(2026-07-30 확진: 사용자가 기기 옆에서 앱을 열었는데도 SpotLink
+  /// 광고 0건 — start는 no-op, hello는 죽은 isolate로 발사). 이것이 그
+  /// 회생 경로다: 실행 중이면 restart(기존 isolate 파기 + 새 isolate),
+  /// 아니면 start.
+  static Future<void> restart() async {
+    if (!_supported) return;
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.restartService();
+    } else {
+      await start();
+    }
+  }
+
   /// UI → 서비스 명령(JSON 문자열). 발사 후 망각(fire-and-forget): 결과는 역방향
   /// 포트에서 상태 스냅샷으로 돌아온다.
   static void sendToService(String json) {
