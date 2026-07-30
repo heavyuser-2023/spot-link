@@ -166,6 +166,14 @@ abstract class MeshTransportInterface {
   /// 포그라운드로 복귀함). 이미 실행 중이면 no-op.
   void wake();
 
+  /// 앱의 포그라운드 여부를 알린다 — 스캔 필터 모드를 좌우한다
+  /// ([MeshTransport.setForeground]). 값이 바뀌지 않으면 no-op이어야 한다.
+  ///
+  /// 인터페이스에 있는 이유: 예전에는 [MeshNode]가 `is MeshTransport` 캐스트로만
+  /// 호출해서 페이크 전송이 이 호출을 아예 관측할 수 없었고, 그래서 "포그라운드
+  /// 진입이 전송에 전달되지 않는다"는 사고를 단위 테스트가 잡을 수 없었다.
+  void setForeground(bool foreground);
+
   Future<void> broadcast(Uint8List frameBytes, {String? exceptLinkId});
   Future<void> sendToLink(String linkId, Uint8List frameBytes);
 }
@@ -202,6 +210,23 @@ class MeshTransport implements MeshTransportInterface {
   PowerMode _powerMode = PowerMode.active;
   Timer? _dutyTimer;
   bool _scanning = false;
+
+  /// **지금 라디오에 실제로 걸려 있는** 필터(true=무필터, null=스캔 안 함).
+  ///
+  /// 왜 별도 필드인가: [_scanning]만으로는 "스캔 중"까지만 알 수 있어서,
+  /// 모드를 바꾸려는 호출이 조용히 무시됐다. [_startScanning]이 `_scanning`
+  /// 하나로 no-op을 판정했기 때문에 — `wake()`/boost·어댑터 복귀·전력 모드
+  /// 전환은 모두 "wide(무필터) phase로 리셋 + _startScanning()" 형태였고,
+  /// 이미 filtered 스캔이 돌고 있으면 phase 변수만 바뀌고 라디오는 그대로
+  /// filtered로 남았다. iOS 27에서 **무필터 스캔만이 포그라운드 iPhone을
+  /// 발견**하므로, 사용자가 당겨서 새로고침한 그 순간에 정작 친구를 볼 수 있는
+  /// 유일한 모드가 적용되지 않았다(2026-07-30 heavy 11:09:37 boost → 스캔
+  /// 재시작 로그 없음 → 11:09:48 self-heal이 15초 뒤에야 무필터 적용 →
+  /// 11:09:49 교대 tick이 1.2초 만에 다시 filtered로 되돌림. 그날 발견 0건).
+  ///
+  /// 이제 원하는 필터와 걸려 있는 필터를 비교하므로, 모드 변경 의도는 어떤
+  /// 호출 경로에서든 실제 stop→start로 이어진다.
+  bool? _scanningUnfiltered;
 
   /// Android: scan과 connect는 하나의 무선을 공유하며, (LOW_LATENCY) scan이
   /// 도는 동안 connectGatt를 호출하는 것이 삼성에서 `status 133` connect
@@ -713,10 +738,15 @@ class MeshTransport implements MeshTransportInterface {
       // 발견 자체가 없었는지 발견 후 실패였는지 구분 불가).
       if (_linklessTicks % 4 == 0) {
         final seen = _lastDialAt.length;
+        // scan= 은 **라디오에 실제로 걸려 있는 필터**다. fg= 와 함께 남긴다:
+        // 이 둘이 어긋난 채(백그라운드인데 무필터 / 포그라운드인데 필터) 오래
+        // 도는 것이 "친구가 근처인데 발견 0건"의 직접 원인이었고, 예전 로그로는
+        // 그 상태를 사후에 확인할 방법이 없었다(2026-07-30 heavy).
         _log('BLE linkless ${_linklessTicks * 15}s: '
             'dialed=$seen connecting=${_connecting.length} '
             'pending=${_pendingKeys.length} known=${_knownPeers.length} '
-            'probeMiss=${_probeMisses.length}');
+            'probeMiss=${_probeMisses.length} '
+            'fg=$_foregroundScan scan=${_scanningUnfiltered == null ? 'off' : (_scanningUnfiltered! ? 'unfiltered' : 'filtered')}');
       }
       _log('BLE self-heal: no links — re-asserting radio');
       // Deep heal: 약 3분 연속 링크 없음 → GATT service도 republish한다.
@@ -1312,34 +1342,44 @@ class MeshTransport implements MeshTransportInterface {
     // connect handshake가 진행 중인 동안은 미뤄둔다(Android 133 수정) —
     // connect의 finally 블록이 scanning을 재개한다.
     if (_scanPausedForConnect) return;
-    if (_scanning) return;
+    // 이 창에 걸어야 할 필터를 먼저 계산한다 — no-op 판정의 기준이 "스캔 중인가"가
+    // 아니라 "원하는 모드로 스캔 중인가"여야 한다([_scanningUnfiltered] 참고).
+    //
+    // OS가 허용하는 한 언제나 UNFILTERED로 scan하고, SpotLink 여부는
+    // 소프트웨어에서 매칭한다(see [_isSpotLink]):
+    // - Android: 하드웨어 service-UUID 필터가 iPhone의 overflow 영역
+    //   advertisement을 아예 매칭하지 못한다(Results=0).
+    // - iOS 포그라운드: iOS 27(beta 24A5380h)에서는 다른 iPhone의 128비트
+    //   service UUID가 필터에 매칭되지도, 파싱된 advertisement에 드러나지도
+    //   않는다(관찰됨: unfiltered scan은 그 피어를 name-'SL'만 있는 패킷으로
+    //   보는 반면, filtered scan은 bluetoothd에 "0 advertisements delivered"를
+    //   남긴다). 거기서 iPhone 피어를 실제로 찾아내는 것은 이름 매칭이다.
+    // - iOS 백그라운드: unfiltered scan은 아무것도 전달하지 않으므로(OS
+    //   규칙) UUID 필터가 필요하다 — [setForeground]가 모드를 바꿔준다.
+    final unfiltered = profile.useUnfilteredScan(
+      foreground: _foregroundScan,
+      overflowPhase: _overflowPhase,
+      diagOverride: _diagUnfilteredScan,
+    );
+    if (_scanning) {
+      if (_scanningUnfiltered == unfiltered) return; // 이미 원하는 모드다
+      // 모드를 바꿔야 한다: 네이티브 스캔을 진짜로 교체한다. 이것이 없으면
+      // 호출자가 phase만 뒤집고 라디오는 옛 필터로 계속 도는 상태가 된다.
+      await _stopScanning();
+    }
     _scanning = true;
     try {
-      // OS가 허용하는 한 언제나 UNFILTERED로 scan하고, SpotLink 여부는
-      // 소프트웨어에서 매칭한다(see [_isSpotLink]):
-      // - Android: 하드웨어 service-UUID 필터가 iPhone의 overflow 영역
-      //   advertisement을 아예 매칭하지 못한다(Results=0).
-      // - iOS 포그라운드: iOS 27(beta 24A5380h)에서는 다른 iPhone의 128비트
-      //   service UUID가 필터에 매칭되지도, 파싱된 advertisement에 드러나지도
-      //   않는다(관찰됨: unfiltered scan은 그 피어를 name-'SL'만 있는 패킷으로
-      //   보는 반면, filtered scan은 bluetoothd에 "0 advertisements delivered"를
-      //   남긴다). 거기서 iPhone 피어를 실제로 찾아내는 것은 이름 매칭이다.
-      // - iOS 백그라운드: unfiltered scan은 아무것도 전달하지 않으므로(OS
-      //   규칙) UUID 필터가 필요하다 — [setForeground]가 모드를 바꿔준다.
-      final unfiltered = profile.useUnfilteredScan(
-        foreground: _foregroundScan,
-        overflowPhase: _overflowPhase,
-        diagOverride: _diagUnfilteredScan,
-      );
       await _central.startDiscovery(
         serviceUUIDs: unfiltered ? null : [BleConstants.serviceUuid],
       );
+      _scanningUnfiltered = unfiltered;
       _log('BLE scanning started (${unfiltered ? 'unfiltered' : 'filtered'})');
     } catch (e) {
       // 다음 시도가 실제로 재시도되도록 플래그를 내려둔다 — 실패한 start
       // 이후 여기서 "true"에 막혀 있으면(예: 어댑터가 headless 엔진과 UI 엔진
       // 사이에서 handoff 중이었음) 무선이 영원히 벙어리가 됐다.
       _scanning = false;
+      _scanningUnfiltered = null;
       _log('BLE startDiscovery failed: $e');
     }
   }
@@ -1347,6 +1387,7 @@ class MeshTransport implements MeshTransportInterface {
   Future<void> _stopScanning() async {
     if (!_scanning) return;
     _scanning = false;
+    _scanningUnfiltered = null;
     try {
       await _central.stopDiscovery();
     } catch (_) {}
@@ -1380,9 +1421,13 @@ class MeshTransport implements MeshTransportInterface {
   /// 직후 [setForeground]로 이를 false로 설정한다.
   bool _foregroundScan = true;
 
+  /// 진단용: 지금 전송이 믿고 있는 포그라운드 상태.
+  bool get foregroundScan => _foregroundScan;
+
   /// iOS: wide 포그라운드 scan(unfiltered + 소프트웨어 매칭 — iOS 27에서 다른
   /// iPhone을 안정적으로 찾는 유일한 모드)과 filtered 백그라운드 scan(OS가
   /// 요구)을 서로 바꾼다. 항상 unfiltered로 scan하는 Android에서는 no-op.
+  @override
   void setForeground(bool foreground) {
     if (_foregroundScan == foreground) return;
     _foregroundScan = foreground;

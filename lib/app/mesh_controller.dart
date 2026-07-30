@@ -156,7 +156,11 @@ class MeshController extends MeshFrontend
   /// 경우 모두 복구한다.
   /// 이 플랫폼의 무선/웨이크 정책([RadioProfile]) — 앱 계층의 OS별 결정도
   /// 전부 이 객체를 거친다. 새 플랫폼은 프로파일 한 줄로 편입된다.
-  final RadioProfile profile = RadioProfile.forCurrentPlatform();
+  ///
+  /// 주입 가능하다: iOS 전용 정책(포그라운드 재조정 등)의 동작을 맥에서
+  /// 단위 테스트로 고정할 수 있어야 한다 — 실기기에서만 재현되는 정책 결함이
+  /// 이 계층의 사고 대부분이었다.
+  final RadioProfile profile;
 
   Timer? _startRetryTimer;
 
@@ -189,7 +193,9 @@ class MeshController extends MeshFrontend
     MeshNode? node,
     void Function(String conversationKey, String title, String body)? notifier,
     this.headless = false,
-  })  : node = node ??
+    RadioProfile? profile,
+  })  : profile = profile ?? RadioProfile.forCurrentPlatform(),
+        node = node ??
             MeshNode(
               identity: identity,
               displayName: displayName,
@@ -425,17 +431,27 @@ class MeshController extends MeshFrontend
         lifecycle != AppLifecycleState.hidden);
     // 위의 낙관적 기본값은 백그라운드 재기동을 잘못 읽는다(비콘 wake / 상태
     // 복원은 init 시점에 null 생명주기를 보고하며, 이는 일반 실행과 같다).
-    // +3s가 지나면 상태가 안정된다: 백그라운드 재기동은 `paused`로 읽히므로 —
-    // 거기서 OS가 요구하는 필터링된 스캔으로 전환한다. foreground 실행은
-    // `resumed`로 읽히고 이 동작은 no-op이다.
-    if (!headless) {
+    // +3s가 지나면 상태가 안정된다: 진짜 포그라운드 실행은 `resumed`이므로 —
+    // 그렇지 않은 모든 상태는 백그라운드로 보고 OS가 요구하는 필터링된 스캔으로
+    // 전환한다.
+    //
+    // 예전에는 `paused|detached|hidden`만 백그라운드로 쳤는데, 백그라운드
+    // 재기동의 **실제 시그니처는 `inactive`(또는 null)** 여서 이 재확인이
+    // 그대로 통과했다 → 전송은 부팅 낙관값 true에 머물고, 컨트롤러 쪽 플래그는
+    // false로 계산돼 재조정 비교가 영구히 일치, 아무도 이를 바로잡지 못했다
+    // (2026-07-30 heavy 11:09 비콘 웨이크: 백그라운드인데 무필터 스캔으로 돌아
+    // iOS가 광고를 하나도 전달하지 않았고, 12번의 웨이크 내내 발견 0건).
+    // 넛지·재조정과 같은 판정 기준("+3s면 진짜 포그라운드는 resumed")을 쓴다.
+    //
+    // [RadioProfile.reconcilesForegroundMode]가 있는 플랫폼에서만 한다. 데스크톱
+    // 은 창이 포커스를 잃으면 `inactive`가 되는데 OS가 앱을 서스펜드하지도,
+    // 스캔에 필터를 강제하지도 않는다 — 거기서 이 재확인을 돌리면 실행 3초 안에
+    // 다른 창을 클릭한 것만으로 맥이 필터 스캔에 갇히고, 되돌릴 재조정 틱조차
+    // 없어 다시 조용히 눈먼다(맥 16일 실명과 같은 계열의 사고).
+    if (!headless && profile.reconcilesForegroundMode) {
       _bootFgRecheck = Timer(const Duration(seconds: 3), () {
-        final s = WidgetsBinding.instance.lifecycleState;
-        if (s == AppLifecycleState.paused ||
-            s == AppLifecycleState.detached ||
-            s == AppLifecycleState.hidden) {
-          node.setForeground(false);
-        }
+        node.setForeground(WidgetsBinding.instance.lifecycleState ==
+            AppLifecycleState.resumed);
       });
     }
     if (!started) {
@@ -530,14 +546,27 @@ class MeshController extends MeshFrontend
   /// 4.5분 관찰). 수신 알림 라우팅도 같은 플래그를 쓰므로 알림 억제 오류도
   /// 함께 났다. 넛지와 같은 신호("부팅+10초면 진짜 포그라운드는 resumed")로
   /// 매 프레즌스 틱마다 플래그와 전송 스캔 모드를 실제 상태에 맞춘다.
+  ///
+  /// **전송 계층은 매 틱 무조건 구동한다**(이 함수의 자체 캐시 `_foreground`가
+  /// 바뀌었을 때만이 아니다). 예전에는 이 비교가 게이트였는데, 두 계층이 부팅
+  /// 시각에 서로 다른 규칙으로 초기화되기 때문에 **처음부터 어긋난 조합**이
+  /// 만들어질 수 있었다: 컨트롤러는 `== resumed || == null`로, 전송은
+  /// `!= paused/detached/hidden`으로 판정한다 → 백그라운드 재기동의 실제
+  /// 시그니처인 `inactive`에서 컨트롤러는 false(정답), 전송은 true(오답)가 된다.
+  /// 그러면 `resumed(false) == _foreground(false)`가 영구히 성립해 이 함수는
+  /// 매 10초 즉시 return하고, 전송의 잘못된 모드는 **아무도 고치지 못한다**
+  /// (2026-07-30 heavy: 로그 3310행 전체에 'reconciled' 0건, 그동안 백그라운드
+  /// 에서 12초/18초를 iOS가 아무것도 전달하지 않는 무필터 스캔에 썼고 발견 0건).
+  /// 전송의 setForeground는 자체적으로 변화 여부를 판정하므로 매 틱 호출은
+  /// 값이 같으면 공짜다 — 그리고 어긋났을 때만 실제로 라디오를 바로잡는다.
   void _reconcileForegroundMode() {
     final resumed =
         WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    node.setForeground(resumed); // 권위 있는 신호를 전송 계층에 그대로 전달
     if (resumed == _foreground) return;
     bleLogSink?.call('${DateTime.now().toIso8601String()} '
         'foreground flag reconciled -> $resumed (lifecycle drift)');
     _foreground = resumed;
-    node.setForeground(resumed);
     if (resumed && started) unawaited(node.wakeUp());
   }
 
@@ -740,11 +769,17 @@ class MeshController extends MeshFrontend
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final wasForeground = _foreground;
     _foreground = state == AppLifecycleState.resumed;
+    // 전송 계층에는 `wasForeground` 게이트 없이 알린다. 부팅 낙관 기본값 때문에
+    // `wasForeground`가 이미 true인 채로 진짜 포그라운드 진입이 오면, 예전에는
+    // 이 호출까지 통째로 건너뛰어 전송이 백그라운드 모드(필터 스캔)에 갇혔다 —
+    // iOS 27에서 필터 스캔은 포그라운드 iPhone을 볼 수 없으므로, 사용자가 앱을
+    // 열고 쳐다보는 동안 친구를 영영 못 찾는 상태가 됐다. 값이 같으면 전송이
+    // 스스로 no-op이라 공짜다.
+    if (_foreground) node.setForeground(true);
     if (_foreground && !wasForeground) {
       // iOS가 우리를 서스펜드한 뒤 foreground로 복귀: 즉시 프레즌스를 다시
       // 알리고 디스커버리를 다시 걷어차, 우리(그리고 피어들)가 다음 15초 주기를
       // 기다리지 않고 온라인 상태를 회복하도록 한다.
-      node.setForeground(true); // 먼저 넓은 스캔, 그다음 wake 재시동
       if (started) unawaited(node.wakeUp());
       // iOS는 백그라운드에서 beacon TX를 죽인다 — torch를 다시 켠다.
       unawaited(BeaconWake.startTx());
@@ -786,6 +821,10 @@ class MeshController extends MeshFrontend
   /// 테스트 훅: 실제 생명주기 이벤트 없이 앱 foreground 플래그를 조작한다.
   @visibleForTesting
   void setForegroundForTest(bool value) => _foreground = value;
+
+  /// 테스트 훅: 프레즌스 틱을 10초 기다리지 않고 포그라운드 재조정만 돌린다.
+  @visibleForTesting
+  void reconcileForegroundModeForTest() => _reconcileForegroundMode();
 
   // ---- 크로스 isolate 브리지 훅(headless 모드; MeshHost 참고) ----
 

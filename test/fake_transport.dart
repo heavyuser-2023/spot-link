@@ -140,6 +140,17 @@ class FakeTransport implements MeshTransportInterface {
   @override
   void wake() => wakeCount++;
 
+  /// 실제 전송처럼 "값이 바뀔 때만" 동작한다 — 컨트롤러가 포그라운드 진입을
+  /// 전송에 전달하는지 검증할 수 있게, 적용된 값과 적용 횟수를 함께 기록한다.
+  bool foregroundScan = true;
+  int foregroundApplied = 0;
+  @override
+  void setForeground(bool foreground) {
+    if (foregroundScan == foreground) return;
+    foregroundScan = foreground;
+    foregroundApplied++;
+  }
+
   void _addNeighbor(PeerId other) {
     final linkId = other.hex;
     if (_neighbours.containsKey(linkId)) return;

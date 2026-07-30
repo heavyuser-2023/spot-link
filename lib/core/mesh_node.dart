@@ -768,10 +768,8 @@ class MeshNode {
   /// iOS: 스캔을 넓은 포그라운드 모드(iOS 27에서 다른 iPhone을 안정적으로 찾는
   /// 유일한 모드)와 필터링된 백그라운드 모드 사이에서 전환한다. 그 외
   /// 플랫폼에서는 아무 동작도 하지 않는다.
-  void setForeground(bool foreground) {
-    final t = transport;
-    if (t is MeshTransport) t.setForeground(foreground);
-  }
+  void setForeground(bool foreground) =>
+      transport.setForeground(foreground);
 
   /// 이 노드의 이름을 바꾸고 현재 이웃들에게 다시 announce하여, 그들의 연락처
   /// 목록이 재연결을 기다리지 않고 갱신되게 한다.
