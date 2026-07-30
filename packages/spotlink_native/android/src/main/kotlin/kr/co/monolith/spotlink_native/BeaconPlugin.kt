@@ -40,6 +40,17 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         private const val APPLE_MANUFACTURER_ID = 0x004C
         private const val ROTATE_MS = 18_000L
 
+        // Dart 메시 isolate의 마지막 심박(elapsedRealtime). 로테이션은 Kotlin
+        // Handler라 Dart가 죽어도 프로세스가 살아 있는 한 영원히 돈다 — 그러면
+        // 메시가 죽은 노드가 계속 친구들의 iPhone을 깨우고("주변에 친구가
+        // 있어요" 알림), 깨어난 쪽은 광고도 GATT도 없는 유령을 찾다 실패한다
+        // (2026-07-30 heavy: 하루 종일 beacon-enter 웨이크 12회+, 발견 0건 —
+        // 토치는 상대 프로세스 생존만 증명했지 메시 생존은 증명하지 못했다).
+        // 심박이 이만큼 끊기면 토치를 끈다. Dart는 10초마다 보내므로 15연속
+        // 유실 = 확실히 죽은 것. 되살아난 Dart의 startTx가 토치를 재점화한다.
+        private const val HEARTBEAT_STALE_MS = 150_000L
+        private var lastHeartbeatMs = 0L
+
         // 프로세스 전역 advertiser 상태 (엔진 단위가 아님 — 의도적):
         // UI 엔진이 죽은(스와이프 강제 종료) 뒤에도 횃불은 계속 타올라야 한다 —
         // 포그라운드 서비스가 프로세스를 유지하고, 이 beacon이 바로 근처의
@@ -69,6 +80,10 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         when (call.method) {
             "startTx" -> { startTx(); result.success(null) }
             "stopTx" -> { stopTx(); result.success(null) }
+            "heartbeat" -> {
+                lastHeartbeatMs = android.os.SystemClock.elapsedRealtime()
+                result.success(null)
+            }
             "status" -> result.success(
                 mapOf("auth" to "always", "monitoring" to false))
             // iOS 전용 RX 메서드들은 여기서 아무 동작도 하지 않는다.
@@ -94,6 +109,8 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     @Suppress("MissingPermission")
     private fun startTx() {
+        // 방금 시작한 토치가 곧바로 스테일 판정되지 않게 심박을 초기화한다.
+        lastHeartbeatMs = android.os.SystemClock.elapsedRealtime()
         startAdvertisingCurrent()
         // 초기 시작이 실패했더라도(블루투스 꺼짐 / 아직 advertiser 없음) 로테이션을
         // 무조건 가동한다: 18초마다의 각 틱이 restartAdvertising →
@@ -105,6 +122,18 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             rotateHandler = h
             val r = object : Runnable {
                 override fun run() {
+                    // 메시 isolate가 죽었다: 유령 토치를 끈다(위 companion 주석).
+                    // stopTx가 rotateRunnable을 지우므로, 살아난 Dart의 startTx가
+                    // 로테이션을 새로 세운다 — 여기서 재예약하지 않는다.
+                    if (lastHeartbeatMs > 0 &&
+                        android.os.SystemClock.elapsedRealtime() - lastHeartbeatMs >
+                            HEARTBEAT_STALE_MS) {
+                        android.util.Log.w(
+                            "SpotLinkBeacon",
+                            "mesh heartbeat stale — stopping wake torch")
+                        stopTx()
+                        return
+                    }
                     txIndex = (txIndex + 1) % BEACON_UUIDS.size
                     restartAdvertising()
                     h.postDelayed(this, ROTATE_MS)

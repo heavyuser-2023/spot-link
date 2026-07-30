@@ -742,11 +742,19 @@ class MeshTransport implements MeshTransportInterface {
         // 이 둘이 어긋난 채(백그라운드인데 무필터 / 포그라운드인데 필터) 오래
         // 도는 것이 "친구가 근처인데 발견 0건"의 직접 원인이었고, 예전 로그로는
         // 그 상태를 사후에 확인할 방법이 없었다(2026-07-30 heavy).
+        // saw/spot/apple: 지난 60초 동안 스캐너에 실제로 전달된 광고 수.
+        // saw=0 = 스캐너가 아무것도 못 받음(모드 오류/세션 노화),
+        // saw>0 spot=0 = 무선은 살아 있는데 상대의 SpotLink 광고가 없음
+        // (상대 쪽 광고 문제) — 이 구분이 릴리즈 로그에서 가능해야 한다.
         _log('BLE linkless ${_linklessTicks * 15}s: '
             'dialed=$seen connecting=${_connecting.length} '
             'pending=${_pendingKeys.length} known=${_knownPeers.length} '
             'probeMiss=${_probeMisses.length} '
-            'fg=$_foregroundScan scan=${_scanningUnfiltered == null ? 'off' : (_scanningUnfiltered! ? 'unfiltered' : 'filtered')}');
+            'fg=$_foregroundScan scan=${_scanningUnfiltered == null ? 'off' : (_scanningUnfiltered! ? 'unfiltered' : 'filtered')} '
+            'saw=$_sawTotal spot=$_sawSpotLink apple=$_sawApple');
+        _sawTotal = 0;
+        _sawSpotLink = 0;
+        _sawApple = 0;
       }
       _log('BLE self-heal: no links — re-asserting radio');
       // Deep heal: 약 3분 연속 링크 없음 → GATT service도 republish한다.
@@ -1634,7 +1642,22 @@ class MeshTransport implements MeshTransportInterface {
         .any((m) => m.id == _appleManufacturerId);
   }
 
+  /// 릴리즈 로그용 발견 계수기(마지막 linkless 요약 이후 누적). 개별 `BLE saw`
+  /// 는 디버그 전용이라, 현장에서 "스캐너가 죽었나 / 상대가 광고를 안 하나 /
+  /// 보이는데 SpotLink 매칭이 안 되나"를 릴리즈 로그로 구분할 수 없었다
+  /// (2026-07-30 heavy↔Android: 무필터 스캔 2분에 dialed=0 — 이 셋 중 어느
+  /// 것인지 로그로 판별 불가). linkless 요약이 함께 내보내고 리셋한다.
+  int _sawTotal = 0;
+  int _sawSpotLink = 0;
+  int _sawApple = 0;
+
   Future<void> _onDiscovered(DiscoveredEventArgs e) async {
+    _sawTotal++;
+    if (_isSpotLink(e.advertisement)) _sawSpotLink++;
+    if (e.advertisement.manufacturerSpecificData
+        .any((m) => m.id == _appleManufacturerId)) {
+      _sawApple++;
+    }
     if (_logBle) {
       final a = e.advertisement;
       _log('BLE saw ${e.peripheral.uuid.toString().substring(0, 8)} '

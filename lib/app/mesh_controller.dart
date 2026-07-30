@@ -472,6 +472,9 @@ class MeshController extends MeshFrontend
     _presenceTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       _superviseMaintenance();
       _maybeBeaconPulse();
+      // 네이티브 웨이크 토치에 생존 신호를 보낸다 — 이 타이머(=메시 소유
+      // isolate)가 멎으면 토치도 꺼져야 한다([BeaconWake.heartbeat]).
+      unawaited(BeaconWake.heartbeat());
       // 부팅 시에만 하지 않고 폴링하여, 한 번도 링크되지 않은 wake뿐 아니라
       // 나중에 끊겨 다시 맺지 못한 링크까지 넛지가 다루도록 한다.
       if (profile.reconcilesForegroundMode && !headless) {

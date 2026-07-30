@@ -27,6 +27,16 @@ class BeaconWake {
     } catch (_) {}
   }
 
+  /// "메시 소유 isolate가 살아 있다"는 심박(Android 전용 소비). 네이티브
+  /// 토치 로테이션은 Kotlin Handler라 Dart가 죽어도 계속 돈다 — 심박이 2.5분
+  /// 끊기면 네이티브가 토치를 꺼서, 메시 없는 유령 노드가 친구들의 iPhone을
+  /// 헛되이 깨우는 것을 막는다(iOS/데스크톱 핸들러에는 이 메서드가 없어 no-op).
+  static Future<void> heartbeat() async {
+    try {
+      await _channel.invokeMethod('heartbeat');
+    } catch (_) {}
+  }
+
   static Future<void> requestAlways() async {
     try {
       await _channel.invokeMethod('requestAlways');
