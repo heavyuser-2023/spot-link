@@ -61,6 +61,22 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         private var txIndex = 0
         private var rotateHandler: Handler? = null
         private var rotateRunnable: Runnable? = null
+
+        // ---- 최후의 감시자(네이티브) ----
+        // Dart의 유지보수 감시자들(v1.11.5)은 전부 **Dart isolate 위**에서
+        // 돈다 — isolate 자체가 죽으면 감시자도 함께 죽고, 포그라운드 서비스
+        // 프로세스는 멀쩡히 살아 토치를 계속 쏜다(2026-07-30 확진: heavy가
+        // 무필터 스캔 60초에 광고 12,909건을 받는 동안 SpotLink 광고 0건 —
+        // 그 시각에도 이 기기의 beacon-enter 웨이크는 heavy에 닿고 있었다).
+        // 이 감시자는 Kotlin Handler라 isolate 죽음을 견딘다: 심박이 끊긴 채
+        // UI도 화면에 없으면 프로세스를 스스로 죽인다 — START_STICKY 포그라운드
+        // 서비스가 곧바로 되살아나며 headlessMeshMain이 메시를 재기동한다.
+        // 재기동 폭주 방지: 프로세스 자살은 SharedPreferences 쿨다운(30분)으로
+        // 상한 — 메시가 매번 부팅에 실패하는 환경(예: BT 꺼짐)에서 3분마다
+        // 죽고 살기를 반복하면 그게 새 배터리 사고가 된다.
+        private const val WATCHDOG_INTERVAL_MS = 60_000L
+        private const val KILL_COOLDOWN_MS = 30 * 60_000L
+        private var watchdogRunnable: Runnable? = null
     }
 
     private lateinit var context: Context
@@ -107,10 +123,58 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         return buf.array()
     }
 
+    /** 메시 isolate가 심박을 [HEARTBEAT_STALE_MS] 넘게 끊었는가. */
+    private fun meshHeartbeatStale(): Boolean =
+        lastHeartbeatMs > 0 &&
+            android.os.SystemClock.elapsedRealtime() - lastHeartbeatMs >
+                HEARTBEAT_STALE_MS
+
+    /** [watchdogRunnable] — startTx(=메시 부트)마다 멱등하게 무장한다. */
+    private fun ensureWatchdog() {
+        if (watchdogRunnable != null) return
+        val h = rotateHandler ?: Handler(Looper.getMainLooper())
+        val r = object : Runnable {
+            override fun run() {
+                h.postDelayed(this, WATCHDOG_INTERVAL_MS) // 항상 계속 돈다
+                if (!meshHeartbeatStale()) return
+                // 메시가 죽었다. UI가 화면 위에 있으면(importance 100 =
+                // resumed 액티비티) 프로세스를 죽여 사용자의 손에서 앱을
+                // 닫아버리는 대신 다음 틱을 기다린다 — 사용자가 화면을
+                // 벗어나는 순간 재생 절차가 진행된다.
+                val am = context.getSystemService(Context.ACTIVITY_SERVICE)
+                    as? android.app.ActivityManager ?: return
+                val self = am.runningAppProcesses
+                    ?.firstOrNull { it.pid == android.os.Process.myPid() }
+                if (self != null && self.importance <=
+                        android.app.ActivityManager
+                            .RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
+                    return
+                }
+                val prefs = context.getSharedPreferences(
+                    "spotlink_watchdog", Context.MODE_PRIVATE)
+                val lastKill = prefs.getLong("last_kill", 0)
+                if (System.currentTimeMillis() - lastKill < KILL_COOLDOWN_MS) {
+                    return
+                }
+                prefs.edit()
+                    .putLong("last_kill", System.currentTimeMillis())
+                    .commit() // killProcess 전이므로 반드시 동기 커밋
+                android.util.Log.w(
+                    "SpotLinkBeacon",
+                    "mesh isolate dead (no heartbeat) — killing process; " +
+                        "START_STICKY service restart resurrects the mesh")
+                android.os.Process.killProcess(android.os.Process.myPid())
+            }
+        }
+        watchdogRunnable = r
+        h.postDelayed(r, WATCHDOG_INTERVAL_MS)
+    }
+
     @Suppress("MissingPermission")
     private fun startTx() {
         // 방금 시작한 토치가 곧바로 스테일 판정되지 않게 심박을 초기화한다.
         lastHeartbeatMs = android.os.SystemClock.elapsedRealtime()
+        ensureWatchdog()
         startAdvertisingCurrent()
         // 초기 시작이 실패했더라도(블루투스 꺼짐 / 아직 advertiser 없음) 로테이션을
         // 무조건 가동한다: 18초마다의 각 틱이 restartAdvertising →
