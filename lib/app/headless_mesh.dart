@@ -32,6 +32,30 @@ import 'app_paths.dart';
 /// 아예 없애 버린다.
 @pragma('vm:entry-point')
 void headlessMeshMain() {
+  // 서비스 isolate에 **잡히지 않은 에러 핸들러를 건다** — UI isolate([Bootstrap]의
+  // _wireBleFileLog)에는 있는데 여기엔 없던 치명적 비대칭이었다.
+  //
+  // 왜 치명적인가: 안드로이드에서 메시는 **오직 이 isolate**가 소유한다(단일
+  // 소유자). 이 isolate엔 root-zone uncaught 핸들러가 없어서, 타이머 콜백·BLE
+  // 이벤트·파일 IO 등 어떤 async 경로에서 예외가 하나만 새어도 isolate 전체가
+  // 조용히 죽었다 → 광고·스캔 정지(= 아무에게도 발견되지 않음). 그런데 네이티브
+  // 웨이크 토치는 프로세스 전역이라 계속 타올라(유령 토치) 친구들의 iPhone을
+  // 헛되이 깨웠다: "주변에 친구가 있어요" 알림은 오는데 정작 앱을 열면 아무도
+  // 없는 정확한 증상(2026-07-30·09-18 heavy: saw>0 spot=0, 상대 광고 전무).
+  //
+  // UI isolate와 똑같이 삼켜서 생존시키고, 원인을 ble-service.log에 남긴다 —
+  // 단일 소유 노드에서는 "예외로 죽는 것"보다 "살아서 계속 릴레이하는 것"이
+  // 언제나 옳다. bleLogSink는 onStart→_wireServiceLog에서 연결되므로, 그 전에
+  // 난 예외는 로그가 안 남을 수 있으나 isolate 생존(return true)은 보장된다.
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    bleLogSink?.call(
+        'SERVICE FLUTTER ERROR: ${details.exception}\n${details.stack}');
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    bleLogSink?.call('SERVICE UNCAUGHT: $error\n$stack');
+    return true; // 처리됨 — isolate를 죽이지 않는다
+  };
   FlutterForegroundTask.setTaskHandler(_MeshOwnerHandler());
 }
 
