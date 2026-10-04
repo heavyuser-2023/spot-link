@@ -744,4 +744,101 @@ class SZh extends S {
   String bootRetrying(Object error) {
     return '$error\n将自动重试';
   }
+
+  @override
+  String get encTitle => '擦肩而过的朋友';
+
+  @override
+  String get encEntryTitle => '擦肩而过的朋友';
+
+  @override
+  String get encEntryEmpty => '从附近经过的朋友会显示在这里';
+
+  @override
+  String encEntryRecent(Object name, Object when) {
+    return '最近：$name · $when';
+  }
+
+  @override
+  String get encEmptyTitle => '还没有擦肩而过的朋友';
+
+  @override
+  String get encEmptyBody =>
+      '当 SpotLink 好友从附近经过时，我们会在本设备上记下时间、人物和地点——即使你当时没在看应用。';
+
+  @override
+  String get encUnknownPeer => '未识别的 SpotLink 用户';
+
+  @override
+  String get encUnknownHint => '曾靠近，但在连接前离开了';
+
+  @override
+  String get encMissed => '错过';
+
+  @override
+  String get encAutoSent => '已发送自动消息';
+
+  @override
+  String get encDirect => '直连';
+
+  @override
+  String encViaHops(Object hops) {
+    return '经 $hops 跳中继';
+  }
+
+  @override
+  String get encBriefly => '片刻';
+
+  @override
+  String encForMinutes(Object minutes) {
+    return '$minutes 分钟';
+  }
+
+  @override
+  String get encNoLocation => '无位置';
+
+  @override
+  String get encLocationToggle => '同时记录位置';
+
+  @override
+  String get encLocationNote => '仅保存在本设备。地点名称通过向设备的地图服务查询坐标获得';
+
+  @override
+  String get encLocationNoteForeground =>
+      '仅保存在本设备，且在此设备上仅在应用打开时记录。地点名称通过设备的地图服务获得';
+
+  @override
+  String get encClear => '清除记录';
+
+  @override
+  String get encClearTitle => '清除所有擦肩记录？';
+
+  @override
+  String get encClearBody => '时间和位置记录将从本设备删除，且无法恢复。';
+
+  @override
+  String get encCleared => '记录已清除';
+
+  @override
+  String get autoMsgTitle => '擦肩而过时自动发消息';
+
+  @override
+  String get autoMsgOff => '关闭';
+
+  @override
+  String get autoMsgHint => '例如：你刚才就在附近！下次一起喝咖啡？';
+
+  @override
+  String autoMsgHelp(Object hours) {
+    return '与这位朋友连接时自动发送，同一位朋友每 $hours 小时最多发送一次。';
+  }
+
+  @override
+  String get autoMsgTurnOff => '关闭';
+
+  @override
+  String get autoMsgSaved => '已设置自动消息';
+
+  @override
+  String get autoMsgCleared => '已关闭自动消息';
 }

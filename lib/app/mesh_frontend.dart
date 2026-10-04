@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../core/ble/mesh_transport.dart' show RadioStatus;
+import '../core/ble/radio_profile.dart' show EncounterLocationPolicy;
 import '../core/model/peer_id.dart';
 import '../data/models.dart';
 
@@ -110,6 +111,26 @@ abstract class MeshFrontend extends ChangeNotifier {
       {String? name, bool verified = true, Uint8List? verifyNonce});
   Future<void> deleteContact(String peerHex);
   Future<void> renameContact(String peerHex, String name);
+
+  // ---- 스쳐간 친구(만남 기록) ----
+
+  /// 최신순 만남 기록. 위치는 이 기기에만 저장된다.
+  Future<List<Encounter>> encounters();
+
+  /// 기록이 바뀔 때마다 증가한다 — 화면이 다시 읽어야 할 때를 안다.
+  int get encounterRev;
+
+  /// 이 플랫폼이 만남에 위치를 붙이는 방식(설정 안내 문구용).
+  EncounterLocationPolicy get encounterLocationPolicy;
+  bool get encounterLocationEnabled;
+  Future<void> setEncounterLocationEnabled(bool on);
+  Future<void> clearEncounters();
+
+  /// 좌표만 있고 장소 이름이 비어 있는 기록을 채운다(온라인일 때만 성공).
+  Future<void> resolveEncounterPlaces();
+
+  /// 친구별 자동 메시지(스쳐 지날 때 연결되면 보냄). null·공백이면 끈다.
+  Future<void> setAutoMessage(String peerHex, String? message);
 
   // ---- 릴레이 메일박스(설정 UI) ----
   int get relayStoreCount;

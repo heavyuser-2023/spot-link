@@ -54,7 +54,7 @@ class AppDatabase {
     }
     _db = await openDatabase(
       path,
-      version: 8,
+      version: 9,
       // WAL: Android 서비스 isolate가 이 파일에 쓰는 동안 UI isolate가
       // 읽는다 (한 프로세스에 두 개의 SQLite 연결). 롤백 저널 모드였다면
       // 쓰기 중 리더가 SQLITE_BUSY를 만나게 된다; WAL은 하나의 라이터 +
@@ -75,7 +75,8 @@ class AppDatabase {
             verified INTEGER NOT NULL,
             name_locked INTEGER NOT NULL DEFAULT 0,
             last_seen INTEGER NOT NULL,
-            avatar TEXT
+            avatar TEXT,
+            auto_message TEXT
           )
         ''');
         await db.execute('''
@@ -102,6 +103,7 @@ class AppDatabase {
         await _createRelayStore(db);
         await _createPendingDelivery(db);
         await _createReactions(db);
+        await _createEncounters(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) await _createRelayStore(db);
@@ -123,9 +125,172 @@ class AppDatabase {
           // 파츠 아바타 레시피(ANNOUNCE에서 학습).
           await db.execute('ALTER TABLE contacts ADD COLUMN avatar TEXT');
         }
+        if (oldVersion < 9) {
+          // 스쳐간 친구 기록 + 친구별 자동 메시지.
+          await db
+              .execute('ALTER TABLE contacts ADD COLUMN auto_message TEXT');
+          await _createEncounters(db);
+        }
       },
     );
     return _db!;
+  }
+
+  /// 스쳐간 친구 기록. 한 행 = 한 친구가 근처에 있던 한 구간(연속 관측).
+  /// peer_hex가 NULL이면 비콘으로만 감지된 미확인 사용자다. 위치는 이 기기에만
+  /// 저장된다.
+  static Future<void> _createEncounters(Database db) async {
+    await db.execute('''
+      CREATE TABLE encounters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        peer_hex TEXT,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER NOT NULL,
+        lat REAL,
+        lng REAL,
+        accuracy REAL,
+        place TEXT,
+        hops INTEGER NOT NULL DEFAULT 1,
+        source TEXT NOT NULL DEFAULT 'link',
+        auto_sent INTEGER NOT NULL DEFAULT 0,
+        missed INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX idx_encounters_peer ON encounters(peer_hex, ended_at)');
+    await db.execute(
+        'CREATE INDEX idx_encounters_started ON encounters(started_at)');
+  }
+
+  // ---- 스쳐간 친구(만남 기록) ----
+
+  Future<int> insertEncounter({
+    required String? peerHex,
+    required int at,
+    required int hops,
+    required EncounterSource source,
+    required bool missed,
+  }) async {
+    final db = await _database;
+    return db.insert('encounters', {
+      'peer_hex': peerHex,
+      'started_at': at,
+      'ended_at': at,
+      'hops': hops,
+      'source': source.name,
+      'missed': missed ? 1 : 0,
+    });
+  }
+
+  /// 이 친구의 가장 최근 만남(재시작 뒤에도 진행 중인 만남을 이어 붙이는 근거).
+  Future<Encounter?> latestEncounterFor(String peerHex) async {
+    final db = await _database;
+    final rows = await db.query('encounters',
+        where: 'peer_hex = ?',
+        whereArgs: [peerHex],
+        orderBy: 'ended_at DESC',
+        limit: 1);
+    return rows.isEmpty ? null : Encounter.fromMap(rows.first);
+  }
+
+  /// [sinceMs] 이후에 관측된 미확인(비콘) 만남 중 가장 최근 것.
+  Future<Encounter?> latestUnidentifiedSince(int sinceMs) async {
+    final db = await _database;
+    final rows = await db.query('encounters',
+        where: 'peer_hex IS NULL AND ended_at >= ?',
+        whereArgs: [sinceMs],
+        orderBy: 'ended_at DESC',
+        limit: 1);
+    return rows.isEmpty ? null : Encounter.fromMap(rows.first);
+  }
+
+  Future<void> extendEncounter(int id,
+      {required int endedAt, required int hops, bool? missed}) async {
+    final db = await _database;
+    await db.update(
+        'encounters',
+        {
+          'ended_at': endedAt,
+          'hops': hops,
+          if (missed != null) 'missed': missed ? 1 : 0,
+        },
+        where: 'id = ?',
+        whereArgs: [id]);
+  }
+
+  /// 비콘으로만 잡혔던 만남이 곧이어 연결돼 누구인지 드러났을 때 승격한다.
+  Future<void> identifyEncounter(int id, String peerHex,
+      {required int endedAt, required int hops}) async {
+    final db = await _database;
+    await db.update(
+        'encounters',
+        {
+          'peer_hex': peerHex,
+          'source': EncounterSource.link.name,
+          'ended_at': endedAt,
+          'hops': hops,
+        },
+        where: 'id = ? AND peer_hex IS NULL',
+        whereArgs: [id]);
+  }
+
+  Future<void> setEncounterLocation(int id,
+      {required double lat, required double lng, double? accuracy}) async {
+    final db = await _database;
+    await db.update(
+        'encounters', {'lat': lat, 'lng': lng, 'accuracy': accuracy},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> setEncounterPlace(int id, String place) async {
+    final db = await _database;
+    await db.update('encounters', {'place': place},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> markEncounterAutoSent(int id) async {
+    final db = await _database;
+    await db.update('encounters', {'auto_sent': 1},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// 이 친구에게 마지막으로 자동 메시지를 보낸 만남의 시작 시각(없으면 null).
+  Future<int?> lastAutoSentAt(String peerHex) async {
+    final db = await _database;
+    final rows = await db.rawQuery(
+        'SELECT MAX(started_at) AS t FROM encounters '
+        'WHERE peer_hex = ? AND auto_sent = 1',
+        [peerHex]);
+    return rows.first['t'] as int?;
+  }
+
+  /// 최신순 만남 목록.
+  Future<List<Encounter>> encounters({int limit = 500}) async {
+    final db = await _database;
+    final rows =
+        await db.query('encounters', orderBy: 'started_at DESC', limit: limit);
+    return rows.map(Encounter.fromMap).toList();
+  }
+
+  /// 좌표는 있는데 장소 이름이 아직 없는 만남(오프라인이었던 경우 나중에 채운다).
+  Future<List<Encounter>> encountersMissingPlace({int limit = 20}) async {
+    final db = await _database;
+    final rows = await db.query('encounters',
+        where: 'lat IS NOT NULL AND place IS NULL',
+        orderBy: 'started_at DESC',
+        limit: limit);
+    return rows.map(Encounter.fromMap).toList();
+  }
+
+  Future<void> clearEncounters() async {
+    final db = await _database;
+    await db.delete('encounters');
+  }
+
+  /// 연락처를 지우면 그 친구와의 만남 기록도 함께 지운다(흔적을 남기지 않는다).
+  Future<void> deleteEncountersFor(String peerHex) async {
+    final db = await _database;
+    await db.delete('encounters', where: 'peer_hex = ?', whereArgs: [peerHex]);
   }
 
   /// 영구 store-and-forward 메일박스: 다른 사람을 위해 릴레이하는 암호화된

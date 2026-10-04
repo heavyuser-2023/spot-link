@@ -151,6 +151,10 @@ class Contact {
   final bool nameLocked;
   final int lastSeen; // epoch ms, 한 번도 없으면 0
 
+  /// 이 친구와 연결되는 순간 자동으로 보낼 메시지(스쳐 지날 때 인사).
+  /// null이면 꺼짐. [EncounterTracker]가 친구당 쿨다운을 지켜 보낸다.
+  final String? autoMessage;
+
   Contact({
     required this.peerHex,
     required this.signingPublicB64,
@@ -160,6 +164,7 @@ class Contact {
     this.avatar,
     this.nameLocked = false,
     this.lastSeen = 0,
+    this.autoMessage,
   });
 
   PeerId get peerId => PeerId.fromHex(peerHex);
@@ -173,6 +178,7 @@ class Contact {
         'avatar': avatar,
         'name_locked': nameLocked ? 1 : 0,
         'last_seen': lastSeen,
+        'auto_message': autoMessage,
       };
 
   static Contact fromMap(Map<String, Object?> m) => Contact(
@@ -184,6 +190,7 @@ class Contact {
         avatar: m['avatar'] as String?,
         nameLocked: (m['name_locked'] as int? ?? 0) == 1,
         lastSeen: (m['last_seen'] as int?) ?? 0,
+        autoMessage: m['auto_message'] as String?,
       );
 
   Contact copyWith(
@@ -201,5 +208,97 @@ class Contact {
         avatar: avatar ?? this.avatar,
         nameLocked: nameLocked ?? this.nameLocked,
         lastSeen: lastSeen ?? this.lastSeen,
+        autoMessage: autoMessage,
+      );
+
+  /// [copyWith]는 null을 "유지"로 읽으므로, 자동 메시지를 **끄는**(null로
+  /// 만드는) 경로는 따로 둔다. 공백뿐인 문구도 꺼짐으로 정규화한다.
+  Contact withAutoMessage(String? message) {
+    final m = message?.trim();
+    return Contact(
+      peerHex: peerHex,
+      signingPublicB64: signingPublicB64,
+      kexPublicB64: kexPublicB64,
+      displayName: displayName,
+      verified: verified,
+      avatar: avatar,
+      nameLocked: nameLocked,
+      lastSeen: lastSeen,
+      autoMessage: (m == null || m.isEmpty) ? null : m,
+    );
+  }
+}
+
+/// 만남이 어떻게 감지됐는가.
+enum EncounterSource {
+  /// 실제로 연결돼 상대의 ANNOUNCE를 받았다 — 누구인지 안다.
+  link,
+
+  /// 웨이크 비콘으로만 감지됐다. 비콘은 모든 SpotLink 기기가 같은 신호를
+  /// 내므로 **누구인지 담겨 있지 않다** — 연결 전에 멀어진 경우다.
+  beacon,
+}
+
+/// "스쳐간 친구" 기록 한 건 — 친구가 근처에 있던 한 구간(연속 관측).
+class Encounter {
+  final int id;
+
+  /// 상대 peerHex. null이면 확인되지 않은 SpotLink 사용자([EncounterSource.beacon]).
+  final String? peerHex;
+  final int startedAt; // epoch ms
+  final int endedAt; // epoch ms — 마지막으로 관측된 시각
+  final double? lat;
+  final double? lng;
+
+  /// 위치 정확도(미터). 알 수 없으면 null.
+  final double? accuracy;
+
+  /// 역지오코딩한 장소 이름(오프라인이면 나중에 채워진다).
+  final String? place;
+
+  /// 이 구간에서 본 가장 가까운 거리(1 = 직접 연결, 2+ = 중계 경유).
+  final int hops;
+  final EncounterSource source;
+
+  /// 이 만남에서 자동 메시지를 보냈는가.
+  final bool autoSent;
+
+  /// 앱을 보고 있지 않은 동안의 만남인가 — "보지는 못했지만 스쳐 지나간" 경우.
+  final bool missed;
+
+  const Encounter({
+    required this.id,
+    required this.peerHex,
+    required this.startedAt,
+    required this.endedAt,
+    this.lat,
+    this.lng,
+    this.accuracy,
+    this.place,
+    this.hops = 1,
+    this.source = EncounterSource.link,
+    this.autoSent = false,
+    this.missed = false,
+  });
+
+  bool get identified => peerHex != null;
+  bool get hasLocation => lat != null && lng != null;
+  Duration get duration => Duration(milliseconds: endedAt - startedAt);
+
+  static Encounter fromMap(Map<String, Object?> m) => Encounter(
+        id: m['id'] as int,
+        peerHex: m['peer_hex'] as String?,
+        startedAt: m['started_at'] as int,
+        endedAt: m['ended_at'] as int,
+        lat: (m['lat'] as num?)?.toDouble(),
+        lng: (m['lng'] as num?)?.toDouble(),
+        accuracy: (m['accuracy'] as num?)?.toDouble(),
+        place: m['place'] as String?,
+        hops: (m['hops'] as int?) ?? 1,
+        source: m['source'] == 'beacon'
+            ? EncounterSource.beacon
+            : EncounterSource.link,
+        autoSent: (m['auto_sent'] as int? ?? 0) == 1,
+        missed: (m['missed'] as int? ?? 0) == 1,
       );
 }

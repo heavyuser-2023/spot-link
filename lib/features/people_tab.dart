@@ -9,6 +9,7 @@ import '../data/models.dart';
 import '../l10n/l10n.dart';
 import 'add_friend_fab.dart';
 import 'chat_screen.dart';
+import 'encounter_screen.dart';
 import 'radar_screen.dart';
 import 'scan_screen.dart';
 import 'ui_utils.dart';
@@ -203,6 +204,9 @@ class _PeopleTabState extends State<PeopleTab> {
                           boosting: _boosting,
                         ),
                         ...nearbyShown.map((x) => _PersonTile(contact: x)),
+                        // 지금 주변(위) 다음은 지나간 주변: 못 보고 스친 친구를
+                        // 여기서 알아챈다.
+                        if (_query.isEmpty) const _EncounterEntry(),
                         if (offlineVerified.isNotEmpty) ...[
                           _SectionHeader(
                               label: context.s.peopleSectionVerified,
@@ -485,6 +489,59 @@ class _ProximityRadarState extends State<_ProximityRadar>
           ],
         ),
       ),
+    );
+  }
+}
+
+/// "스쳐간 친구" 진입 행. 가장 최근 만남 한 줄을 보여 줘서, 앱을 보지 않던
+/// 사이에 누가 지나갔는지 친구 탭에서 바로 알 수 있게 한다. 친구 탭은 프레즌스
+/// 틱마다 다시 그려지므로, 기록 리비전이 바뀔 때만 DB를 다시 읽는다.
+class _EncounterEntry extends StatefulWidget {
+  const _EncounterEntry();
+
+  @override
+  State<_EncounterEntry> createState() => _EncounterEntryState();
+}
+
+class _EncounterEntryState extends State<_EncounterEntry> {
+  Encounter? _latest;
+  int _rev = -1;
+
+  Future<void> _refresh(MeshFrontend c) async {
+    final rev = c.encounterRev;
+    final list = await c.encounters();
+    if (!mounted) return;
+    setState(() {
+      _latest = list.isEmpty ? null : list.first;
+      _rev = rev;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.watch<MeshFrontend>();
+    if (c.encounterRev != _rev) {
+      _rev = c.encounterRev;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _refresh(c));
+    }
+    final latest = _latest;
+    final s = context.s;
+    final String subtitle;
+    if (latest == null) {
+      subtitle = s.encEntryEmpty;
+    } else {
+      final hex = latest.peerHex;
+      final name = hex == null
+          ? s.encUnknownPeer
+          : (c.contactByHex(hex)?.displayName ?? s.encUnknownPeer);
+      subtitle = s.encEntryRecent(name, relativeTime(context, latest.startedAt));
+    }
+    return ListTile(
+      leading: const Icon(Icons.history),
+      title: Text(s.encEntryTitle),
+      subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => pushWithController(context, const EncounterScreen()),
     );
   }
 }

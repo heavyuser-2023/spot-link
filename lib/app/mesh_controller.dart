@@ -38,6 +38,8 @@ import '../l10n/l10n.dart';
 import 'background_service.dart';
 import 'app_paths.dart';
 import 'beacon_wake.dart';
+import 'device_location.dart';
+import 'encounter_tracker.dart';
 import 'mesh_frontend.dart';
 import 'mesh_frontend_state.dart';
 import 'notification_service.dart';
@@ -348,6 +350,22 @@ class MeshController extends MeshFrontend
         verified: c.verified,
       ));
     }
+    _encounterLocationEnabled = await EncounterSettings.locationEnabled();
+    _encounters = EncounterTracker(
+      db: db,
+      locate: _locateForEncounter,
+      sendAuto: (peerHex, text) async {
+        bleLogSink?.call('${DateTime.now().toIso8601String()} '
+            'auto-message -> ${PeerId.fromHex(peerHex).short}');
+        await sendText(peerHex, text);
+      },
+      isForeground: () => _foreground,
+      locationEnabled: EncounterSettings.locationEnabled,
+      onChanged: () {
+        encounterRev++;
+        _notifyCoalesced();
+      },
+    );
     // 앱이 마지막으로 죽었을 때 진행 중이던 전송은 이제 결코 끝날 수 없다 —
     // 실패 처리하여 어떤 말풍선도 영원히 스피너에 갇히지 않게 한다.
     await db.failStaleTransfers();
@@ -682,6 +700,9 @@ class MeshController extends MeshFrontend
       title: systemS.notifWakeNudgeTitle,
       body: systemS.notifWakeNudgeBody,
     );
+    // 알림을 띄운 이 순간을 "스쳐간" 기록으로 남긴다. 비콘에는 신원이 없어
+    // 미확인으로 남고, 곧이어 연결되면 그 친구로 승격된다.
+    unawaited(_encounters?.onUnidentifiedNearby());
   }
 
   /// 마지막 링크가 방금 끊겼을 때: 디스크의 넛지 스탬프를 되감아 잔여
@@ -849,6 +870,13 @@ class MeshController extends MeshFrontend
   /// 직렬화하는 것보다 저렴하고 간단하다.
   int msgRev = 0;
 
+  /// 스쳐간 친구 기록이 바뀔 때마다 증가(화면 새로고침 신호, 스냅샷에 실림).
+  @override
+  int encounterRev = 0;
+  EncounterTracker? _encounters;
+  bool _encounterLocationEnabled = true;
+  bool _resolvingPlaces = false;
+
   void _bumpRev() => msgRev++;
 
   /// 원격 UI의 앱 생명주기 상태를 브리지로 미러링하여, headless 두뇌가 로컬
@@ -887,6 +915,7 @@ class MeshController extends MeshFrontend
         'relayB': relayStoreBytes,
         'name': displayName,
         'rev': msgRev,
+        'encRev': encounterRev,
         'contacts': [for (final c in contactList) c.toMap()],
         'meAvatar': _myAvatar,
         'meAvCustom': _avatarCustomized,
@@ -964,6 +993,11 @@ class MeshController extends MeshFrontend
           lastViaHex.remove(contact.peerId.hex);
         }
         await _rememberAnnounced(contact, avatar: avatar);
+        // 스쳐간 친구 기록 + 자동 메시지(연결됐으니 이제 누구인지 안다).
+        final known = contactByHex(contact.peerId.hex);
+        if (known != null) {
+          unawaited(_encounters?.onPeerSeen(known, hops: hops));
+        }
         // 직접(1홉)으로 승격됐다: 멀티홉 예산에 걸려 보류됐던 파일들을
         // 자동 재전송한다(이제 패스트레인/1홉 BLE 모두 가능).
         if (hops == 1 && _deferredFiles.containsKey(contact.peerId.hex)) {
@@ -1152,6 +1186,9 @@ class MeshController extends MeshFrontend
       verified: verified,
       nameLocked: nameLocked,
       lastSeen: DateTime.now().millisecondsSinceEpoch,
+      // upsertContact는 행 전체를 교체한다 — 실어 주지 않으면 QR 재스캔이
+      // 사용자가 정해 둔 자동 메시지를 조용히 지운다.
+      autoMessage: existing?.autoMessage,
     );
     await db.upsertContact(contact);
     replaceContact(contact);
@@ -1184,6 +1221,8 @@ class MeshController extends MeshFrontend
     }
     await db.deleteMessagesFor(peerHex);
     await db.deleteReactionsFor(peerHex);
+    await db.deleteEncountersFor(peerHex);
+    encounterRev++;
     await db.deleteContact(peerHex);
     contactList.removeWhere((c) => c.peerHex == peerHex);
     conversationCache.remove(peerHex);
@@ -1202,6 +1241,74 @@ class MeshController extends MeshFrontend
     // 삭제는 차단이 아니다 — 삭제 다이얼로그 문구 그대로.
     _bumpRev();
     notifyListeners();
+  }
+
+  // ---- 스쳐간 친구 ----
+
+  @override
+  Future<List<Encounter>> encounters() => db.encounters();
+
+  @override
+  EncounterLocationPolicy get encounterLocationPolicy =>
+      profile.encounterLocation;
+
+  @override
+  bool get encounterLocationEnabled => _encounterLocationEnabled;
+
+  @override
+  Future<void> setEncounterLocationEnabled(bool on) async {
+    _encounterLocationEnabled = on;
+    await EncounterSettings.setLocationEnabled(on);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> clearEncounters() async {
+    await db.clearEncounters();
+    encounterRev++;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> resolveEncounterPlaces() async {
+    if (_resolvingPlaces) return;
+    _resolvingPlaces = true;
+    try {
+      var changed = false;
+      for (final e in await db.encountersMissingPlace()) {
+        final place = await DeviceLocation.reverseGeocode(e.lat!, e.lng!);
+        if (place == null) break; // 오프라인 — 다음에 다시 시도한다
+        await db.setEncounterPlace(e.id, place);
+        changed = true;
+      }
+      if (changed) {
+        encounterRev++;
+        notifyListeners();
+      }
+    } finally {
+      _resolvingPlaces = false;
+    }
+  }
+
+  @override
+  Future<void> setAutoMessage(String peerHex, String? message) async {
+    final existing = contactByHex(peerHex);
+    if (existing == null) return;
+    final updated = existing.withAutoMessage(message);
+    await db.upsertContact(updated);
+    replaceContact(updated);
+    notifyListeners();
+  }
+
+  /// 만남에 붙일 위치. 플랫폼 정책([EncounterLocationPolicy])을 따른다 —
+  /// Android는 "사용 중에만" 권한이라 앱 화면이 떠 있을 때만 받는다.
+  Future<LocationFix?> _locateForEncounter() async {
+    final policy = profile.encounterLocation;
+    if (policy == EncounterLocationPolicy.never) return null;
+    if (policy == EncounterLocationPolicy.foregroundOnly && !_foreground) {
+      return null;
+    }
+    return DeviceLocation.current();
   }
 
   @override

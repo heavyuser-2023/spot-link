@@ -9,6 +9,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:path/path.dart' as p;
 
 import '../core/ble/mesh_transport.dart' show RadioStatus;
+import '../core/ble/radio_profile.dart';
 import '../core/crypto/identity.dart';
 import '../core/model/peer_id.dart';
 import '../core/model/qr_payload.dart';
@@ -19,6 +20,7 @@ import '../l10n/l10n.dart';
 import 'background_service.dart';
 import 'beacon_wake.dart';
 import 'bridge_protocol.dart';
+import 'device_location.dart';
 import 'mesh_frontend.dart';
 import 'mesh_frontend_state.dart';
 import 'notification_service.dart';
@@ -62,6 +64,10 @@ class RemoteMeshController extends MeshFrontend
   // 모호한 폴백 상태에 머물게 된다.
   bool _blePermMissing = false;
   bool _powerSaver = false;
+
+  /// 스쳐간 친구 기록 리비전(서비스 스냅샷 'encRev'의 미러).
+  int _encounterRev = 0;
+  bool _encounterLocationEnabled = true;
   int _relayCount = 0;
   int _relayBytes = 0;
   int _rev = -1;
@@ -180,6 +186,7 @@ class RemoteMeshController extends MeshFrontend
     unawaited(BeaconWake.startTx());
     // 서비스가 필요로 하는 BLE 권한을 확인한다 (서비스는 스스로 요청 불가).
     unawaited(_ensureBlePermission());
+    _encounterLocationEnabled = await EncounterSettings.locationEnabled();
   }
 
   void _sayHello() {
@@ -291,6 +298,8 @@ class RemoteMeshController extends MeshFrontend
       ..clear()
       ..addAll(
           asMap(m['prog']).map((k, v) => MapEntry(k, (v as num).toDouble())));
+
+    _encounterRev = (m['encRev'] as num?)?.toInt() ?? _encounterRev;
 
     final rev = (m['rev'] as num?)?.toInt() ?? 0;
     if (rev != _rev) {
@@ -470,6 +479,48 @@ class RemoteMeshController extends MeshFrontend
     unreadCounts.remove(peerHex);
     lastSeenAt.remove(peerHex);
     if (_openPeer == peerHex) _openPeer = null;
+    notifyListeners();
+  }
+
+  // ---- MeshFrontend: 스쳐간 친구 ----
+
+  /// UI isolate는 공유 DB를 직접 읽는다(쓰기는 메시를 소유한 서비스만).
+  @override
+  Future<List<Encounter>> encounters() => db.encounters();
+
+  @override
+  int get encounterRev => _encounterRev;
+
+  @override
+  EncounterLocationPolicy get encounterLocationPolicy =>
+      RadioProfile.forCurrentPlatform().encounterLocation;
+
+  @override
+  bool get encounterLocationEnabled => _encounterLocationEnabled;
+
+  /// 플래그 파일이라 서비스가 다음 만남에서 바로 읽는다 — 브리지가 필요 없다.
+  @override
+  Future<void> setEncounterLocationEnabled(bool on) async {
+    _encounterLocationEnabled = on;
+    await EncounterSettings.setLocationEnabled(on);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> clearEncounters() async {
+    _send({'c': Bridge.cmdClearEncounters});
+  }
+
+  @override
+  Future<void> resolveEncounterPlaces() async {
+    _send({'c': Bridge.cmdResolvePlaces});
+  }
+
+  @override
+  Future<void> setAutoMessage(String peerHex, String? message) async {
+    _send({'c': Bridge.cmdSetAutoMessage, 'p': peerHex, 'x': message});
+    final existing = contactByHex(peerHex);
+    if (existing != null) replaceContact(existing.withAutoMessage(message));
     notifyListeners();
   }
 

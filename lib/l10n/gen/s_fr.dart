@@ -770,4 +770,106 @@ class SFr extends S {
   String bootRetrying(Object error) {
     return '$error\nNouvel essai automatique';
   }
+
+  @override
+  String get encTitle => 'Croisés';
+
+  @override
+  String get encEntryTitle => 'Croisés';
+
+  @override
+  String get encEntryEmpty =>
+      'Les amis qui passent à proximité apparaissent ici';
+
+  @override
+  String encEntryRecent(Object name, Object when) {
+    return 'Dernier : $name · $when';
+  }
+
+  @override
+  String get encEmptyTitle => 'Personne n\'est encore passé';
+
+  @override
+  String get encEmptyBody =>
+      'Quand un ami SpotLink passe à proximité, nous gardons sur cet appareil quand, qui et où — même si vous ne regardiez pas l\'app.';
+
+  @override
+  String get encUnknownPeer => 'Utilisateur SpotLink non identifié';
+
+  @override
+  String get encUnknownHint =>
+      'S\'est approché mais est parti avant la connexion';
+
+  @override
+  String get encMissed => 'Manqué';
+
+  @override
+  String get encAutoSent => 'Message automatique envoyé';
+
+  @override
+  String get encDirect => 'Direct';
+
+  @override
+  String encViaHops(Object hops) {
+    return 'via $hops sauts';
+  }
+
+  @override
+  String get encBriefly => 'Brièvement';
+
+  @override
+  String encForMinutes(Object minutes) {
+    return 'pendant $minutes min';
+  }
+
+  @override
+  String get encNoLocation => 'Pas de lieu';
+
+  @override
+  String get encLocationToggle => 'Enregistrer le lieu';
+
+  @override
+  String get encLocationNote =>
+      'Conservé uniquement sur cet appareil. Les noms de lieux sont obtenus en envoyant les coordonnées au service de cartes de l\'appareil';
+
+  @override
+  String get encLocationNoteForeground =>
+      'Conservé uniquement sur cet appareil et enregistré ici seulement quand l\'app est ouverte. Les noms de lieux viennent du service de cartes de l\'appareil';
+
+  @override
+  String get encClear => 'Effacer l\'historique';
+
+  @override
+  String get encClearTitle => 'Effacer tout l\'historique ?';
+
+  @override
+  String get encClearBody =>
+      'Les heures et les lieux seront supprimés de cet appareil. Action irréversible.';
+
+  @override
+  String get encCleared => 'Historique effacé';
+
+  @override
+  String get autoMsgTitle => 'Message automatique en passant';
+
+  @override
+  String get autoMsgOff => 'Désactivé';
+
+  @override
+  String get autoMsgHint =>
+      'ex. Tu étais dans le coin ! Un café la prochaine fois ?';
+
+  @override
+  String autoMsgHelp(Object hours) {
+    return 'Envoyé automatiquement quand vous vous connectez avec cet ami — au plus une fois toutes les $hours heures.';
+  }
+
+  @override
+  String get autoMsgTurnOff => 'Désactiver';
+
+  @override
+  String get autoMsgSaved => 'Message automatique défini';
+
+  @override
+  String get autoMsgCleared => 'Message automatique désactivé';
 }

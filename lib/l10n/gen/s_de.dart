@@ -771,4 +771,106 @@ class SDe extends S {
   String bootRetrying(Object error) {
     return '$error\nErneuter Versuch läuft automatisch';
   }
+
+  @override
+  String get encTitle => 'Vorbeigegangen';
+
+  @override
+  String get encEntryTitle => 'Vorbeigegangen';
+
+  @override
+  String get encEntryEmpty =>
+      'Freunde, die in der Nähe vorbeikommen, erscheinen hier';
+
+  @override
+  String encEntryRecent(Object name, Object when) {
+    return 'Zuletzt: $name · $when';
+  }
+
+  @override
+  String get encEmptyTitle => 'Noch niemand vorbeigekommen';
+
+  @override
+  String get encEmptyBody =>
+      'Wenn ein SpotLink-Freund in der Nähe vorbeikommt, speichern wir auf diesem Gerät, wann, wer und wo – auch wenn du die App gerade nicht angesehen hast.';
+
+  @override
+  String get encUnknownPeer => 'Unbekannter SpotLink-Nutzer';
+
+  @override
+  String get encUnknownHint =>
+      'War in der Nähe, aber weg, bevor eine Verbindung zustande kam';
+
+  @override
+  String get encMissed => 'Verpasst';
+
+  @override
+  String get encAutoSent => 'Automatische Nachricht gesendet';
+
+  @override
+  String get encDirect => 'Direkt';
+
+  @override
+  String encViaHops(Object hops) {
+    return 'über $hops Hops';
+  }
+
+  @override
+  String get encBriefly => 'Kurz';
+
+  @override
+  String encForMinutes(Object minutes) {
+    return '$minutes Min.';
+  }
+
+  @override
+  String get encNoLocation => 'Kein Ort';
+
+  @override
+  String get encLocationToggle => 'Ort mit aufzeichnen';
+
+  @override
+  String get encLocationNote =>
+      'Nur auf diesem Gerät gespeichert. Ortsnamen werden ermittelt, indem die Koordinaten an den Kartendienst deines Geräts gesendet werden';
+
+  @override
+  String get encLocationNoteForeground =>
+      'Nur auf diesem Gerät gespeichert und hier nur bei geöffneter App aufgezeichnet. Ortsnamen ermittelt der Kartendienst deines Geräts';
+
+  @override
+  String get encClear => 'Verlauf löschen';
+
+  @override
+  String get encClearTitle => 'Gesamten Verlauf löschen?';
+
+  @override
+  String get encClearBody =>
+      'Zeiten und Orte werden von diesem Gerät gelöscht. Das kann nicht rückgängig gemacht werden.';
+
+  @override
+  String get encCleared => 'Verlauf gelöscht';
+
+  @override
+  String get autoMsgTitle => 'Automatische Nachricht beim Vorbeigehen';
+
+  @override
+  String get autoMsgOff => 'Aus';
+
+  @override
+  String get autoMsgHint =>
+      'z. B. Du warst in der Nähe! Nächstes Mal ein Kaffee?';
+
+  @override
+  String autoMsgHelp(Object hours) {
+    return 'Wird automatisch gesendet, wenn du dich mit diesem Freund verbindest – höchstens alle $hours Stunden.';
+  }
+
+  @override
+  String get autoMsgTurnOff => 'Ausschalten';
+
+  @override
+  String get autoMsgSaved => 'Automatische Nachricht festgelegt';
+
+  @override
+  String get autoMsgCleared => 'Automatische Nachricht ausgeschaltet';
 }

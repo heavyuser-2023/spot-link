@@ -12,9 +12,18 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
-    <!-- Location only needed for BLE scan on API <= 30 -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
+    <!-- 위치: (1) API <= 30의 BLE 스캔, (2) 앱이 열려 있는 동안 친구가 스쳐
+         지나간 곳을 기록 — 이 기기에만 저장되고 메시·서버로 보내지 않는다
+         (지명 변환만 OS 지오코더를 거친다).
+         (2)는 동네 수준이면 충분해 대략적 위치(COARSE)만 허용돼도 동작한다.
+         COARSE를 함께 선언하는 이유: Android 12+는 FINE을 COARSE 없이 요청하면
+         요청 자체를 무시한다(둘을 함께 요청해야 사용자가 정확/대략을 고른다).
+         API 31+ BLE 스캔은 여전히 neverForLocation(위 BLUETOOTH_SCAN)이라
+         스캔 결과로 위치를 도출하지 않는다. 백그라운드 위치는 쓰지 않는다:
+         ACCESS_BACKGROUND_LOCATION 없음, 포그라운드 서비스 타입도
+         connectedDevice 그대로. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- Foreground service to keep the mesh node alive -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

@@ -751,4 +751,101 @@ class SKo extends S {
   String bootRetrying(Object error) {
     return '$error\n자동으로 다시 시도합니다';
   }
+
+  @override
+  String get encTitle => '스쳐간 친구';
+
+  @override
+  String get encEntryTitle => '스쳐간 친구';
+
+  @override
+  String get encEntryEmpty => '친구가 근처를 지나가면 여기에 남아요';
+
+  @override
+  String encEntryRecent(Object name, Object when) {
+    return '최근 $name · $when';
+  }
+
+  @override
+  String get encEmptyTitle => '아직 스쳐간 친구가 없어요';
+
+  @override
+  String get encEmptyBody =>
+      'SpotLink 친구가 근처를 지나가면 언제, 누가, 어디서였는지 이 기기에 남겨 둬요. 앱을 보고 있지 않았어도요.';
+
+  @override
+  String get encUnknownPeer => '확인되지 않은 SpotLink 사용자';
+
+  @override
+  String get encUnknownHint => '가까이 왔지만 연결되기 전에 멀어졌어요';
+
+  @override
+  String get encMissed => '놓침';
+
+  @override
+  String get encAutoSent => '자동 메시지 보냄';
+
+  @override
+  String get encDirect => '직접';
+
+  @override
+  String encViaHops(Object hops) {
+    return '$hops홉 경유';
+  }
+
+  @override
+  String get encBriefly => '잠깐';
+
+  @override
+  String encForMinutes(Object minutes) {
+    return '$minutes분 동안';
+  }
+
+  @override
+  String get encNoLocation => '위치 없음';
+
+  @override
+  String get encLocationToggle => '위치 함께 기록';
+
+  @override
+  String get encLocationNote => '이 기기에만 저장돼요. 장소 이름은 기기의 지도 서비스에 좌표를 조회해 찾아요';
+
+  @override
+  String get encLocationNoteForeground =>
+      '이 기기에만 저장되고, 이 기기에서는 앱이 열려 있을 때만 기록해요. 장소 이름은 기기의 지도 서비스에 좌표를 조회해 찾아요';
+
+  @override
+  String get encClear => '기록 지우기';
+
+  @override
+  String get encClearTitle => '스쳐간 기록을 모두 지울까요?';
+
+  @override
+  String get encClearBody => '시간과 위치 기록이 이 기기에서 삭제돼요. 되돌릴 수 없어요.';
+
+  @override
+  String get encCleared => '기록을 지웠어요';
+
+  @override
+  String get autoMsgTitle => '스쳐 지날 때 자동 메시지';
+
+  @override
+  String get autoMsgOff => '꺼짐';
+
+  @override
+  String get autoMsgHint => '예: 근처에 있었네! 다음에 커피 한잔해';
+
+  @override
+  String autoMsgHelp(Object hours) {
+    return '이 친구와 연결되면 자동으로 보내요. 같은 친구에게는 $hours시간에 한 번만 보내요.';
+  }
+
+  @override
+  String get autoMsgTurnOff => '끄기';
+
+  @override
+  String get autoMsgSaved => '자동 메시지를 설정했어요';
+
+  @override
+  String get autoMsgCleared => '자동 메시지를 껐어요';
 }

@@ -762,4 +762,103 @@ class SEn extends S {
   String bootRetrying(Object error) {
     return '$error\nRetrying automatically';
   }
+
+  @override
+  String get encTitle => 'Passed by';
+
+  @override
+  String get encEntryTitle => 'Passed by';
+
+  @override
+  String get encEntryEmpty => 'Friends who pass nearby show up here';
+
+  @override
+  String encEntryRecent(Object name, Object when) {
+    return 'Latest: $name · $when';
+  }
+
+  @override
+  String get encEmptyTitle => 'No one has passed by yet';
+
+  @override
+  String get encEmptyBody =>
+      'When a SpotLink friend passes nearby, we keep when, who, and where on this device — even if you weren\'t looking at the app.';
+
+  @override
+  String get encUnknownPeer => 'Unidentified SpotLink user';
+
+  @override
+  String get encUnknownHint => 'Came close but left before connecting';
+
+  @override
+  String get encMissed => 'Missed';
+
+  @override
+  String get encAutoSent => 'Auto-message sent';
+
+  @override
+  String get encDirect => 'Direct';
+
+  @override
+  String encViaHops(Object hops) {
+    return 'via $hops hops';
+  }
+
+  @override
+  String get encBriefly => 'Briefly';
+
+  @override
+  String encForMinutes(Object minutes) {
+    return 'for $minutes min';
+  }
+
+  @override
+  String get encNoLocation => 'No location';
+
+  @override
+  String get encLocationToggle => 'Record location';
+
+  @override
+  String get encLocationNote =>
+      'Kept only on this device. Place names are looked up by sending coordinates to your device\'s map service';
+
+  @override
+  String get encLocationNoteForeground =>
+      'Kept only on this device, and recorded only while the app is open here. Place names are looked up via your device\'s map service';
+
+  @override
+  String get encClear => 'Clear history';
+
+  @override
+  String get encClearTitle => 'Clear all passed-by history?';
+
+  @override
+  String get encClearBody =>
+      'Times and locations will be deleted from this device. This can\'t be undone.';
+
+  @override
+  String get encCleared => 'History cleared';
+
+  @override
+  String get autoMsgTitle => 'Auto-message when passing by';
+
+  @override
+  String get autoMsgOff => 'Off';
+
+  @override
+  String get autoMsgHint => 'e.g. You were nearby! Coffee next time?';
+
+  @override
+  String autoMsgHelp(Object hours) {
+    return 'Sent automatically when you connect with this friend — at most once every $hours hours.';
+  }
+
+  @override
+  String get autoMsgTurnOff => 'Turn off';
+
+  @override
+  String get autoMsgSaved => 'Auto-message set';
+
+  @override
+  String get autoMsgCleared => 'Auto-message turned off';
 }

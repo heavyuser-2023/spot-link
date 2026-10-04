@@ -12,14 +12,17 @@ import io.flutter.embedding.engine.plugins.FlutterPlugin
 class SpotlinkNativePlugin : FlutterPlugin {
     private val fastLane = FastLanePlugin()
     private val beacon = BeaconPlugin()
+    private val location = LocationPlugin()
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         fastLane.onAttachedToEngine(binding)
         beacon.onAttachedToEngine(binding)
+        location.onAttachedToEngine(binding)
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         fastLane.onDetachedFromEngine(binding)
         beacon.onDetachedFromEngine(binding)
+        location.onDetachedFromEngine(binding)
     }
 }

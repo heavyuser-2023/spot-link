@@ -125,6 +125,12 @@ class MeshHost {
           await c.clearRelayStore();
         case Bridge.cmdBoostDiscovery:
           await c.boostDiscovery();
+        case Bridge.cmdSetAutoMessage:
+          await c.setAutoMessage(m['p'] as String, m['x'] as String?);
+        case Bridge.cmdClearEncounters:
+          await c.clearEncounters();
+        case Bridge.cmdResolvePlaces:
+          await c.resolveEncounterPlaces();
         case Bridge.cmdToggleReaction:
           await c.toggleReaction(
               m['p'] as String, m['id'] as String, m['e'] as String);

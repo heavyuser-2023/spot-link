@@ -18,7 +18,9 @@ class Permissions {
     if (!Platform.isAndroid) return true;
 
     // BLE 3종 세트 + 알림을 함께 요청한다. locationWhenInUse는 Android 11
-    // 이하에서 스캔에만 필요하며, 거기서 요청해도 해롭지 않다.
+    // 이하에서는 BLE 스캔에 필수이고, 모든 버전에서 "스쳐간 친구" 기록에
+    // 장소를 붙이는 데 쓴다(앱이 열려 있을 때만, 이 기기에만 저장). 거부해도
+    // 만남은 위치 없이 기록되므로 최선의 노력이다.
     final results = await [
       Permission.bluetoothScan,
       Permission.bluetoothAdvertise,

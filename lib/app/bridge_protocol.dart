@@ -31,4 +31,7 @@ abstract final class Bridge {
   static const cmdToggleReaction = 'react';
   static const cmdArmQrNonce = 'qrNonce';
   static const cmdSetAvatar = 'avatar';
+  static const cmdSetAutoMessage = 'autoMsg';
+  static const cmdClearEncounters = 'clearEnc';
+  static const cmdResolvePlaces = 'resolvePlaces';
 }

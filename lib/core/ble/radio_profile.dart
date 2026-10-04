@@ -20,6 +20,21 @@ import 'dart:io' show Platform;
 ///
 /// 테스트 이점: 프로파일을 주입할 수 있으므로 iOS/Android 정책의 동작을
 /// 맥에서 단위 테스트로 고정할 수 있다(test/radio_profile_test.dart).
+/// 스쳐간 친구 기록에 **위치를 언제 붙일 수 있는가** — 플랫폼 권한 모델이
+/// 결정한다(좌표는 이 기기에만 저장된다).
+enum EncounterLocationPolicy {
+  /// 위치를 붙이지 않는다(권한·문구가 준비되지 않은 플랫폼).
+  never,
+
+  /// 앱 화면이 떠 있을 때만. Android는 백그라운드 위치(ACCESS_BACKGROUND_
+  /// LOCATION)를 쓰려면 Play 별도 심사가 필요해 "사용 중에만" 권한으로 한정한다.
+  foregroundOnly,
+
+  /// 백그라운드에서도. iOS는 비콘 웨이크용 "항상 허용" 권한이 이미 있어,
+  /// 비콘에 깨어난 짧은 창에도 위치를 받을 수 있다.
+  always,
+}
+
 class RadioProfile {
   /// 로그·진단용 이름.
   final String name;
@@ -127,6 +142,10 @@ class RadioProfile {
   /// 띄는 상태이고, 조용한 실명보다 낫다.
   final bool autoAdoptsDeviceName;
 
+  /// 스쳐간 친구 기록에 위치를 붙이는 정책. 미지의 플랫폼은 [never] — 권한
+  /// 문구·요청 흐름이 갖춰진 플랫폼만 켠다.
+  final EncounterLocationPolicy encounterLocation;
+
   const RadioProfile({
     required this.name,
     this.scanAlwaysUnfiltered = true,
@@ -144,6 +163,7 @@ class RadioProfile {
     this.reconcilesForegroundMode = false,
     this.autoAdoptsDeviceName = false,
     this.isDesktop = false,
+    this.encounterLocation = EncounterLocationPolicy.never,
   });
 
   static bool _never(Object _) => false;
@@ -183,6 +203,7 @@ class RadioProfile {
     needsStackHardReset: true,
     supportsBeaconWake: true,
     reconcilesForegroundMode: true,
+    encounterLocation: EncounterLocationPolicy.always,
   );
 
   /// macOS(그리고 향후 다른 Darwin 데스크톱): iOS와 같은 CoreBluetooth를
@@ -213,6 +234,7 @@ class RadioProfile {
     connectTimeout: Duration(seconds: 20),
     probesAppleDevices: true, // 백그라운드 iPhone을 찾는 유일한 길
     usesAdaptivePower: true,
+    encounterLocation: EncounterLocationPolicy.foregroundOnly,
   );
 
   /// 알 수 없는 플랫폼의 보수적 기본값: 최적은 아니지만 **절대 침묵하지

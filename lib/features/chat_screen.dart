@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 
 import '../app/app_share.dart';
 import '../app/build_flags.dart';
+import '../app/encounter_tracker.dart' show EncounterTracker;
 import '../app/mesh_controller.dart';
 import '../core/ble/mesh_transport.dart' show bleLogSink;
 import '../core/model/peer_id.dart';
@@ -500,11 +501,74 @@ class _ChatScreenState extends State<ChatScreen> {
                 icon: const Icon(Icons.copy, size: 16),
                 label: Text(context.s.chatCopyId(PeerId.fromHex(widget.peerHex).short)),
               ),
+              if (contact != null) ...[
+                const SizedBox(height: 8),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.waving_hand_outlined),
+                  title: Text(context.s.autoMsgTitle),
+                  subtitle: Text(contact.autoMessage ?? context.s.autoMsgOff,
+                      maxLines: 2, overflow: TextOverflow.ellipsis),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _editAutoMessage(c, contact);
+                  },
+                ),
+              ],
             ],
           ),
         ),
       ),
     );
+  }
+
+  /// 친구별 "스쳐 지날 때 자동 메시지" 편집. 빈 문구로 저장하거나 '끄기'를
+  /// 누르면 꺼진다.
+  Future<void> _editAutoMessage(MeshFrontend c, Contact contact) async {
+    final s = context.s;
+    final ctrl = TextEditingController(text: contact.autoMessage ?? '');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: Text(s.autoMsgTitle),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              maxLength: 200,
+              minLines: 1,
+              maxLines: 3,
+              decoration: InputDecoration(hintText: s.autoMsgHint),
+            ),
+            Text(s.autoMsgHelp(EncounterTracker.autoCooldown.inHours),
+                style: Theme.of(dctx).textTheme.bodySmall),
+          ],
+        ),
+        actions: [
+          if (contact.autoMessage != null)
+            TextButton(
+                onPressed: () => Navigator.pop(dctx, ''),
+                child: Text(s.autoMsgTurnOff)),
+          TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text(s.commonCancel)),
+          FilledButton(
+              onPressed: () => Navigator.pop(dctx, ctrl.text),
+              child: Text(s.commonSave)),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (result == null) return; // 취소
+    final text = result.trim();
+    await c.setAutoMessage(contact.peerHex, text.isEmpty ? null : text);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(text.isEmpty ? s.autoMsgCleared : s.autoMsgSaved)));
   }
 
   List<_Item> _buildItems(BuildContext context, List<ChatMessage> messages) {

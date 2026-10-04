@@ -764,4 +764,104 @@ class SPt extends S {
   String bootRetrying(Object error) {
     return '$error\nTentando de novo automaticamente';
   }
+
+  @override
+  String get encTitle => 'Passaram por perto';
+
+  @override
+  String get encEntryTitle => 'Passaram por perto';
+
+  @override
+  String get encEntryEmpty => 'Amigos que passam por perto aparecem aqui';
+
+  @override
+  String encEntryRecent(Object name, Object when) {
+    return 'Último: $name · $when';
+  }
+
+  @override
+  String get encEmptyTitle => 'Ninguém passou por perto ainda';
+
+  @override
+  String get encEmptyBody =>
+      'Quando um amigo do SpotLink passa por perto, guardamos neste aparelho quando, quem e onde — mesmo que você não estivesse olhando o app.';
+
+  @override
+  String get encUnknownPeer => 'Usuário do SpotLink não identificado';
+
+  @override
+  String get encUnknownHint => 'Chegou perto, mas foi embora antes de conectar';
+
+  @override
+  String get encMissed => 'Perdido';
+
+  @override
+  String get encAutoSent => 'Mensagem automática enviada';
+
+  @override
+  String get encDirect => 'Direto';
+
+  @override
+  String encViaHops(Object hops) {
+    return 'via $hops saltos';
+  }
+
+  @override
+  String get encBriefly => 'Rapidamente';
+
+  @override
+  String encForMinutes(Object minutes) {
+    return 'por $minutes min';
+  }
+
+  @override
+  String get encNoLocation => 'Sem local';
+
+  @override
+  String get encLocationToggle => 'Registrar local';
+
+  @override
+  String get encLocationNote =>
+      'Guardado só neste aparelho. Os nomes dos lugares são consultados enviando as coordenadas ao serviço de mapas do aparelho';
+
+  @override
+  String get encLocationNoteForeground =>
+      'Guardado só neste aparelho e registrado aqui só com o app aberto. Os nomes dos lugares vêm do serviço de mapas do aparelho';
+
+  @override
+  String get encClear => 'Apagar histórico';
+
+  @override
+  String get encClearTitle => 'Apagar todo o histórico?';
+
+  @override
+  String get encClearBody =>
+      'Horários e locais serão apagados deste aparelho. Não dá para desfazer.';
+
+  @override
+  String get encCleared => 'Histórico apagado';
+
+  @override
+  String get autoMsgTitle => 'Mensagem automática ao passar por perto';
+
+  @override
+  String get autoMsgOff => 'Desligada';
+
+  @override
+  String get autoMsgHint =>
+      'ex.: Você estava por perto! Um café da próxima vez?';
+
+  @override
+  String autoMsgHelp(Object hours) {
+    return 'Enviada automaticamente quando você se conecta com este amigo — no máximo uma vez a cada $hours horas.';
+  }
+
+  @override
+  String get autoMsgTurnOff => 'Desligar';
+
+  @override
+  String get autoMsgSaved => 'Mensagem automática definida';
+
+  @override
+  String get autoMsgCleared => 'Mensagem automática desligada';
 }

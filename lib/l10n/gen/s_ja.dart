@@ -751,4 +751,101 @@ class SJa extends S {
   String bootRetrying(Object error) {
     return '$error\n自動で再試行します';
   }
+
+  @override
+  String get encTitle => 'すれ違った友達';
+
+  @override
+  String get encEntryTitle => 'すれ違った友達';
+
+  @override
+  String get encEntryEmpty => '近くを通った友達がここに表示されます';
+
+  @override
+  String encEntryRecent(Object name, Object when) {
+    return '最近：$name・$when';
+  }
+
+  @override
+  String get encEmptyTitle => 'まだすれ違った友達はいません';
+
+  @override
+  String get encEmptyBody =>
+      'SpotLinkの友達が近くを通ると、いつ・誰が・どこでかをこの端末に記録します。アプリを見ていなかったときも。';
+
+  @override
+  String get encUnknownPeer => '未確認のSpotLinkユーザー';
+
+  @override
+  String get encUnknownHint => '近くに来ましたが、つながる前に離れました';
+
+  @override
+  String get encMissed => '見逃し';
+
+  @override
+  String get encAutoSent => '自動メッセージ送信済み';
+
+  @override
+  String get encDirect => '直接';
+
+  @override
+  String encViaHops(Object hops) {
+    return '$hopsホップ経由';
+  }
+
+  @override
+  String get encBriefly => '一瞬';
+
+  @override
+  String encForMinutes(Object minutes) {
+    return '$minutes分間';
+  }
+
+  @override
+  String get encNoLocation => '位置なし';
+
+  @override
+  String get encLocationToggle => '位置も記録';
+
+  @override
+  String get encLocationNote => 'この端末にのみ保存されます。地名は座標を端末の地図サービスに問い合わせて取得します';
+
+  @override
+  String get encLocationNoteForeground =>
+      'この端末にのみ保存され、この端末ではアプリを開いているときだけ記録します。地名は端末の地図サービスで取得します';
+
+  @override
+  String get encClear => '記録を消去';
+
+  @override
+  String get encClearTitle => 'すれ違いの記録をすべて消去しますか？';
+
+  @override
+  String get encClearBody => '時刻と位置の記録がこの端末から削除されます。元に戻せません。';
+
+  @override
+  String get encCleared => '記録を消去しました';
+
+  @override
+  String get autoMsgTitle => 'すれ違ったときの自動メッセージ';
+
+  @override
+  String get autoMsgOff => 'オフ';
+
+  @override
+  String get autoMsgHint => '例：近くにいたね！今度コーヒーでも';
+
+  @override
+  String autoMsgHelp(Object hours) {
+    return 'この友達とつながると自動で送信します。同じ友達には$hours時間に1回までです。';
+  }
+
+  @override
+  String get autoMsgTurnOff => 'オフにする';
+
+  @override
+  String get autoMsgSaved => '自動メッセージを設定しました';
+
+  @override
+  String get autoMsgCleared => '自動メッセージをオフにしました';
 }

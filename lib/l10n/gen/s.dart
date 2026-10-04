@@ -1428,6 +1428,180 @@ abstract class S {
   /// In en, this message translates to:
   /// **'{error}\nRetrying automatically'**
   String bootRetrying(Object error);
+
+  /// No description provided for @encTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Passed by'**
+  String get encTitle;
+
+  /// No description provided for @encEntryTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Passed by'**
+  String get encEntryTitle;
+
+  /// No description provided for @encEntryEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'Friends who pass nearby show up here'**
+  String get encEntryEmpty;
+
+  /// No description provided for @encEntryRecent.
+  ///
+  /// In en, this message translates to:
+  /// **'Latest: {name} · {when}'**
+  String encEntryRecent(Object name, Object when);
+
+  /// No description provided for @encEmptyTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'No one has passed by yet'**
+  String get encEmptyTitle;
+
+  /// No description provided for @encEmptyBody.
+  ///
+  /// In en, this message translates to:
+  /// **'When a SpotLink friend passes nearby, we keep when, who, and where on this device — even if you weren\'t looking at the app.'**
+  String get encEmptyBody;
+
+  /// No description provided for @encUnknownPeer.
+  ///
+  /// In en, this message translates to:
+  /// **'Unidentified SpotLink user'**
+  String get encUnknownPeer;
+
+  /// No description provided for @encUnknownHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Came close but left before connecting'**
+  String get encUnknownHint;
+
+  /// No description provided for @encMissed.
+  ///
+  /// In en, this message translates to:
+  /// **'Missed'**
+  String get encMissed;
+
+  /// No description provided for @encAutoSent.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto-message sent'**
+  String get encAutoSent;
+
+  /// No description provided for @encDirect.
+  ///
+  /// In en, this message translates to:
+  /// **'Direct'**
+  String get encDirect;
+
+  /// No description provided for @encViaHops.
+  ///
+  /// In en, this message translates to:
+  /// **'via {hops} hops'**
+  String encViaHops(Object hops);
+
+  /// No description provided for @encBriefly.
+  ///
+  /// In en, this message translates to:
+  /// **'Briefly'**
+  String get encBriefly;
+
+  /// No description provided for @encForMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'for {minutes} min'**
+  String encForMinutes(Object minutes);
+
+  /// No description provided for @encNoLocation.
+  ///
+  /// In en, this message translates to:
+  /// **'No location'**
+  String get encNoLocation;
+
+  /// No description provided for @encLocationToggle.
+  ///
+  /// In en, this message translates to:
+  /// **'Record location'**
+  String get encLocationToggle;
+
+  /// No description provided for @encLocationNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Kept only on this device. Place names are looked up by sending coordinates to your device\'s map service'**
+  String get encLocationNote;
+
+  /// No description provided for @encLocationNoteForeground.
+  ///
+  /// In en, this message translates to:
+  /// **'Kept only on this device, and recorded only while the app is open here. Place names are looked up via your device\'s map service'**
+  String get encLocationNoteForeground;
+
+  /// No description provided for @encClear.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear history'**
+  String get encClear;
+
+  /// No description provided for @encClearTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear all passed-by history?'**
+  String get encClearTitle;
+
+  /// No description provided for @encClearBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Times and locations will be deleted from this device. This can\'t be undone.'**
+  String get encClearBody;
+
+  /// No description provided for @encCleared.
+  ///
+  /// In en, this message translates to:
+  /// **'History cleared'**
+  String get encCleared;
+
+  /// No description provided for @autoMsgTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto-message when passing by'**
+  String get autoMsgTitle;
+
+  /// No description provided for @autoMsgOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Off'**
+  String get autoMsgOff;
+
+  /// No description provided for @autoMsgHint.
+  ///
+  /// In en, this message translates to:
+  /// **'e.g. You were nearby! Coffee next time?'**
+  String get autoMsgHint;
+
+  /// No description provided for @autoMsgHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Sent automatically when you connect with this friend — at most once every {hours} hours.'**
+  String autoMsgHelp(Object hours);
+
+  /// No description provided for @autoMsgTurnOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn off'**
+  String get autoMsgTurnOff;
+
+  /// No description provided for @autoMsgSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto-message set'**
+  String get autoMsgSaved;
+
+  /// No description provided for @autoMsgCleared.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto-message turned off'**
+  String get autoMsgCleared;
 }
 
 class _SDelegate extends LocalizationsDelegate<S> {

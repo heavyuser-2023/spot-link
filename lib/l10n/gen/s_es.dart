@@ -765,4 +765,103 @@ class SEs extends S {
   String bootRetrying(Object error) {
     return '$error\nReintentando automáticamente';
   }
+
+  @override
+  String get encTitle => 'Pasaron cerca';
+
+  @override
+  String get encEntryTitle => 'Pasaron cerca';
+
+  @override
+  String get encEntryEmpty => 'Aquí aparecen los amigos que pasan cerca';
+
+  @override
+  String encEntryRecent(Object name, Object when) {
+    return 'Último: $name · $when';
+  }
+
+  @override
+  String get encEmptyTitle => 'Todavía no ha pasado nadie';
+
+  @override
+  String get encEmptyBody =>
+      'Cuando un amigo de SpotLink pasa cerca, guardamos en este dispositivo cuándo, quién y dónde, aunque no estuvieras mirando la app.';
+
+  @override
+  String get encUnknownPeer => 'Usuario de SpotLink no identificado';
+
+  @override
+  String get encUnknownHint => 'Se acercó, pero se fue antes de conectar';
+
+  @override
+  String get encMissed => 'Perdido';
+
+  @override
+  String get encAutoSent => 'Mensaje automático enviado';
+
+  @override
+  String get encDirect => 'Directo';
+
+  @override
+  String encViaHops(Object hops) {
+    return 'vía $hops saltos';
+  }
+
+  @override
+  String get encBriefly => 'Brevemente';
+
+  @override
+  String encForMinutes(Object minutes) {
+    return 'durante $minutes min';
+  }
+
+  @override
+  String get encNoLocation => 'Sin ubicación';
+
+  @override
+  String get encLocationToggle => 'Guardar ubicación';
+
+  @override
+  String get encLocationNote =>
+      'Se guarda solo en este dispositivo. Los nombres de lugares se consultan enviando las coordenadas al servicio de mapas del dispositivo';
+
+  @override
+  String get encLocationNoteForeground =>
+      'Se guarda solo en este dispositivo y aquí solo se registra con la app abierta. Los nombres de lugares se consultan al servicio de mapas del dispositivo';
+
+  @override
+  String get encClear => 'Borrar historial';
+
+  @override
+  String get encClearTitle => '¿Borrar todo el historial?';
+
+  @override
+  String get encClearBody =>
+      'Las horas y ubicaciones se eliminarán de este dispositivo. No se puede deshacer.';
+
+  @override
+  String get encCleared => 'Historial borrado';
+
+  @override
+  String get autoMsgTitle => 'Mensaje automático al pasar cerca';
+
+  @override
+  String get autoMsgOff => 'Desactivado';
+
+  @override
+  String get autoMsgHint => 'p. ej. ¡Estabas cerca! ¿Un café la próxima?';
+
+  @override
+  String autoMsgHelp(Object hours) {
+    return 'Se envía automáticamente al conectar con este amigo, como máximo una vez cada $hours horas.';
+  }
+
+  @override
+  String get autoMsgTurnOff => 'Desactivar';
+
+  @override
+  String get autoMsgSaved => 'Mensaje automático configurado';
+
+  @override
+  String get autoMsgCleared => 'Mensaje automático desactivado';
 }
