@@ -19,7 +19,8 @@ import '../core/ble/mesh_transport.dart'
         knownPeersLoad,
         knownPeersSave,
         bondedPeersLoad,
-        bondedPeersSave;
+        bondedPeersSave,
+        advertiseSlotYield;
 import '../core/crypto/identity.dart';
 import '../core/mesh_node.dart';
 import '../core/model/frame.dart';
@@ -317,10 +318,6 @@ class MeshController extends MeshFrontend
       }
       node.incomingPartPath = (tid) => p.join(incoming.path, '$tid.part');
     } catch (_) {} // node는 systemTemp로 폴백한다
-    // Wake-beacon TX: Android는 항상 송신하고(백그라운드 OK); iOS는 foreground
-    // 상태일 때만 송신한다 — resume될 때마다 다시 확정한다. 이것이 근처의
-    // 스와이프-강제종료된 아이폰을 되살린다(그들은 이 비콘의 리전을 모니터링한다).
-    unawaited(BeaconWake.startTx());
     unawaited(_refreshBeaconStatus());
     // 네이티브 P2P fast-lane 능력을 탐지한다(Wi-Fi Direct / Multipeer).
     // 모든 플랫폼에서 안전하다: 네이티브 핸들러가 없으면 → capabilities는 비어
@@ -414,7 +411,23 @@ class MeshController extends MeshFrontend
 
     _sub = node.events.listen(_onEvent);
     _rssiSub = node.rssiSamples.listen(_onRssi);
+    // 슬롯 경합 시 토치를 양보시킨다([advertiseSlotYield] 참고). 메시 광고가
+    // 실패하면 이 노드는 어떤 스캔에도 보이지 않으므로 토치보다 우선한다.
+    advertiseSlotYield = () async {
+      bleLogSink?.call('${DateTime.now().toIso8601String()} '
+          'wake torch stopped — mesh advertising needs the BLE slot');
+      await BeaconWake.stopTx();
+    };
     started = await node.start();
+    // Wake-beacon TX: Android는 항상 송신하고(백그라운드 OK); iOS는 foreground
+    // 상태일 때만 송신한다 — resume될 때마다 다시 확정한다. 이것이 근처의
+    // 스와이프-강제종료된 아이폰을 되살린다(그들은 이 비콘의 리전을 모니터링한다).
+    //
+    // **반드시 node.start() 뒤에 켠다.** 일부 Samsung은 레거시 광고 인스턴스를
+    // 하나만 지원해서, 토치가 먼저 슬롯을 잡으면 메시 광고가 code 2로 영영
+    // 실패하고 그 폰은 BLE 스캔에 보이지 않게 된다 — 그런데 토치는 계속 돌아
+    // 주변 iPhone을 깨우므로 "알림은 오는데 레이더엔 없는" 증상이 된다.
+    unawaited(BeaconWake.startTx());
     // 부팅 시 링크 없음 시계를 시작한다: 한 번도 링크되지 않는 재기동(빠른
     // 스와이프-강제종료 → 재기동, 피어의 wake가 막힘)은 이른 펄스를 촉발해야
     // 한다 — 링크가 아예 맺히지 않으면 LinksChanged만으로는 결코 발생하지 않는다.

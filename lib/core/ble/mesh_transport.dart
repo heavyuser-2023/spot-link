@@ -2,7 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
-import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+import 'package:flutter/foundation.dart'
+    show debugPrint, kDebugMode, visibleForTesting;
 import 'package:flutter/services.dart' show MethodChannel;
 
 import '../model/peer_id.dart';
@@ -38,6 +39,20 @@ void Function(List<String> uuids)? knownPeersSave;
 /// 제외된다. [MeshTransport.ensureBonded] 참고.
 Future<Map<String, String>> Function()? bondedPeersLoad;
 void Function(Map<String, String> peers)? bondedPeersSave;
+
+/// 메시 광고가 **BLE 광고 슬롯 부족**(Android
+/// `ADVERTISE_FAILED_TOO_MANY_ADVERTISERS`, error code 2)으로 실패했을 때 앱
+/// 계층이 웨이크 비콘 토치를 양보시키도록 거는 훅.
+///
+/// 왜 필요한가: 일부 Samsung 기기는 레거시 광고 인스턴스를 **하나만** 지원한다
+/// (`isMultipleAdvertisementSupported() == false`). 그런 기기에서 비콘 토치가
+/// 슬롯을 먼저 잡으면 메시 광고는 영영 실패하고, 그 노드는 BLE 스캔에 전혀
+/// 보이지 않는다 — 그런데 토치는 계속 돌아 주변 iPhone을 깨운다. 그래서
+/// "친구가 근처에 있다는 알림은 오는데 레이더엔 없고 메시지도 못 보내는"
+/// 증상이 **일부 삼성 폰에서만** 나타났다(2026-10-04 신고). 발견되지 못하는
+/// 노드는 아무것도 할 수 없으므로, 슬롯 경합에서는 **메시 광고가 토치보다
+/// 우선**이다.
+Future<void> Function()? advertiseSlotYield;
 
 void _log(String msg) {
   if (_logBle) debugPrint(msg);
@@ -751,6 +766,7 @@ class MeshTransport implements MeshTransportInterface {
             'pending=${_pendingKeys.length} known=${_knownPeers.length} '
             'probeMiss=${_probeMisses.length} '
             'fg=$_foregroundScan scan=${_scanningUnfiltered == null ? 'off' : (_scanningUnfiltered! ? 'unfiltered' : 'filtered')} '
+            'adv=${_advertising ? 'ok' : 'FAIL${_lastAdvertiseError ?? '?'}'} '
             'saw=$_sawTotal spot=$_sawSpotLink apple=$_sawApple');
         _sawTotal = 0;
         _sawSpotLink = 0;
@@ -1219,6 +1235,7 @@ class MeshTransport implements MeshTransportInterface {
     if (restart) {
       try {
         await _peripheral.stopAdvertising();
+        _advertising = false;
       } catch (_) {}
     }
     // NAME + service UUID만 advertise한다. 예전에는 short id도 manufacturer
@@ -1232,15 +1249,69 @@ class MeshTransport implements MeshTransportInterface {
     // 필터링되기 때문이며(우리를 discover하는 유일한 수단), 이름은 iOS
     // 포그라운드 discovery를 이끈다. (Darwin은 manufacturer-data advertising을
     // 지원한 적이 없다.)
+    if (await _tryAdvertise()) return;
+    // 재시도할 가치가 있는 실패는 **슬롯 경합(code 2)** 하나뿐이다: 웨이크
+    // 토치가 단일 광고 슬롯을 쥐고 있는 Samsung 사례([advertiseSlotYield]).
+    // 토치를 양보시키고 한 번 더 건다 — 발견되지 못하는 노드는 아무것도 할 수
+    // 없으므로 메시 광고가 토치를 이긴다. 다른 코드(데이터 초과·미지원 등)는
+    // 재시도해도 같은 결과라 로그로만 남긴다.
+    if (_lastAdvertiseError == _advertiseTooManyAdvertisers &&
+        advertiseSlotYield != null) {
+      _log('BLE advertise slot contended (code 2) — yielding wake torch');
+      try {
+        await advertiseSlotYield!();
+      } catch (_) {}
+      // stopAdvertising은 바인더 호출이 돌아온 뒤에도 컨트롤러가 슬롯을 실제로
+      // 반납하기까지 잠깐 걸린다 — 곧바로 다시 걸면 같은 code 2를 맞는다.
+      // 놓쳐도 다음 self-heal 틱(15초)이 토치가 내려간 상태에서 다시 건다.
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (await _tryAdvertise()) {
+        _log('BLE advertising recovered after torch yield');
+      }
+    }
+  }
+
+  /// Android `ADVERTISE_FAILED_TOO_MANY_ADVERTISERS`.
+  static const int _advertiseTooManyAdvertisers = 2;
+
+  /// 우리 메시 광고가 지금 올라와 있는가. 진단용 — 이 값이 false로 굳어 있으면
+  /// 그 노드는 어떤 스캔에도 보이지 않는다.
+  bool _advertising = false;
+
+  /// 마지막 startAdvertising 실패의 Android error code(성공했으면 null).
+  int? _lastAdvertiseError;
+
+  /// 벤더 플러그인은 Android 실패를 문자열로 감싸 던진다
+  /// ("Start advertising failed with error code: N"). 복구 분기와 진단을 위해
+  /// 그 숫자를 되살린다; 숫자가 없으면 null.
+  @visibleForTesting
+  static int? advertiseErrorCode(Object e) {
+    final m = RegExp(r'error code:\s*(\d+)').firstMatch(e.toString());
+    return m == null ? null : int.tryParse(m.group(1)!);
+  }
+
+  /// 광고를 한 번 시도한다. 성공(또는 이미 광고 중)이면 true.
+  Future<bool> _tryAdvertise() async {
     try {
       await _peripheral.startAdvertising(Advertisement(
         name: BleConstants.advertisedName,
         serviceUUIDs: [BleConstants.serviceUuid],
       ));
+      _advertising = true;
+      _lastAdvertiseError = null;
       _log('BLE advertising started (name + service uuid)');
+      return true;
     } catch (e) {
-      if (_isAlreadyAdvertising(e)) return;
-      _log('BLE startAdvertising failed: $e');
+      if (_isAlreadyAdvertising(e)) {
+        _advertising = true; // 이미 올라와 있다 = 목표 달성
+        _lastAdvertiseError = null;
+        return true;
+      }
+      _advertising = false;
+      _lastAdvertiseError = advertiseErrorCode(e);
+      _log('BLE startAdvertising failed '
+          '(code=${_lastAdvertiseError ?? '?'}): $e');
+      return false;
     }
   }
 
