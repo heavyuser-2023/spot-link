@@ -1290,16 +1290,31 @@ class MeshTransport implements MeshTransportInterface {
     return m == null ? null : int.tryParse(m.group(1)!);
   }
 
+  /// 광고에 이름('SL')을 싣는가. [RadioProfile.advertiseNameOptional] 플랫폼에서
+  /// 이름 단계가 한 번 실패하면 이 세션 동안 꺼 둔다 — 매 시도마다 같은
+  /// 실패(또는 몇 초짜리 매달림)를 반복할 이유가 없다.
+  bool _advertiseWithName = true;
+
+  /// 이름 단계가 끝없이 매달릴 수 있는 플랫폼에서 광고 시작에 거는 상한.
+  /// 정상이라면 어댑터 이름 방송과 광고 콜백이 1초 안에 끝난다.
+  static const Duration _advertiseStartTimeout = Duration(seconds: 8);
+
   /// 광고를 한 번 시도한다. 성공(또는 이미 광고 중)이면 true.
   Future<bool> _tryAdvertise() async {
+    final named = _advertiseWithName;
     try {
-      await _peripheral.startAdvertising(Advertisement(
-        name: BleConstants.advertisedName,
+      var op = _peripheral.startAdvertising(Advertisement(
+        name: named ? BleConstants.advertisedName : null,
         serviceUUIDs: [BleConstants.serviceUuid],
       ));
+      if (profile.advertiseNameOptional) {
+        op = op.timeout(_advertiseStartTimeout);
+      }
+      await op;
       _advertising = true;
       _lastAdvertiseError = null;
-      _log('BLE advertising started (name + service uuid)');
+      _log('BLE advertising started '
+          '(${named ? 'name + service uuid' : 'service uuid only'})');
       return true;
     } catch (e) {
       if (_isAlreadyAdvertising(e)) {
@@ -1311,8 +1326,31 @@ class MeshTransport implements MeshTransportInterface {
       _lastAdvertiseError = advertiseErrorCode(e);
       _log('BLE startAdvertising failed '
           '(code=${_lastAdvertiseError ?? '?'}): $e');
+      if (named &&
+          dropsAdvertiseName(e,
+              nameOptional: profile.advertiseNameOptional)) {
+        _advertiseWithName = false;
+        _log('BLE advertise name step failed — '
+            'falling back to service uuid only');
+        return _tryAdvertise();
+      }
       return false;
     }
+  }
+
+  /// 이 광고 실패가 **이름 단계** 탓이라 이름을 빼고 다시 걸어야 하는가.
+  ///
+  /// 무선 스택의 광고 실패는 언제나 error code를 단다(슬롯 경합 2, 데이터
+  /// 초과 1 …) — 이름을 빼도 같은 결과다. code가 **없는** 실패는 그 앞
+  /// 단계에서 났다는 뜻이다: 어댑터 이름 변경 거부(IllegalStateException),
+  /// 바뀐 이름 불일치(ArgumentError), 완료 방송이 오지 않아 매달림
+  /// (TimeoutException). 이 경우 서비스 UUID만으로도 발견되므로 이름을 버린다
+  /// ([RadioProfile.advertiseNameOptional]).
+  @visibleForTesting
+  static bool dropsAdvertiseName(Object error, {required bool nameOptional}) {
+    if (!nameOptional) return false;
+    if (_isAlreadyAdvertising(error)) return false;
+    return advertiseErrorCode(error) == null;
   }
 
   void _wirePeripheral() {
@@ -1890,6 +1928,7 @@ class MeshTransport implements MeshTransportInterface {
     final linkId = 'C:$key';
     var connected = false; // _central.connect가 성공했는가?
     var serviceMissing = false; // 연결됐지만 SpotLink service가 없음
+    var linked = false; // 링크가 성립해 _links에 올라갔는가?
     if (probe) _activeProbes.add(key);
     final pauseScan = profile.pausesScanWhileConnecting;
     try {
@@ -1996,6 +2035,7 @@ class MeshTransport implements MeshTransportInterface {
         maxPacketSize: maxPacket.clamp(BleConstants.defaultMaxPacketSize, 512),
       )..remoteShortId = remoteId;
       _links[linkId] = link;
+      linked = true;
       _emitUp(link);
       if (probe) _log('BLE probe hit: $key is a SpotLink peer');
       _reconnectAttempts.remove(key);
@@ -2052,10 +2092,28 @@ class MeshTransport implements MeshTransportInterface {
         _activeProbes.remove(key);
         // 타임아웃된 probe(깨끗한 disconnect가 아님)는 pending connectGatt를
         // 남긴다 — GATT 클라이언트 슬롯이 풀리도록 강제로 해제한다.
-        unawaited(_central.disconnect(peripheral).then((_) {}, onError: (_) {}));
+        if (releasesProbeConnection(linked: linked)) {
+          unawaited(
+              _central.disconnect(peripheral).then((_) {}, onError: (_) {}));
+        }
       }
     }
   }
+
+  /// probe dial이 끝난 뒤 연결을 강제로 놓아야 하는가.
+  ///
+  /// **성공한 probe는 절대 끊지 않는다.** 예전에는 이 정리가 성공·실패를
+  /// 가리지 않고 돌아서, probe가 SpotLink iPhone을 찾아 링크를 올린 바로 그
+  /// 순간 연결을 끊었다. 포크 플러그인의 disconnect는 `gatt.close()`라 끊김
+  /// 콜백도 오지 않는다 — 우리 쪽엔 링크가 살아 있는 듯 남았다가 첫 write가
+  /// 실패하며 잘리고, 다시 probe → 다시 끊김을 끝없이 반복했다. 백그라운드
+  /// iPhone은 광고에 표식이 없어 probe가 Android의 **유일한** 도달 경로이므로,
+  /// 이 경로가 통째로 막혀 있었다(2026-10-06 heavy: 사무실 삼성이 매번 새
+  /// 주소로 붙고 ~3초 뒤 구독 해제 → `central not subscribed` 15회+, 신원 미확인
+  /// 비콘 만남만 10건). 실패한 probe는 catch에서 이미 끊었고, 여기서 한 번 더
+  /// 놓는 것은 타임아웃이 남긴 connectGatt 회수용 안전망이다.
+  @visibleForTesting
+  static bool releasesProbeConnection({required bool linked}) => !linked;
 
   /// Darwin의 connect()는 peripheral 식별자가 시스템 캐시에 알려져 있지 않을 때
   /// `illegalArgument`를 throw한다 — 그 식별자에 대한 영구적 실패이지, 일시적

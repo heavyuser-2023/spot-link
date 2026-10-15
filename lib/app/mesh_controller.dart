@@ -43,6 +43,7 @@ import 'encounter_tracker.dart';
 import 'mesh_frontend.dart';
 import 'mesh_frontend_state.dart';
 import 'notification_service.dart';
+import 'wake_torch_keeper.dart';
 
 export 'mesh_frontend.dart' show ConversationSummary, MeshFrontend;
 
@@ -112,6 +113,15 @@ class MeshController extends MeshFrontend
   bool _everLinked = false; // 이 프로세스에서의 링크 여부 → drop 주기로 전환
   bool _pulsedSinceBoot = false; // 첫 펄스 이후 drop 주기로 안착
   Timer? _beaconPulseTimer;
+
+  /// 웨이크 토치가 꺼진 채 굳지 않게 지킨다 — 슬롯 양보 후 재점화, 헤드리스
+  /// (Android 서비스)에서 주기 재확정([WakeTorchKeeper] 참고).
+  late final WakeTorchKeeper _torch = WakeTorchKeeper(
+    start: BeaconWake.startTx,
+    stop: BeaconWake.stopTx,
+    log: (line) =>
+        bleLogSink?.call('${DateTime.now().toIso8601String()} $line'),
+  );
 
   /// 적응형 전력(Android 전용 — 24/7 foreground-service 소모). 비싼 부분은
   /// LOW_LATENCY로 계속 이어지는 BLE *스캐닝*이다; 광고(advertising)와 beacon
@@ -431,11 +441,7 @@ class MeshController extends MeshFrontend
     _rssiSub = node.rssiSamples.listen(_onRssi);
     // 슬롯 경합 시 토치를 양보시킨다([advertiseSlotYield] 참고). 메시 광고가
     // 실패하면 이 노드는 어떤 스캔에도 보이지 않으므로 토치보다 우선한다.
-    advertiseSlotYield = () async {
-      bleLogSink?.call('${DateTime.now().toIso8601String()} '
-          'wake torch stopped — mesh advertising needs the BLE slot');
-      await BeaconWake.stopTx();
-    };
+    advertiseSlotYield = _torch.yieldSlot;
     started = await node.start();
     // Wake-beacon TX: Android는 항상 송신하고(백그라운드 OK); iOS는 foreground
     // 상태일 때만 송신한다 — resume될 때마다 다시 확정한다. 이것이 근처의
@@ -506,6 +512,9 @@ class MeshController extends MeshFrontend
       // 네이티브 웨이크 토치에 생존 신호를 보낸다 — 이 타이머(=메시 소유
       // isolate)가 멎으면 토치도 꺼져야 한다([BeaconWake.heartbeat]).
       unawaited(BeaconWake.heartbeat());
+      // Android 서비스에는 토치를 다시 켜 주는 수명주기·펄스가 없다 — 슬롯
+      // 양보나 심박 게이트로 꺼진 토치를 여기서 되살린다.
+      if (headless) _torch.tick();
       // 부팅 시에만 하지 않고 폴링하여, 한 번도 링크되지 않은 wake뿐 아니라
       // 나중에 끊겨 다시 맺지 못한 링크까지 넛지가 다루도록 한다.
       if (profile.reconcilesForegroundMode && !headless) {

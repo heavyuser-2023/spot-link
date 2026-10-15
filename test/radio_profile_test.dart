@@ -28,6 +28,9 @@ void main() {
       expect(p.pausesScanWhileConnecting, isFalse);
       expect(p.supportsScanPowerTuning, isFalse);
       expect(p.probesAppleDevices, isFalse);
+      // iPhone끼리의 포그라운드 발견은 이름('SL') 매칭에 의존한다 — 이름을
+      // 버리는 폴백을 켜면 iOS 27 포그라운드 iPhone이 서로 안 보인다.
+      expect(p.advertiseNameOptional, isFalse);
     });
 
     test('Android: 무선 경합·전력·프로브 대응이 켜져 있다', () {
@@ -45,6 +48,9 @@ void main() {
       expect(p.usesAdaptivePower, isTrue);
       // Android connect()는 슬롯을 막으므로 대기 연결을 쓰지 않는다.
       expect(p.usesPendingConnect, isFalse);
+      // 어댑터 이름 변경이 막히는 기기에서도 서비스 UUID만으로 광고해야
+      // 보인다(이름 단계 실패 = 광고 전체 실패였다).
+      expect(p.advertiseNameOptional, isTrue);
     });
 
     test('macOS: iOS와 같은 CoreBluetooth 대응을 받는다(2등 시민 금지)', () {

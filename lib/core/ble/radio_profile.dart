@@ -96,6 +96,18 @@ class RadioProfile {
   /// 남기지 않으므로** 이것이 Android가 그들을 찾는 유일한 방법이다.
   final bool probesAppleDevices;
 
+  /// 광고의 이름('SL') 단계가 실패하면 **서비스 UUID만으로 광고**한다.
+  ///
+  /// Android 플러그인은 이름을 광고하려고 블루투스 어댑터 이름을 바꾸고 그
+  /// 완료 방송(ACTION_LOCAL_NAME_CHANGED)을 기다린다. 이 단계가 거부되거나
+  /// 방송이 오지 않으면 광고 전체가 실패하거나 영영 매달려, 그 폰은 어떤
+  /// 스캔에도 보이지 않는다 — 네이티브 웨이크 토치는 이름을 안 쓰므로 혼자
+  /// 살아 iPhone을 깨운다("알림은 오는데 레이더엔 없음"의 또 다른 경로).
+  /// Android 광고자는 서비스 UUID만으로 iOS(백그라운드 필터 스캔 포함)와
+  /// Android 모두에게 발견되므로 이름은 없어도 된다. iOS는 iPhone끼리의
+  /// 포그라운드 발견이 이름에 의존하므로 끄지 않는다.
+  final bool advertiseNameOptional;
+
   /// 알 수 없는/회전된 식별자로 connect할 때 스택이 던지는 오류를 식별한다.
   /// CoreBluetooth는 `illegalArgument`를 던진다 — 그러면 저장된 식별자를
   /// 버리고 스캔으로 새 주소를 찾는다.
@@ -156,6 +168,7 @@ class RadioProfile {
     this.pausesScanWhileConnecting = false,
     this.connectTimeout = const Duration(seconds: 20),
     this.probesAppleDevices = false,
+    this.advertiseNameOptional = false,
     this.isUnknownIdentifierError = _never,
     this.needsStackHardReset = false,
     this.supportsBeaconWake = false,
@@ -233,6 +246,7 @@ class RadioProfile {
     pausesScanWhileConnecting: true, // status 133 회피
     connectTimeout: Duration(seconds: 20),
     probesAppleDevices: true, // 백그라운드 iPhone을 찾는 유일한 길
+    advertiseNameOptional: true, // 어댑터 이름 변경이 막히는 기기 대비
     usesAdaptivePower: true,
     encounterLocation: EncounterLocationPolicy.foregroundOnly,
   );

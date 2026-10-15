@@ -52,4 +52,44 @@ void main() {
           2);
     });
   });
+
+  /// Android 플러그인은 이름('SL')을 광고하려고 어댑터 이름을 바꾸고 완료
+  /// 방송을 기다린다. 그 단계가 거부되거나 매달리면 광고 전체가 실패해 그
+  /// 폰은 아무에게도 보이지 않는다 — 토치는 이름을 안 쓰므로 혼자 살아
+  /// iPhone을 깨운다. 이름 단계 실패만 골라 서비스 UUID만으로 다시 건다.
+  group('광고 이름 단계 실패 판정', () {
+    test('code 없는 실패(이름 거부·불일치·매달림)는 이름을 버린다', () {
+      for (final e in <Object>[
+        Exception('PlatformException(IllegalStateException, null, null)'),
+        ArgumentError('Name changed, but Galaxy S24 is different from SL'),
+        Exception('TimeoutException after 0:00:08.000000: Future not completed'),
+      ]) {
+        expect(MeshTransport.dropsAdvertiseName(e, nameOptional: true), isTrue,
+            reason: '$e');
+      }
+    });
+
+    test('무선 스택의 광고 실패(code 있음)는 이름 탓이 아니다', () {
+      final slot = Exception('Start advertising failed with error code: 2');
+      expect(MeshTransport.dropsAdvertiseName(slot, nameOptional: true),
+          isFalse,
+          reason: '슬롯 경합은 토치 양보로 풀어야 한다 — 이름을 빼도 같다');
+    });
+
+    test('이미 광고 중이면 실패가 아니다', () {
+      expect(
+          MeshTransport.dropsAdvertiseName(
+              Exception('Advertising has already started'),
+              nameOptional: true),
+          isFalse);
+    });
+
+    test('이름이 필수인 플랫폼(iOS)은 절대 이름을 버리지 않는다', () {
+      expect(
+          MeshTransport.dropsAdvertiseName(Exception('CBErrorDomain Code=1'),
+              nameOptional: false),
+          isFalse,
+          reason: 'iPhone끼리의 포그라운드 발견은 이름 매칭에 의존한다');
+    });
+  });
 }
