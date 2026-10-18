@@ -26,6 +26,8 @@ abstract class BluetoothLowEnergyManagerImpl(val context: Context) {
     init {
         val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
         filter.addAction(BluetoothAdapter.ACTION_LOCAL_NAME_CHANGED)
+        filter.addAction(Intent.ACTION_SCREEN_OFF)
+        filter.addAction(Intent.ACTION_SCREEN_ON)
         context.registerReceiver(mBroadcastReceiver, filter)
     }
 

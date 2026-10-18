@@ -313,9 +313,24 @@ class PlatformFastLane implements FastLaneInterface {
     return null;
   }
 
+  /// 조각(64KB) 하나의 네이티브 쓰기 상한. Android는 소켓 쓰기를 백그라운드
+  /// 스레드에서 끝까지 기다렸다 응답하므로, 상대가 읽지 않거나(아이폰 앱 정지)
+  /// 연결이 조용히 죽으면 TCP 재전송 한도(수 분~15분)까지 응답이 오지 않는다 —
+  /// 그동안 fast-lane 직렬화 락이 멈춰 뒤에 줄 선 파일까지 전부 매달린다.
+  /// 64KB는 느린 링크에서도 수 초면 끝나므로 넉넉히 잡는다.
+  static const Duration _sendChunkTimeout = Duration(seconds: 20);
+
   Future<void> _send(String tid, Uint8List data) async {
     try {
-      await _method.invokeMethod('send', {'transferId': tid, 'data': data});
+      await _method
+          .invokeMethod('send', {'transferId': tid, 'data': data})
+          .timeout(_sendChunkTimeout);
+    } on TimeoutException {
+      // 삼키지 않고 올린다: 호출자(MeshNode)가 이 전송을 실패로 처리해 세션을
+      // 닫고(네이티브 close가 소켓을 닫아 막힌 쓰기를 풀어 준다) BLE로 넘긴다.
+      logSink?.call('FT fast send stalled '
+          '(${_sendChunkTimeout.inSeconds}s, native unresponsive) tid=$tid');
+      rethrow;
     } catch (_) {}
   }
 

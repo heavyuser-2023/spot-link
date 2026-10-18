@@ -19,4 +19,11 @@ class ScanCallbackImpl(manager: CentralManagerImpl) : ScanCallback() {
         super.onScanResult(callbackType, result)
         mManager.onScanResult(result)
     }
+
+    override fun onBatchScanResults(results: MutableList<ScanResult>) {
+        super.onBatchScanResults(results)
+        for (result in results) {
+            mManager.onScanResult(result)
+        }
+    }
 }

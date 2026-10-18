@@ -96,6 +96,26 @@ class MeshLink {
   // 마지막 with-response flush 이후 write한 패킷 수(central 역할에서만).
   int txBurst = 0;
 
+  // 링크별 GATT 비동기 작업 직렬화 큐.
+  // Android BluetoothGatt는 단일 mDeviceBusy 락을 사용하므로 한 링크에서
+  // writeCharacteristic, readCharacteristic, readRSSI가 동시에 호출되면
+  // 즉시 IllegalStateException(!writing/!reading)이 발생해 링크가 절단된다.
+  // 또한 동일 특성에 대한 동시 write는 네이티브 콜백 맵을 덮어써 10초
+  // TimeoutException 절단을 유발하므로, 모든 링크별 GATT 작업을 직렬화한다.
+  Future<void> _opQueue = Future<void>.value();
+
+  Future<T> enqueueOp<T>(Future<T> Function() op) {
+    final completer = Completer<T>();
+    _opQueue = _opQueue.then((_) async {
+      try {
+        completer.complete(await op());
+      } catch (e, st) {
+        completer.completeError(e, st);
+      }
+    });
+    return completer.future;
+  }
+
   MeshLink({
     required this.id,
     required this.role,
@@ -429,10 +449,17 @@ class MeshTransport implements MeshTransportInterface {
     }
     try {
       // 상한에는 사용자가 페어링 다이얼로그에서 고민할 시간도 포함된다.
-      await _central
-          .readCharacteristic(link.peripheral!, link.remoteBond!)
+      final targetLink = link;
+      Future<Uint8List> read() => _central
+          .readCharacteristic(targetLink.peripheral!, targetLink.remoteBond!)
           .timeout(const Duration(seconds: 60));
-      final key = link.id.substring(2);
+      // 이 읽기는 페어링 창이 떠 있는 동안(최대 60초) 끝나지 않는다. 링크
+      // 직렬화 큐에 넣으면 그동안 이 링크의 모든 송신(ANNOUNCE·메시지)이 뒤에서
+      // 기다린다. 한 번에 GATT 작업 하나만 받는 스택(Android)에서는 그래도
+      // 큐가 낫다 — 큐 밖에서 쓰면 쓰기가 busy로 실패해 링크가 잘린다. 스택이
+      // 스스로 줄을 세우는 곳(CoreBluetooth)에서는 큐를 비켜 송신을 막지 않는다.
+      await (profile.serializesGattOps ? targetLink.enqueueOp(read) : read());
+      final key = targetLink.id.substring(2);
       _bondedPeers[peerHex] = key;
       bondedPeersSave?.call(Map.of(_bondedPeers));
       _log('BLE bonded with peer $peerHex ($key)');
@@ -740,18 +767,24 @@ class MeshTransport implements MeshTransportInterface {
             unawaited(_startAdvertising());
           }
           if (_powerMode == PowerMode.active) {
-            unawaited(_stopScanning().then((_) => _startScanning()));
+            if (profile.alternatesScanWindows) {
+              unawaited(_stopScanning().then((_) => _startScanning()));
+            } else {
+              unawaited(_startScanning());
+            }
           }
         }
         return;
       }
       _linkedTicks = 0;
       _linklessTicks++;
+      var scannerBlind = false;
       // 링크 0이 이어질 때, **무선이 무엇을 보고는 있는지**를 주기적으로
       // 남긴다. 예전에는 "안 붙는다"는 신고에 스캔 로그만 잔뜩 있고 상대를
       // 봤는지조차 알 수 없었다(2026-07-27 S21: heavy 로그에 S21 흔적 0,
       // 발견 자체가 없었는지 발견 후 실패였는지 구분 불가).
       if (_linklessTicks % 4 == 0) {
+        scannerBlind = _sawTotal == 0;
         final seen = _lastDialAt.length;
         // scan= 은 **라디오에 실제로 걸려 있는 필터**다. fg= 와 함께 남긴다:
         // 이 둘이 어긋난 채(백그라운드인데 무필터 / 포그라운드인데 필터) 오래
@@ -820,12 +853,17 @@ class MeshTransport implements MeshTransportInterface {
         }
       }
       if (_powerMode == PowerMode.active) {
-        // 그냥 다시 확립하지 말고 재활용(recycle)한다: 우리의 _scanning
-        // 플래그가 true로 남아 있는 동안 OS가 조용히 scan 결과 전달을 멈출 수
-        // 있다(iOS에서 긴 포그라운드 세션 후 관찰됨 — 새로 뜬 앱이 기존 앱은
-        // 눈멀어 있던 피어들을 즉시 discover했다). stop→start가 진짜 새 scan을
-        // 강제한다.
-        unawaited(_stopScanning().then((_) => _startScanning()));
+        // Android 7.0+는 30초 내 startScan이 5회 이상 호출되면
+        // SCAN_FAILED_SCANNING_TOO_FREQUENTLY로 스캔을 조용히 죽인다.
+        // connect마다 스캔을 일시정지하는 플랫폼(Android)에서 매 15초마다
+        // 멀쩡한 스캔까지 강제로 껐다 켜면 30초 내 5회 제한에 걸려 영구
+        // 스로틀링에 빠지므로, 평소에는 꺼져 있을 때만 켜고(_startScanning),
+        // 60초간 아무 패킷도 못 받았을 때(scannerBlind)만 재활용한다.
+        if (!profile.pausesScanWhileConnecting || scannerBlind) {
+          unawaited(_stopScanning().then((_) => _startScanning()));
+        } else {
+          unawaited(_startScanning());
+        }
       }
       // 아무것도 없을 때는 이전에 miss했던 Apple 기기를 더 빨리 다시 probe할
       // 수 있게 한다.
@@ -943,7 +981,11 @@ class MeshTransport implements MeshTransportInterface {
     for (final link in _links.values.toList()) {
       if (link.role != LinkRole.central || link.peripheral == null) continue;
       try {
-        final rssi = await _central.readRSSI(link.peripheral!);
+        final rssi = await link.enqueueOp(
+          () => _central
+              .readRSSI(link.peripheral!)
+              .timeout(const Duration(seconds: 4)),
+        );
         if (_disposed) return;
         _rssiFails.remove(link.id);
         if (link.remoteShortId != null) {
@@ -1008,13 +1050,24 @@ class MeshTransport implements MeshTransportInterface {
       _log('BLE peripheral state: ${e.state}');
       if (!_started) return;
       if (e.state == BluetoothLowEnergyState.poweredOn) {
-        await _setupPeripheral();
+        // 이미 publish되어 있으면 removeAllServices+addService를 다시 호출하지
+        // 않는다 — Android/iOS에서 stateChanged(poweredOn)가 중복 전달될 때
+        // 살아 있는 GATT 서비스와 원격 central의 구독 핸들을 날려버리는 것을 막는다.
+        if (!_servicePublished) {
+          await _setupPeripheral();
+        }
         // start()에서와 같은 유령 교체(ghost-replacement): peripheral 매니저의
         // 전원이 늦게 켜질 때(iOS 상태 복원)의 부팅 경로다.
         await _startAdvertising(restart: true);
       } else {
-        // 전원 off는 publish된 GATT 데이터베이스를 지운다.
+        // poweredOn이 아닌 모든 상태에서 publish된 GATT 데이터베이스와 원격
+        // 구독 상태가 사라진 것으로 본다 — 꺼짐만이 아니다. iOS는 bluetoothd가
+        // 재시작되는 resetting(Dart에선 unknown)과 권한 회수(unauthorized)에서도
+        // GATT 서비스를 지운다. 여기서 publish 표시를 남겨 두면 위의 중복
+        // poweredOn 가드가 재등록을 건너뛰어, 광고는 나가는데 서비스가 없는
+        // 상태로 deep heal(무링크 ~2분)까지 상대가 "service not found"로 실패한다.
         _servicePublished = false;
+        _subscribedCentrals.clear();
       }
     }));
   }
@@ -1044,6 +1097,7 @@ class MeshTransport implements MeshTransportInterface {
       await _peripheral.removeAllServices();
     } catch (_) {}
     _servicePublished = false;
+    _subscribedCentrals.clear();
     for (final t in _reconnectTimers.values) {
       t.cancel();
     }
@@ -1096,66 +1150,88 @@ class MeshTransport implements MeshTransportInterface {
     } catch (_) {
       return; // 이 링크에서 framing하기엔 프레임이 너무 큼
     }
-    // withResponse flush는 '버스트'(여러 패킷으로 쪼개지는 파일 청크)에서만
-    // 필요하다: iOS가 큐가 차면 write-without-response를 조용히 버리므로,
-    // ATT 왕복으로 큐를 비워줘야 청크가 증발하지 않는다. 반면 단일 패킷
-    // 제어 프레임(ANNOUNCE·ACK·짧은 텍스트)은 버스트가 아니므로 flush가
-    // 불필요하다 — 그런데도 6번째마다 withResponse를 강제하면, 삼성 One UI의
-    // 백그라운드 GATT 서버가 그 ATT 응답을 10초 안에 못 줘 링크 전체가
-    // 절단되고 재연결 플랩 루프에 빠진다(2026-07-24 12:38~ 삼성 최신폰:
-    // C링크 39회 write-timeout 절단, ANNOUNCE 교환 불가 → "못 찾음").
-    // 그래서 단일 패킷 프레임은 언제나 withoutResponse로 보낸다.
-    final isBurst = packets.length > 1;
-    for (final p in packets) {
-      try {
-        if (link.role == LinkRole.central) {
-          // 버스트일 때만 몇 패킷마다 response write로 큐를 비운다.
-          final bool flush;
-          if (isBurst) {
-            link.txBurst++;
-            flush = link.txBurst >= 6;
-            if (flush) link.txBurst = 0;
+    await link.enqueueOp(() async {
+      if (_disposed || !_links.containsKey(link.id)) return;
+      // withResponse flush는 '버스트'(여러 패킷으로 쪼개지는 파일 청크)에서만
+      // 필요하다: iOS가 큐가 차면 write-without-response를 조용히 버리므로,
+      // ATT 왕복으로 큐를 비워줘야 청크가 증발하지 않는다. 반면 단일 패킷
+      // 제어 프레임(ANNOUNCE·ACK·짧은 텍스트)은 버스트가 아니므로 flush가
+      // 불필요하다 — 그런데도 6번째마다 withResponse를 강제하면, 삼성 One UI의
+      // 백그라운드 GATT 서버가 그 ATT 응답을 10초 안에 못 줘 링크 전체가
+      // 절단되고 재연결 플랩 루프에 빠진다(2026-07-24 12:38~ 삼성 최신폰:
+      // C링크 39회 write-timeout 절단, ANNOUNCE 교환 불가 → "못 찾음").
+      // 그래서 단일 패킷 프레임은 언제나 withoutResponse로 보낸다.
+      final isBurst = packets.length > 1;
+      for (final p in packets) {
+        if (_disposed || !_links.containsKey(link.id)) return;
+        try {
+          if (link.role == LinkRole.central) {
+            // 버스트일 때만 몇 패킷마다 response write로 큐를 비운다.
+            final bool flush;
+            if (isBurst) {
+              link.txBurst++;
+              flush = link.txBurst >= 6;
+              if (flush) link.txBurst = 0;
+            } else {
+              flush = false;
+            }
+            await _central
+                .writeCharacteristic(
+                  link.peripheral!,
+                  link.remoteTx!,
+                  value: p,
+                  type: flush
+                      ? GATTCharacteristicWriteType.withResponse
+                      : GATTCharacteristicWriteType.withoutResponse,
+                )
+                .timeout(const Duration(seconds: 10));
           } else {
-            flush = false;
+            if (!link.centralSubscribed || _localRx == null) {
+              // 원격 central이 RX 구독(CCCD write)보다 TX write를 수 ms 먼저
+              // 보내거나, GATT 서비스 재발행 직후 재구독 전에 패킷을 흘리는
+              // 경우(iOS↔Android 및 iOS간 레이스에서 빈번히 발생):
+              // 아직 수신(rx)이 활발히 들어오고 있는 신생/수신 전용 P-링크를
+              // 즉시 _tearDown하면 link.reassembler까지 파괴되어 다중 패킷
+              // 프레임(ANNOUNCE, 메시지)이 영구히 조립 실패한다(2026-10-18
+              // gold_ble.log에서 56ms 간격 P-링크 연속 파괴 확인).
+              // 따라서 최근 수신 활동(15초 이내)이 있는 동안은 부기와
+              // reassembler를 보존하고 송신만 건너뛴다(상대 구독이 도착하거나
+              // 우리 쪽 C-링크로 응답이 나간다).
+              final recentRx = link.rxPackets > 0 &&
+                  DateTime.now().difference(link.lastActivity) <
+                      const Duration(seconds: 15);
+              if (recentRx) {
+                _log('BLE send deferred on ${link.id} '
+                    '(central not yet subscribed, rx active)');
+                return;
+              }
+              // 절대 조용히 버리지 않는다: 이 링크로는 내보낼 수 없다는 뜻이고,
+              // 그대로 두면 "연결됨"으로 보이면서 우리 메시지만 사라진다.
+              // 부기를 지워 상대가 재연결·재구독하게 만든다.
+              _log('BLE send skipped on ${link.id} '
+                  '(central not subscribed) — dropping half-open link');
+              _tearDown(link.id);
+              return;
+            }
+            await _peripheral
+                .notifyCharacteristic(
+                  link.central!,
+                  _localRx!,
+                  value: p,
+                )
+                .timeout(const Duration(seconds: 10));
           }
-          await _central
-              .writeCharacteristic(
-                link.peripheral!,
-                link.remoteTx!,
-                value: p,
-                type: flush
-                    ? GATTCharacteristicWriteType.withResponse
-                    : GATTCharacteristicWriteType.withoutResponse,
-              )
-              .timeout(const Duration(seconds: 10));
-        } else {
-          if (!link.centralSubscribed || _localRx == null) {
-            // 절대 조용히 버리지 않는다: 이 링크로는 내보낼 수 없다는 뜻이고,
-            // 그대로 두면 "연결됨"으로 보이면서 우리 메시지만 사라진다.
-            // 부기를 지워 상대가 재연결·재구독하게 만든다.
-            _log('BLE send skipped on ${link.id} '
-                '(central not subscribed) — dropping half-open link');
-            _tearDown(link.id);
-            return;
-          }
-          await _peripheral
-              .notifyCharacteristic(
-                link.central!,
-                _localRx!,
-                value: p,
-              )
-              .timeout(const Duration(seconds: 10));
+        } catch (e) {
+          // write 실패/타임아웃은 링크가 죽었다는 뜻이다. 부기 제거에 그치지
+          // 않고 물리 절단+재연결 재장전까지 — 죽은 ACL을 남겨두면 상대는
+          // 광고를 안 하고(자기 쪽 링크가 살아있다고 믿음) 우리는 스캔만
+          // 도는 3분짜리 상호 교착이 된다(2026-07-19 09:46 관찰).
+          _log('BLE send failed on ${link.id} ($e) — cutting');
+          _cutLink(link);
+          return;
         }
-      } catch (e) {
-        // write 실패/타임아웃은 링크가 죽었다는 뜻이다. 부기 제거에 그치지
-        // 않고 물리 절단+재연결 재장전까지 — 죽은 ACL을 남겨두면 상대는
-        // 광고를 안 하고(자기 쪽 링크가 살아있다고 믿음) 우리는 스캔만
-        // 도는 3분짜리 상호 교착이 된다(2026-07-19 09:46 관찰).
-        _log('BLE send failed on ${link.id} ($e) — cutting');
-        _cutLink(link);
-        return;
       }
-    }
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1271,6 +1347,9 @@ class MeshTransport implements MeshTransportInterface {
     }
   }
 
+  /// Android `ADVERTISE_FAILED_DATA_TOO_LARGE`.
+  static const int _advertiseDataTooLarge = 1;
+
   /// Android `ADVERTISE_FAILED_TOO_MANY_ADVERTISERS`.
   static const int _advertiseTooManyAdvertisers = 2;
 
@@ -1340,17 +1419,20 @@ class MeshTransport implements MeshTransportInterface {
 
   /// 이 광고 실패가 **이름 단계** 탓이라 이름을 빼고 다시 걸어야 하는가.
   ///
-  /// 무선 스택의 광고 실패는 언제나 error code를 단다(슬롯 경합 2, 데이터
-  /// 초과 1 …) — 이름을 빼도 같은 결과다. code가 **없는** 실패는 그 앞
-  /// 단계에서 났다는 뜻이다: 어댑터 이름 변경 거부(IllegalStateException),
-  /// 바뀐 이름 불일치(ArgumentError), 완료 방송이 오지 않아 매달림
-  /// (TimeoutException). 이 경우 서비스 UUID만으로도 발견되므로 이름을 버린다
+  /// 무선 스택의 광고 실패 중 슬롯 경합(code 2)이나 미지원(code 5)은 이름을
+  /// 빼도 같은 결과다. 반면 code가 **없는** 실패(어댑터 이름 변경 거부
+  /// IllegalStateException, 바뀐 이름 불일치 ArgumentError, 완료 방송이 오지
+  /// 않아 매달림 TimeoutException)와 **데이터 크기 초과(code 1,
+  /// ADVERTISE_FAILED_DATA_TOO_LARGE)**(Xiaomi/Huawei 등 OEM이 setName("SL")을
+  /// 무시해 30바이트가 넘는 원래 기기 이름이 패킷에 들어가 31B 한도를 넘긴 경우)는
+  /// 이름을 빼고 서비스 UUID만으로 다시 걸면 즉시 성공한다
   /// ([RadioProfile.advertiseNameOptional]).
   @visibleForTesting
   static bool dropsAdvertiseName(Object error, {required bool nameOptional}) {
     if (!nameOptional) return false;
     if (_isAlreadyAdvertising(error)) return false;
-    return advertiseErrorCode(error) == null;
+    final code = advertiseErrorCode(error);
+    return code == null || code == _advertiseDataTooLarge;
   }
 
   void _wirePeripheral() {
@@ -1392,45 +1474,73 @@ class MeshTransport implements MeshTransportInterface {
 
     _subs.add(_peripheral.characteristicNotifyStateChanged.listen((e) async {
       if (e.characteristic.uuid != BleConstants.rxCharacteristicUuid) return;
-      // 첫 접촉 시 링크를 생성하고 link-up을 내보낸다(see _peripheralLinkFor).
-      final link = _peripheralLinkFor(e.central);
-      link.centralSubscribed = e.state;
       final key = e.central.uuid.toString();
-      if (e.state) {
-        _subscribedCentrals.add(key);
-      } else {
+      final id = _peripheralLinkId(e.central);
+      if (!e.state) {
+        // 구독 해제(또는 iOS에서 원격 central 연결 종료): 새 P-링크를 만들지
+        // 않고 기존 링크만 즉시 정리한다. 예전에는 e.state == false에서도
+        // _peripheralLinkFor를 호출해 centralSubscribed=false인 반쪽 좀비
+        // 링크를 새로 만들고 _emitUp까지 쏘아 올렸다.
         _subscribedCentrals.remove(key);
-      }
-      if (e.state) {
-        // notification 하나당 얼마나 밀어넣을 수 있는지 알아내, peripheral
-        // 역할 링크가 작은 기본 패킷 크기에 갇혀 있지 않게 한다.
-        try {
-          final maxNotify =
-              await _peripheral.getMaximumNotifyLength(e.central);
-          if (maxNotify > BleConstants.minUsablePacketSize) {
-            link.maxPacketSize = maxNotify.clamp(
-                BleConstants.minUsablePacketSize, 512);
-          }
-        } catch (_) {
-          link.maxPacketSize = BleConstants.targetMaxPacketSize;
+        final existing = _links[id];
+        if (existing != null) {
+          existing.centralSubscribed = false;
+          _tearDown(id);
         }
+        return;
+      }
+      // 구독 성립: _peripheralLinkFor보다 먼저 _subscribedCentrals에 등록해
+      // 새로 만들어지는 링크가 처음부터 centralSubscribed=true를 갖게 한다.
+      _subscribedCentrals.add(key);
+      final existing = _links[id];
+      final wasUnsubscribed = existing != null && !existing.centralSubscribed;
+      var resolvedMaxPacket = BleConstants.defaultMaxPacketSize;
+      // notification 하나당 얼마나 밀어넣을 수 있는지 먼저 알아내, 초기
+      // ANNOUNCE/HAVE부터 협상된 MTU로 나가게 한다.
+      try {
+        final maxNotify =
+            await _peripheral.getMaximumNotifyLength(e.central);
+        if (maxNotify > BleConstants.minUsablePacketSize) {
+          resolvedMaxPacket =
+              maxNotify.clamp(BleConstants.minUsablePacketSize, 512);
+        }
+      } catch (_) {
+        resolvedMaxPacket = BleConstants.targetMaxPacketSize;
+      }
+      if (_disposed || !_started || !_subscribedCentrals.contains(key)) {
+        return;
+      }
+      final link = _peripheralLinkFor(
+        e.central,
+        initialMaxPacketSize: resolvedMaxPacket,
+      );
+      link.centralSubscribed = true;
+      if (resolvedMaxPacket > link.maxPacketSize) {
+        link.maxPacketSize = resolvedMaxPacket;
+      }
+      // TX write가 구독보다 수 ms 먼저 도착해 centralSubscribed=false로
+      // 생성됐던 링크라면, 구독이 성립된 지금 다시 link-up을 알려 ANNOUNCE와
+      // 대기 중인 메시지가 즉시 전송되게 한다.
+      if (wasUnsubscribed) {
+        _emitUp(link);
       }
     }));
 
-    // Android 전용: central disconnect를 추적해 링크를 정리한다.
+    // Android 전용: central disconnect를 추적해 구독 상태와 링크를 정리한다.
     try {
       _subs.add(_peripheral.connectionStateChanged.listen((e) {
         if (e.state == ConnectionState.disconnected) {
+          _subscribedCentrals.remove(e.central.uuid.toString());
           _tearDown(_peripheralLinkId(e.central));
         }
       }));
     } on UnsupportedError {
-      // iOS/macOS: peripheral 연결 콜백이 없다; 대신 링크는 write 실패로
-      // 타임아웃된다.
+      // iOS/macOS: peripheral 연결 콜백이 없다; 대신 centralDidUnsubscribe
+      // (characteristicNotifyStateChanged(false))와 write 실패로 정리된다.
     }
   }
 
-  MeshLink _peripheralLinkFor(Central central) {
+  MeshLink _peripheralLinkFor(Central central, {int? initialMaxPacketSize}) {
     final id = _peripheralLinkId(central);
     final existing = _links[id];
     if (existing != null) return existing;
@@ -1440,10 +1550,16 @@ class MeshTransport implements MeshTransportInterface {
     // 바로 이 연결을 허물어버리는 것을 막는다("central이 붙어 있는데도 우리는
     // 링크가 없다고 여기는" 루프로, iPhone↔Android를 단방향으로 만들었던
     // 원인이다).
-    final link = MeshLink(id: id, role: LinkRole.peripheral, central: central)
+    final link = MeshLink(
+      id: id,
+      role: LinkRole.peripheral,
+      central: central,
+      maxPacketSize: initialMaxPacketSize ?? BleConstants.defaultMaxPacketSize,
+    )
       // 이 central이 이미 구독 중이라면 그 사실을 물려받는다 — 링크 객체가
       // 교체돼도 상대는 재구독하지 않는다([_subscribedCentrals] 참고).
-      ..centralSubscribed = _subscribedCentrals.contains(central.uuid.toString());
+      ..centralSubscribed =
+          _subscribedCentrals.contains(central.uuid.toString());
     _links[id] = link;
     _emitUp(link);
     return link;
@@ -1732,6 +1848,18 @@ class MeshTransport implements MeshTransportInterface {
   final Set<String> _activeProbes = {};
   static const int _maxConcurrentProbes = 1;
 
+  /// Apple 제조사 데이터(0x004C) 중 probe dial 후보가 될 수 있는 패킷인지 판별한다.
+  /// iBeacon(0x02, 0x15 — SpotLink 자체의 웨이크 토치 및 매장 비콘)은 언제나
+  /// non-connectable이므로 probe dial을 걸면 스캔만 멈추고 8초간 허공에
+  /// connectGatt를 낭비해 진짜 피어 발견을 마비시킨다.
+  @visibleForTesting
+  static bool isProbeableAppleData(Uint8List data) {
+    if (data.length >= 2 && data[0] == 0x02 && data[1] == 0x15) {
+      return false; // iBeacon (non-connectable)
+    }
+    return true;
+  }
+
   bool _isIosProbeCandidate(DiscoveredEventArgs e) {
     if (!profile.probesAppleDevices) return false;
     if (e.rssi < -70) return false; // 가까운 기기만 dial할 가치가 있다
@@ -1748,7 +1876,7 @@ class MeshTransport implements MeshTransportInterface {
       return false;
     }
     return e.advertisement.manufacturerSpecificData
-        .any((m) => m.id == _appleManufacturerId);
+        .any((m) => m.id == _appleManufacturerId && isProbeableAppleData(m.data));
   }
 
   /// 릴리즈 로그용 발견 계수기(마지막 linkless 요약 이후 누적). 개별 `BLE saw`
@@ -1998,7 +2126,9 @@ class MeshTransport implements MeshTransportInterface {
 
         var maxPacket = BleConstants.defaultMaxPacketSize;
         try {
-          await _central.requestMTU(peripheral, mtu: 247);
+          await _central
+              .requestMTU(peripheral, mtu: 247)
+              .timeout(const Duration(seconds: 3));
         } catch (_) {}
         try {
           maxPacket = await _central.getMaximumWriteLength(
@@ -2175,24 +2305,32 @@ class MeshTransport implements MeshTransportInterface {
       _log('BLE link zombie (no rx ${window.inSeconds}s) — cutting ${link.id}');
       _cutLink(l);
     });
-    // 능동 생존 확인(central 링크): 수동 12초를 기다리지 않고 INFO를 한 번
-    // 읽는다 — ATT 왕복이 강제되므로 반쯤 죽은 ACL은 8초 안에 발각되고
-    // 즉시 절단+재다이얼로 이어진다. 상대가 일시 정지에서 깨어나는 중이라
-    // 읽기가 늦는 경우엔 절단해도 대기 재연결이 곧바로 되살린다(딸꾹질
-    // 한 번, 손실 없음). peripheral 역할 링크는 mesh의 ANNOUNCE notify가
-    // 10초 타임아웃으로 같은 역할을 이미 한다.
+    // 능동 생존 확인(central 링크): link up 직후에는 MeshNode가 초기
+    // ANNOUNCE + HAVE를 즉시 전송하므로, 동시에 readCharacteristic을 호출하면
+    // Android BluetoothGatt의 단일 busy 락과 충돌해 연결되자마자 링크가
+    // 절단된다. 따라서 4초 뒤까지 아무 수신 패킷(rxPackets == 0)이 없을 때만
+    // 링크 직렬화 큐(enqueueOp)를 통해 INFO를 읽어 생존을 확인한다.
     if (link.role == LinkRole.central &&
         link.peripheral != null &&
         link.remoteInfo != null) {
-      unawaited(_central
-          .readCharacteristic(link.peripheral!, link.remoteInfo!)
-          .timeout(const Duration(seconds: 8))
-          .then((_) {}, onError: (_) {
+      Timer(const Duration(seconds: 4), () {
         final l = _links[link.id];
         if (l == null || !identical(l, link) || l.rxPackets > 0) return;
-        _log('BLE liveness probe failed — cutting ${link.id}');
-        _cutLink(l);
-      }));
+        unawaited(l
+            .enqueueOp(() => _central
+                .readCharacteristic(l.peripheral!, l.remoteInfo!)
+                .timeout(const Duration(seconds: 8)))
+            .then((_) {}, onError: (_) {
+          final current = _links[link.id];
+          if (current == null ||
+              !identical(current, link) ||
+              current.rxPackets > 0) {
+            return;
+          }
+          _log('BLE liveness probe failed — cutting ${link.id}');
+          _cutLink(current);
+        }));
+      });
     }
   }
 

@@ -162,7 +162,7 @@ final class PeripheralManagerImpl
       _logger.info('setName: $nameArgs');
       final newNameArgs = await _api.setName(nameArgs);
       if (newNameArgs != nameArgs) {
-        throw ArgumentError(
+        _logger.warning(
           'Name changed, but $newNameArgs is different from $nameArgs',
         );
       }
@@ -348,14 +348,6 @@ final class PeripheralManagerImpl
     final addressArgs = central.address;
     final hashCodeArgs = characteristic.hashCode;
     final cccValue = _retrieveCCCValue(addressArgs, hashCodeArgs);
-    final notificationDisabled = _valueEquality.equals(
-      cccValue,
-      _args.disableNotificationValue,
-    );
-    if (notificationDisabled) {
-      _logger.warning('Notification of this characteristic is disabled.');
-      return;
-    }
     final confirmArgs = _valueEquality.equals(
       cccValue,
       _args.enableIndicationValue,
@@ -746,11 +738,7 @@ final class PeripheralManagerImpl
             null,
           );
         } else {
-          final values = _cccdValues[addressArgs];
-          // Here the CCC values must not be null.
-          if (values == null) {
-            throw ArgumentError.notNull();
-          }
+          final values = _cccdValues.putIfAbsent(addressArgs, () => {});
           final hashCodeArgs = characteristic.hashCode;
           final state = notificationEnabled || indicationEnabled;
           if (state) {
@@ -876,11 +864,7 @@ final class PeripheralManagerImpl
             null,
           );
         } else {
-          final values = _cccdValues[addressArgs];
-          // Here the CCC values must not be null.
-          if (values == null) {
-            throw ArgumentError.notNull();
-          }
+          final values = _cccdValues.putIfAbsent(addressArgs, () => {});
           final hashCodeArgs = cccCharacteristic.hashCode;
           final state = notificationEnabled || indicationEnabled;
           if (state) {
@@ -967,7 +951,7 @@ final class PeripheralManagerImpl
   Uint8List _retrieveCCCValue(String addressArgs, int hashCodeArgs) {
     final values = _cccdValues[addressArgs];
     if (values == null) {
-      throw ArgumentError.notNull();
+      return _args.disableNotificationValue;
     }
     final value = values[hashCodeArgs];
     return value ?? _args.disableNotificationValue;

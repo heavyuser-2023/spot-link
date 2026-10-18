@@ -239,6 +239,11 @@ class BeaconPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         val cb = object : AdvertiseCallback() {
             override fun onStartFailure(errorCode: Int) {
                 if (callback === this) callback = null
+                if (errorCode == ADVERTISE_FAILED_TOO_MANY_ADVERTISERS) {
+                    rotateRunnable?.let { rotateHandler?.removeCallbacks(it) }
+                    rotateRunnable = null
+                    rotateHandler = null
+                }
             }
         }
         callback = cb

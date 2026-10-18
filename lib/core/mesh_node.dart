@@ -1540,32 +1540,22 @@ class MeshNode {
     }
   }
 
-  /// src별 "키 없음" 사용자 알림의 마지막 시각 — 이 상황은 보통 자가 치유되는
-  /// 일시 상태(보관→ANNOUNCE 도착→재전달)라, 프레임마다 스낵바를 쏘면 안 된다.
-  final Map<String, DateTime> _noKeyNoticeAt = {};
-
   Future<void> _deliverLocal(Frame frame, {PeerId? via}) async {
     Uint8List payload = frame.payload;
     if (frame.isEncrypted) {
       final kex = _knownKex[frame.src.hex];
       if (kex == null) {
         // 아직 전송 측의 키를 학습하지 못함(예: 메시지가 그들의 ANNOUNCE보다 더
-        // 멀리 이동함). 프레임을 태워버리지 말고 — 잠시 보관(park)해두었다가
-        // 그들의 ANNOUNCE가 도착하면 재시도한다([redeliverParked]).
+        // 멀리 이동함, 또는 앱 재설치로 로컬 연락처 DB만 초기화된 상태에서 이웃의
+        // 릴레이 보관함에서 예전 프레임이 들어옴). 프레임을 태워버리지 말고 — 잠시
+        // 보관(park)해두었다가 그들의 ANNOUNCE가 도착하면 재시도한다([redeliverParked]).
+        // 백그라운드 프로토콜 대기 상태이므로 사용자 스낵바(NodeError)는 띄우지 않고
+        // 진단 로그만 남긴다.
         if (frame.dst == myId && !store.contains(frame.msgIdHex)) {
           store.add(frame);
           bleLogSink?.call(
               'MSG parked (no key yet) from ${frame.src.short} '
               '${frame.msgIdHex.substring(0, 8)}');
-          // 사용자 대상 에러는 src당 30초에 한 번만: 재연결 직후의 밀린
-          // 프레임 폭주가 스낵바 도배가 되면 안 된다. 30초 넘게 반복되면
-          // 그때는 진짜 문제(ANNOUNCE 미도달)라 계속 알린다.
-          final last = _noKeyNoticeAt[frame.src.hex];
-          if (last == null ||
-              DateTime.now().difference(last) > const Duration(seconds: 30)) {
-            _noKeyNoticeAt[frame.src.hex] = DateTime.now();
-            _events.add(NodeError('No key to decrypt from ${frame.src.short}'));
-          }
         }
         if (frame.dst == myId) _markPendingLocalDelivery(frame.msgIdHex);
         return;

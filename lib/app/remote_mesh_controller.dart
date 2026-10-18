@@ -18,7 +18,6 @@ import '../data/identity_store.dart';
 import '../data/models.dart';
 import '../l10n/l10n.dart';
 import 'background_service.dart';
-import 'beacon_wake.dart';
 import 'bridge_protocol.dart';
 import 'device_location.dart';
 import 'mesh_frontend.dart';
@@ -182,8 +181,9 @@ class RemoteMeshController extends MeshFrontend
       unawaited(_maybeReviveService());
       notifyListeners();
     });
-    // 웨이크 토치(iBeacon TX)는 UI 엔진 플러그인이다; 여기서 켠다.
-    unawaited(BeaconWake.startTx());
+    // 웨이크 토치(iBeacon TX)는 서비스 isolate의 MeshController(WakeTorchKeeper)가
+    // 단독 제어한다(단일 광고 슬롯 기기에서 메시 광고에 슬롯을 양보할 때 UI isolate가
+    // 임의로 다시 켜서 메시 광고를 죽이지 않도록 함).
     // 서비스가 필요로 하는 BLE 권한을 확인한다 (서비스는 스스로 요청 불가).
     unawaited(_ensureBlePermission());
     _encounterLocationEnabled = await EncounterSettings.locationEnabled();
@@ -653,7 +653,6 @@ class RemoteMeshController extends MeshFrontend
     _foreground = state == AppLifecycleState.resumed;
     _send({'c': Bridge.cmdForeground, 'v': _foreground});
     if (_foreground) {
-      unawaited(BeaconWake.startTx());
       // 복귀할 때마다 BLE 권한을 재검증한다: 설정에서 권한이 부여되었거나
       // (권한 누락으로 Android가 차단했던 서비스를 복구) 자리를 비운 사이
       // 자동 회수되었을 수 있다.

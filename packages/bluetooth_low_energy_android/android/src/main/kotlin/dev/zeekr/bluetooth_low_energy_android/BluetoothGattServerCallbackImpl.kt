@@ -58,14 +58,15 @@ class BluetoothGattServerCallbackImpl(manager: PeripheralManagerImpl, mExecutor:
         preparedWrite: Boolean,
         responseNeeded: Boolean,
         offset: Int,
-        value: ByteArray
+        value: ByteArray?
     ) {
         super.onCharacteristicWriteRequest(
             device, requestId, characteristic, preparedWrite, responseNeeded, offset, value
         )
+        val safeValue = value?.copyOf() ?: ByteArray(0)
         mExecutor.execute {
             mManager.onCharacteristicWriteRequest(
-                device, requestId, characteristic, preparedWrite, responseNeeded, offset, value
+                device, requestId, characteristic, preparedWrite, responseNeeded, offset, safeValue
             )
         }
     }
@@ -95,12 +96,13 @@ class BluetoothGattServerCallbackImpl(manager: PeripheralManagerImpl, mExecutor:
         preparedWrite: Boolean,
         responseNeeded: Boolean,
         offset: Int,
-        value: ByteArray
+        value: ByteArray?
     ) {
         super.onDescriptorWriteRequest(device, requestId, descriptor, preparedWrite, responseNeeded, offset, value)
+        val safeValue = value?.copyOf() ?: ByteArray(0)
         mExecutor.execute {
             mManager.onDescriptorWriteRequest(
-                device, requestId, descriptor, preparedWrite, responseNeeded, offset, value
+                device, requestId, descriptor, preparedWrite, responseNeeded, offset, safeValue
             )
         }
     }

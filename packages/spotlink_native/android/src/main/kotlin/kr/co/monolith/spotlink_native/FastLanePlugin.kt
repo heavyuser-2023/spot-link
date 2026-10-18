@@ -21,6 +21,7 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 /**
@@ -102,12 +103,24 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             }
             "send" -> {
                 val data = call.argument<ByteArray>("data")
-                if (tid != null && data != null) transfers[tid]?.write(data)
-                result.success(null)
+                val t = if (tid != null) transfers[tid] else null
+                if (t != null && data != null) {
+                    t.writeAsync(data.copyOf()) {
+                        result.success(null)
+                    }
+                } else {
+                    result.success(null)
+                }
             }
             "finishSending" -> {
-                if (tid != null) transfers[tid]?.finishSending()
-                result.success(null)
+                val t = if (tid != null) transfers[tid] else null
+                if (t != null) {
+                    t.finishSendingAsync {
+                        result.success(null)
+                    }
+                } else {
+                    result.success(null)
+                }
             }
             "close" -> {
                 if (tid != null) teardown(tid)
@@ -147,89 +160,109 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
     // 그룹 오너(192.168.49.1)의 리스너로 다이얼한다.
     @Suppress("MissingPermission")
     private fun prepareInbound(tid: String, result: MethodChannel.Result) {
-        val mgr = p2p
-        val ch = p2pChannel
-        val config = stableGroupConfig()
-        if (mgr == null || ch == null || config == null) {
-            result.success(null); return
-        }
+        try {
+            val mgr = p2p
+            val ch = p2pChannel
+            val config = stableGroupConfig()
+            if (mgr == null || ch == null || config == null) {
+                result.success(null); return
+            }
 
-        // 그룹 생성 직후 정보가 즉시 조회되지 않을 수 있다 — 짧게 재시도.
-        fun advertise(attempt: Int) {
-            mgr.requestGroupInfo(ch) { group ->
-                if (group == null || !group.isGroupOwner) {
-                    if (attempt < 5) {
-                        main.postDelayed({ advertise(attempt + 1) }, 400)
-                    } else {
-                        result.success(null)
+            // 그룹 생성 직후 정보가 즉시 조회되지 않을 수 있다 — 짧게 재시도.
+            fun advertise(attempt: Int) {
+                try {
+                    mgr.requestGroupInfo(ch) { group ->
+                        if (group == null || !group.isGroupOwner) {
+                            if (attempt < 5) {
+                                main.postDelayed({ advertise(attempt + 1) }, 400)
+                            } else {
+                                result.success(null)
+                            }
+                            return@requestGroupInfo
+                        }
+                        // 그룹 오너 주소는 192.168.49.1로 고정되어 있다.
+                        val ownerIp = "192.168.49.1"
+                        val t = Transfer(tid)
+                        transfers[tid] = t
+                        // 임시 포트에 바인딩한 뒤 실제 포트를 광고한다 — 고정 포트
+                        // (예전 8988)는 동시 수신·TIME_WAIT 잔상과 충돌했고, 바인딩
+                        // 전에 blob부터 만들어 실패를 놓쳤다.
+                        val port = t.listen()
+                        if (port == null) { result.success(null); return@requestGroupInfo }
+                        val blob = "${group.networkName}\n${group.passphrase}\n$ownerIp\n$port"
+                            .toByteArray(Charsets.UTF_8)
+                        result.success(blob)
                     }
-                    return@requestGroupInfo
+                } catch (_: Throwable) {
+                    result.success(null)
                 }
-                // 그룹 오너 주소는 192.168.49.1로 고정되어 있다.
-                val ownerIp = "192.168.49.1"
-                val t = Transfer(tid)
-                transfers[tid] = t
-                // 임시 포트에 바인딩한 뒤 실제 포트를 광고한다 — 고정 포트
-                // (예전 8988)는 동시 수신·TIME_WAIT 잔상과 충돌했고, 바인딩
-                // 전에 blob부터 만들어 실패를 놓쳤다.
-                val port = t.listen()
-                if (port == null) { result.success(null); return@requestGroupInfo }
-                val blob = "${group.networkName}\n${group.passphrase}\n$ownerIp\n$port"
-                    .toByteArray(Charsets.UTF_8)
-                result.success(blob)
             }
-        }
 
-        mgr.createGroup(ch, config, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() { advertise(0) }
-            override fun onFailure(reason: Int) {
-                // BUSY = 직전 전송의 그룹이 아직 살아 있음 — 자격이 같으므로
-                // 그대로 재사용한다. 그 외 실패도 조회로 확인 후 포기한다.
-                advertise(0)
-            }
-        })
+            mgr.createGroup(ch, config, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { advertise(0) }
+                override fun onFailure(reason: Int) {
+                    // BUSY = 직전 전송의 그룹이 아직 살아 있음 — 자격이 같으므로
+                    // 그대로 재사용한다. 그 외 실패도 조회로 확인 후 포기한다.
+                    advertise(0)
+                }
+            })
+        } catch (_: Throwable) {
+            result.success(null)
+        }
     }
 
     // 송신 측: 수신 측 그룹 SSID에 Wi-Fi 클라이언트로 접속한 뒤 다이얼한다.
     private fun connect(tid: String, blob: ByteArray, result: MethodChannel.Result) {
-        val parts = String(blob, Charsets.UTF_8).split("\n")
-        if (parts.size < 4 || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            result.success(false); return
-        }
-        val (ssid, pass, ip, portStr) = parts
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val specifier = WifiNetworkSpecifier.Builder()
-            .setSsid(ssid)
-            .setWpa2Passphrase(pass)
-            .build()
-        val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .setNetworkSpecifier(specifier)
-            .build()
-        val t = Transfer(tid)
-        transfers[tid] = t
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                // 접속한 P2P 네트워크를 통해 그룹 오너로 다이얼한다.
-                t.dial(network, ip, portStr.toInt())
+        try {
+            val parts = String(blob, Charsets.UTF_8).split("\n")
+            if (parts.size < 4 || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                result.success(false); return
             }
-            override fun onUnavailable() {
-                emit(tid, "error")
+            val (ssid, pass, ip, portStr) = parts
+            val port = portStr.trim().toIntOrNull()
+            if (port == null) {
+                result.success(false); return
             }
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val specifier = WifiNetworkSpecifier.Builder()
+                .setSsid(ssid)
+                .setWpa2Passphrase(pass)
+                .build()
+            val request = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .setNetworkSpecifier(specifier)
+                .build()
+            val t = Transfer(tid)
+            transfers[tid] = t
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    // 접속한 P2P 네트워크를 통해 그룹 오너로 다이얼한다.
+                    t.dial(network, ip, port)
+                }
+                override fun onUnavailable() {
+                    emit(tid, "error")
+                }
+            }
+            t.networkCallback = callback
+            t.connectivityManager = cm
+            cm.requestNetwork(request, callback)
+            result.success(true) // 연결 결과는 이벤트 스트림을 통해 도착한다
+        } catch (_: Throwable) {
+            result.success(false)
         }
-        t.networkCallback = callback
-        t.connectivityManager = cm
-        cm.requestNetwork(request, callback)
-        result.success(true) // 연결 결과는 이벤트 스트림을 통해 도착한다
     }
 
+    @Suppress("MissingPermission")
     private fun teardown(tid: String) {
         transfers.remove(tid)?.close()
         // best-effort: 우리가 생성한 P2P 그룹이 있으면 제거한다.
-        val mgr = p2p; val ch = p2pChannel
-        if (mgr != null && ch != null) {
-            mgr.removeGroup(ch, null)
+        try {
+            val mgr = p2p; val ch = p2pChannel
+            if (mgr != null && ch != null) {
+                mgr.removeGroup(ch, null)
+            }
+        } catch (_: Throwable) {
         }
     }
 
@@ -239,6 +272,7 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
         private var socket: Socket? = null
         private var out: OutputStream? = null
         @Volatile private var closed = false
+        private val writeExecutor = Executors.newSingleThreadExecutor()
         var networkCallback: ConnectivityManager.NetworkCallback? = null
         var connectivityManager: ConnectivityManager? = null
 
@@ -288,16 +322,64 @@ class FastLanePlugin : FlutterPlugin, MethodChannel.MethodCallHandler,
             }
         }
 
-        fun write(data: ByteArray) {
-            try { out?.write(data); out?.flush() } catch (_: Exception) {}
+        /**
+         * 소켓 write는 반드시 백그라운드 단일 스레드에서 수행한다.
+         * 메인 UI 스레드에서 동기 호출하면 Android가 NetworkOnMainThreadException을
+         * 던져 모든 파일 청크 바이트가 유실된다.
+         */
+        fun writeAsync(data: ByteArray, onDone: () -> Unit) {
+            if (closed) {
+                main.post(onDone)
+                return
+            }
+            try {
+                writeExecutor.execute {
+                    try {
+                        if (!closed) {
+                            out?.write(data)
+                            out?.flush()
+                        }
+                    } catch (_: Throwable) {
+                        if (!closed) emit(tid, "error")
+                    } finally {
+                        main.post(onDone)
+                    }
+                }
+            } catch (_: Throwable) {
+                main.post(onDone)
+            }
         }
 
-        fun finishSending() {
-            // 수신 측은 Dart의 길이 접두사로 완료를 판단한다; 알릴 것이 없다.
+        fun finishSendingAsync(onDone: () -> Unit) {
+            if (closed) {
+                main.post(onDone)
+                return
+            }
+            try {
+                writeExecutor.execute {
+                    try {
+                        out?.flush()
+                    } catch (_: Throwable) {
+                    } finally {
+                        main.post(onDone)
+                    }
+                }
+            } catch (_: Throwable) {
+                main.post(onDone)
+            }
         }
 
         fun close() {
             closed = true
+            // shutdownNow는 대기열의 작업을 실행하지 않고 돌려준다 — 그대로 버리면
+            // 그 작업들의 onDone(메서드 채널 응답)이 영영 오지 않는다. closed가
+            // 이미 참이라 쓰기는 건너뛰고 onDone만 게시하므로 여기서 돌려 준다.
+            try {
+                for (pending in writeExecutor.shutdownNow()) {
+                    try { pending.run() } catch (_: Throwable) {}
+                }
+            } catch (_: Exception) {}
+            // 소켓을 닫으면 실행 중이던(막힌) 쓰기도 예외로 풀려 스레드가 끝난다.
             try { socket?.close() } catch (_: Exception) {}
             try { server?.close() } catch (_: Exception) {}
             networkCallback?.let { cb ->

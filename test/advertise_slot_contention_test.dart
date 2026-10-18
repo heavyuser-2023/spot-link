@@ -69,11 +69,23 @@ void main() {
       }
     });
 
-    test('무선 스택의 광고 실패(code 있음)는 이름 탓이 아니다', () {
+    test('슬롯 경합(code 2)·미지원(code 5)은 이름 탓이 아니다', () {
       final slot = Exception('Start advertising failed with error code: 2');
+      final unsupported =
+          Exception('Start advertising failed with error code: 5');
       expect(MeshTransport.dropsAdvertiseName(slot, nameOptional: true),
           isFalse,
           reason: '슬롯 경합은 토치 양보로 풀어야 한다 — 이름을 빼도 같다');
+      expect(MeshTransport.dropsAdvertiseName(unsupported, nameOptional: true),
+          isFalse);
+    });
+
+    test('데이터 크기 초과(code 1)는 긴 OEM 기기 이름 탓이므로 이름을 버린다', () {
+      final tooLarge = Exception('Start advertising failed with error code: 1');
+      expect(MeshTransport.dropsAdvertiseName(tooLarge, nameOptional: true),
+          isTrue,
+          reason: 'OEM이 setName("SL")을 무시해 긴 이름이 들어가면 '
+              'code 1이 나므로 이름을 빼고 서비스 UUID만으로 다시 걸어야 한다');
     });
 
     test('이미 광고 중이면 실패가 아니다', () {
