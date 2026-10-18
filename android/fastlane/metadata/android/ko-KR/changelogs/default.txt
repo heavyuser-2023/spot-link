@@ -1,1 +1,1 @@
-iOS↔Android 및 다양한 Android 제조사(Samsung, Xiaomi, Pixel 등) 간 BLE 주변 친구 탐색, 화면 꺼짐 시 스캔 유지, 메시지 및 파일 전송 안정성을 대폭 개선했습니다.
+iOS↔Android 간 주변 친구 탐색, 화면 꺼짐 시 스캔 유지, 메시지 및 파일 전송 안정성을 개선했습니다.
