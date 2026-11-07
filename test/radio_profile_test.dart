@@ -31,6 +31,9 @@ void main() {
       // iPhone끼리의 포그라운드 발견은 이름('SL') 매칭에 의존한다 — 이름을
       // 버리는 폴백을 켜면 iOS 27 포그라운드 iPhone이 서로 안 보인다.
       expect(p.advertiseNameOptional, isFalse);
+      // CoreBluetooth는 GATT 작업을 스스로 줄 세운다 — 본딩 읽기(페어링 창,
+      // 최대 60초)를 링크 큐에 넣으면 그동안 송신이 전부 멈춘다.
+      expect(p.serializesGattOps, isFalse);
     });
 
     test('Android: 무선 경합·전력·프로브 대응이 켜져 있다', () {
@@ -51,6 +54,9 @@ void main() {
       // 어댑터 이름 변경이 막히는 기기에서도 서비스 UUID만으로 광고해야
       // 보인다(이름 단계 실패 = 광고 전체 실패였다).
       expect(p.advertiseNameOptional, isTrue);
+      // BluetoothGatt는 응답 전 다음 작업을 busy로 거절한다 — 본딩 읽기 중의
+      // 쓰기가 실패해 링크가 잘리지 않게 큐로 직렬화해야 한다.
+      expect(p.serializesGattOps, isTrue);
     });
 
     test('macOS: iOS와 같은 CoreBluetooth 대응을 받는다(2등 시민 금지)', () {

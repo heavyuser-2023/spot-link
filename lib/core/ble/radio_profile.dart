@@ -108,6 +108,13 @@ class RadioProfile {
   /// 포그라운드 발견이 이름에 의존하므로 끄지 않는다.
   final bool advertiseNameOptional;
 
+  /// 링크 하나에서 GATT 작업(쓰기·읽기·RSSI)을 **한 번에 하나만** 받는 스택인가.
+  /// Android `BluetoothGatt`는 응답이 오기 전까지 다음 작업을 busy로 거절하므로
+  /// 오래 걸리는 작업(페어링을 일으키는 본딩 읽기)도 링크 직렬화 큐에 넣어야
+  /// 뒤따르는 쓰기가 실패하지 않는다. CoreBluetooth는 스스로 줄을 세우므로
+  /// 큐에 넣으면 송신만 불필요하게 막힌다.
+  final bool serializesGattOps;
+
   /// 알 수 없는/회전된 식별자로 connect할 때 스택이 던지는 오류를 식별한다.
   /// CoreBluetooth는 `illegalArgument`를 던진다 — 그러면 저장된 식별자를
   /// 버리고 스캔으로 새 주소를 찾는다.
@@ -169,6 +176,7 @@ class RadioProfile {
     this.connectTimeout = const Duration(seconds: 20),
     this.probesAppleDevices = false,
     this.advertiseNameOptional = false,
+    this.serializesGattOps = false,
     this.isUnknownIdentifierError = _never,
     this.needsStackHardReset = false,
     this.supportsBeaconWake = false,
@@ -247,6 +255,7 @@ class RadioProfile {
     connectTimeout: Duration(seconds: 20),
     probesAppleDevices: true, // 백그라운드 iPhone을 찾는 유일한 길
     advertiseNameOptional: true, // 어댑터 이름 변경이 막히는 기기 대비
+    serializesGattOps: true, // BluetoothGatt는 작업 하나씩만 받는다
     usesAdaptivePower: true,
     encounterLocation: EncounterLocationPolicy.foregroundOnly,
   );

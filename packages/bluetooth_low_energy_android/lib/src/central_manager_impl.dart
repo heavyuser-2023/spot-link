@@ -126,6 +126,7 @@ final class CentralManagerImpl
       throw TypeError();
     }
     final addressArgs = peripheral.address;
+    _mtus.remove(addressArgs);
     _logger.info('connect: $addressArgs');
     await _api.connect(addressArgs);
   }
@@ -136,6 +137,7 @@ final class CentralManagerImpl
       throw TypeError();
     }
     final addressArgs = peripheral.address;
+    _mtus.remove(addressArgs);
     _logger.info('disconnect: $addressArgs');
     await _api.disconnect(addressArgs);
   }
@@ -149,6 +151,7 @@ final class CentralManagerImpl
     final mtuArgs = mtu;
     _logger.info('requestMTU: $addressArgs - $mtuArgs');
     final size = await _api.requestMTU(addressArgs, mtuArgs);
+    _mtus[addressArgs] = size;
     return size;
   }
 
@@ -254,9 +257,19 @@ final class CentralManagerImpl
     );
     // Seems the docs is not correct, this operation is necessary for all characteristics.
     // https://developer.android.com/guide/topics/connectivity/bluetooth/transfer-ble-data#notification
-    final descriptor = characteristic.descriptors.firstWhere(
-      (descriptor) => descriptor.uuid == cccUUID,
-    );
+    final descriptor = characteristic.descriptors
+        .where((descriptor) => descriptor.uuid == cccUUID)
+        .firstOrNull;
+    if (descriptor == null) {
+      // SpotLink fork: fail loudly. setCharacteristicNotification is local-only;
+      // without the CCCD write the peer never learns we subscribed, so no
+      // notification will ever arrive. Returning normally would let the caller
+      // bring up a link that can only send — it gets cut as a zombie 12 s later
+      // and re-dialled in a loop. Throwing lets the caller disconnect and back off.
+      throw StateError(
+        'CCCD descriptor (0x2902) missing on $addressArgs.$hashCodeArgs',
+      );
+    }
     final value = state
         ? characteristic.properties.contains(GATTCharacteristicProperty.notify)
               ? _args.enableNotificationValue

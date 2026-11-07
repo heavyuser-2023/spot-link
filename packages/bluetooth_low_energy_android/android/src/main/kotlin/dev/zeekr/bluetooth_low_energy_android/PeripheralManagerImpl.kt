@@ -19,6 +19,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.annotation.RequiresPermission
 import androidx.core.app.ActivityCompat
@@ -29,6 +31,7 @@ import io.flutter.plugin.common.BinaryMessenger
 class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) :
     BluetoothLowEnergyManagerImpl(context), PeripheralManagerHostApi {
     private val mApi: PeripheralManagerFlutterApi
+    private val mMainHandler = Handler(Looper.getMainLooper())
 
     private val mBluetoothGattServerCallback: BluetoothGattServerCallback by lazy {
         BluetoothGattServerCallbackImpl(
@@ -81,7 +84,9 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
         get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT)
         } else {
-            arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
+            // Android 11(API 30) 이하에서는 BLE 광고 및 GATT 서버 동작에 위치 권한이
+            // 필요하지 않다(매니페스트의 BLUETOOTH / BLUETOOTH_ADMIN으로 충분).
+            emptyArray()
         }
     private val manager
         get() = ContextCompat.getSystemService(context, BluetoothManager::class.java) as BluetoothManager
@@ -121,10 +126,12 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
     }
 
     override fun getState(): BluetoothLowEnergyStateArgs {
-        // Use isMultipleAdvertisementSupported() to check whether LE Advertising is supported on this device before calling this method.
-        // See https://developer.android.com/reference/kotlin/android/bluetooth/BluetoothAdapter#getbluetoothleadvertiser
+        // SpotLink fork: do NOT gate on adapter.isMultipleAdvertisementSupported.
+        // Single-slot BLE chipsets return false there yet still support a GATT
+        // server and single-slot advertising (which is all SpotLink needs once
+        // the wake torch yields). Returning UNSUPPORTED left _peripheral dead.
         val supported =
-            context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) && adapter.isMultipleAdvertisementSupported
+            context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
         return if (supported) {
             val authorized = permissions.all { permission ->
                 ActivityCompat.checkSelfPermission(
@@ -138,6 +145,10 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
 
     override fun authorize(callback: (Result<Boolean>) -> Unit) {
         try {
+            if (permissions.isEmpty()) {
+                callback(Result.success(true))
+                return
+            }
             ActivityCompat.requestPermissions(activity, permissions, AUTHORIZE_CODE)
             mAuthorizeCallback = callback
         } catch (e: Throwable) {
@@ -155,13 +166,30 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun setName(nameArgs: String, callback: (Result<String?>) -> Unit) {
         try {
+            // SpotLink fork: when the adapter name is ALREADY equal to nameArgs
+            // (e.g. "SL" persisted from a previous run), Android's BluetoothAdapter
+            // does NOT broadcast ACTION_LOCAL_NAME_CHANGED, which used to hang
+            // this future forever -> 8s timeout -> dropping the advertised name.
+            if (adapter.name == nameArgs) {
+                callback(Result.success(nameArgs))
+                return
+            }
             val setting = adapter.setName(nameArgs)
             if (!setting) {
-                throw IllegalStateException()
+                // Some OEM ROMs reject setName; proceed without hanging.
+                callback(Result.success(nameArgs))
+                return
             }
             mSetNameCallback = callback
-        } catch (e: Throwable) {
-            callback(Result.failure(e))
+            mMainHandler.postDelayed({
+                val pending = mSetNameCallback ?: return@postDelayed
+                if (pending === callback) {
+                    mSetNameCallback = null
+                    pending(Result.success(nameArgs))
+                }
+            }, 600L)
+        } catch (_: Throwable) {
+            callback(Result.success(nameArgs))
         }
     }
 
@@ -248,8 +276,42 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
     ) {
         try {
             val settings = settingsArgs.toAdvertiseSettings()
-            val advertiseData = advertiseDataArgs.toAdvertiseData()
-            val scanResponse = scanResponseArgs.toAdvertiseData()
+            // SpotLink fork: when the adapter name is short (e.g. "SL", 2 bytes)
+            // and we only advertise a single 128-bit service UUID with no extra
+            // service/manufacturer data, Flags(3B) + UUID(18B) + Name(4B) = 25B
+            // fits comfortably inside the 31B primary advertisement packet.
+            // Including it in the primary packet guarantees iOS/Android scanners
+            // see both the UUID and 'SL' even if a SCAN_RSP packet is missed.
+            // Conversely, if an OEM ROM (Xiaomi/Huawei/Samsung) ignored setName("SL")
+            // and kept a long multi-byte device name (e.g. Korean name > 29 UTF-8 bytes),
+            // including the device name even in scanResponse overflows the 31B limit
+            // and causes ADVERTISE_FAILED_DATA_TOO_LARGE (error code 1). Drop
+            // includeDeviceNameArgs whenever the actual adapter name is not short!
+            val shortAdapterName = try {
+                val n = adapter.name
+                n != null && n.toByteArray(Charsets.UTF_8).size <= 4
+            } catch (_: Throwable) {
+                false
+            }
+            val effectiveAdvertiseDataArgs =
+                if (shortAdapterName &&
+                    scanResponseArgs.includeDeviceNameArgs == true &&
+                    advertiseDataArgs.serviceUUIDsArgs.size <= 1 &&
+                    advertiseDataArgs.serviceDataArgs.isEmpty() &&
+                    advertiseDataArgs.manufacturerSpecificDataArgs.isEmpty()
+                ) {
+                    advertiseDataArgs.copy(includeDeviceNameArgs = true)
+                } else {
+                    advertiseDataArgs.copy(includeDeviceNameArgs = false)
+                }
+            val effectiveScanResponseArgs =
+                if (shortAdapterName) {
+                    scanResponseArgs
+                } else {
+                    scanResponseArgs.copy(includeDeviceNameArgs = false)
+                }
+            val advertiseData = effectiveAdvertiseDataArgs.toAdvertiseData()
+            val scanResponse = effectiveScanResponseArgs.toAdvertiseData()
             advertiser.startAdvertising(settings, advertiseData, scanResponse, mAdvertiseCallback)
             mStartAdvertisingCallback = callback
         } catch (e: Throwable) {
@@ -259,7 +321,10 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
     override fun stopAdvertising() {
-        advertiser.stopAdvertising(mAdvertiseCallback)
+        try {
+            advertiser.stopAdvertising(mAdvertiseCallback)
+        } catch (_: Throwable) {
+        }
         mAdvertising = false
     }
 
@@ -286,7 +351,7 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun disconnect(addressArgs: String) {
-        val device = mDevices[addressArgs] ?: throw IllegalArgumentException()
+        val device = mDevices.getOrPut(addressArgs) { adapter.getRemoteDevice(addressArgs) }
         server.cancelConnection(device)
     }
 
@@ -294,7 +359,7 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
     override fun sendResponse(
         addressArgs: String, idArgs: Long, statusArgs: GATTStatusArgs, offsetArgs: Long, valueArgs: ByteArray?
     ) {
-        val device = mDevices[addressArgs] ?: throw IllegalArgumentException()
+        val device = mDevices.getOrPut(addressArgs) { adapter.getRemoteDevice(addressArgs) }
         val requestId = idArgs.toInt()
         val status = statusArgs.toStatus()
         val offset = offsetArgs.toInt()
@@ -312,23 +377,30 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
         valueArgs: ByteArray,
         callback: (Result<Unit>) -> Unit
     ) {
-        try {
-            val device = mDevices[addressArgs] ?: throw IllegalArgumentException()
-            val characteristic = mCharacteristics[hashCodeArgs] ?: throw IllegalArgumentException()
-            val notifying = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val statusCode = server.notifyCharacteristicChanged(device, characteristic, confirmArgs, valueArgs)
-                statusCode == BluetoothStatusCodes.SUCCESS
-            } else { // TODO: remove this when minSdkVersion >= 33
-                characteristic.value = valueArgs
-                server.notifyCharacteristicChanged(device, characteristic, confirmArgs)
+        fun attempt(retriesLeft: Int) {
+            try {
+                val device = mDevices.getOrPut(addressArgs) { adapter.getRemoteDevice(addressArgs) }
+                val characteristic = mCharacteristics[hashCodeArgs] ?: throw IllegalArgumentException()
+                val notifying = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val statusCode = server.notifyCharacteristicChanged(device, characteristic, confirmArgs, valueArgs)
+                    statusCode == BluetoothStatusCodes.SUCCESS
+                } else { // TODO: remove this when minSdkVersion >= 33
+                    characteristic.value = valueArgs
+                    server.notifyCharacteristicChanged(device, characteristic, confirmArgs)
+                }
+                if (!notifying) {
+                    if (retriesLeft > 0) {
+                        mMainHandler.postDelayed({ attempt(retriesLeft - 1) }, 30L)
+                        return
+                    }
+                    throw IllegalStateException("notifyCharacteristicChanged busy/failed")
+                }
+                mNotifyCharacteristicValueChangedCallbacks[addressArgs] = callback
+            } catch (e: Throwable) {
+                callback(Result.failure(e))
             }
-            if (!notifying) {
-                throw IllegalStateException()
-            }
-            mNotifyCharacteristicValueChangedCallbacks[addressArgs] = callback
-        } catch (e: Throwable) {
-            callback(Result.failure(e))
         }
+        attempt(10)
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -370,7 +442,7 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
         if (status == BluetoothGatt.GATT_SUCCESS) {
             callback(Result.success(Unit))
         } else {
-            val error = IllegalStateException("Read rssi failed with status: $status")
+            val error = IllegalStateException("Add service failed with status: $status")
             callback(Result.failure(error))
         }
     }
@@ -395,11 +467,18 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
         val statusArgs = status.args
         val stateArgs = newState.toConnectionStateArgs()
         mDevices[addressArgs] = device
+        if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+            val notifyCallback = mNotifyCharacteristicValueChangedCallbacks.remove(addressArgs)
+            if (notifyCallback != null) {
+                notifyCallback(Result.failure(IllegalStateException("Central disconnected with status: $status")))
+            }
+        }
         mApi.onConnectionStateChanged(centralArgs, statusArgs, stateArgs) {}
     }
 
     fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
         val centralArgs = device.toCentralArgs()
+        mDevices[centralArgs.addressArgs] = device
         val mtuArgs = mtu.args
         mApi.onMTUChanged(centralArgs, mtuArgs) {}
     }
@@ -409,6 +488,7 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
         device: BluetoothDevice, requestId: Int, offset: Int, characteristic: BluetoothGattCharacteristic
     ) {
         val centralArgs = device.toCentralArgs()
+        mDevices[centralArgs.addressArgs] = device
         val idArgs = requestId.args
         val offsetArgs = offset.args
         val hashCode = characteristic.hashCode()
@@ -433,6 +513,7 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
         value: ByteArray
     ) {
         val centralArgs = device.toCentralArgs()
+        mDevices[centralArgs.addressArgs] = device
         val idArgs = requestId.args
         val hashCode = characteristic.hashCode()
         val characteristicArgs = mCharacteristicsArgs[hashCode]
@@ -467,6 +548,7 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
         device: BluetoothDevice, requestId: Int, offset: Int, descriptor: BluetoothGattDescriptor
     ) {
         val centralArgs = device.toCentralArgs()
+        mDevices[centralArgs.addressArgs] = device
         val idArgs = requestId.args
         val offsetArgs = offset.args
         val hashCode = descriptor.hashCode()
@@ -491,6 +573,7 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
         value: ByteArray
     ) {
         val centralArgs = device.toCentralArgs()
+        mDevices[centralArgs.addressArgs] = device
         val idArgs = requestId.args
         val hashCode = descriptor.hashCode()
         val descriptorArgs = mDescriptorsArgs[hashCode]
@@ -511,6 +594,7 @@ class PeripheralManagerImpl(context: Context, binaryMessenger: BinaryMessenger) 
 
     fun onExecuteWrite(device: BluetoothDevice, requestId: Int, execute: Boolean) {
         val centralArgs = device.toCentralArgs()
+        mDevices[centralArgs.addressArgs] = device
         val idArgs = requestId.args
         mApi.onExecuteWrite(centralArgs, idArgs, execute) {}
     }

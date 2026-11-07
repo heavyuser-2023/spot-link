@@ -51,8 +51,9 @@ class BluetoothGattCallbackImpl(manager: CentralManagerImpl, executor: Executor)
         gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int
     ) {
         super.onCharacteristicRead(gatt, characteristic, value, status)
+        val safeValue = value.copyOf()
         mExecutor.execute {
-            mManager.onCharacteristicRead(gatt, characteristic, status, value)
+            mManager.onCharacteristicRead(gatt, characteristic, status, safeValue)
         }
     }
 
@@ -62,7 +63,7 @@ class BluetoothGattCallbackImpl(manager: CentralManagerImpl, executor: Executor)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             return
         }
-        val value = characteristic.value
+        val value = characteristic.value?.copyOf() ?: ByteArray(0)
         mExecutor.execute {
             mManager.onCharacteristicRead(gatt, characteristic, status, value)
         }
@@ -79,8 +80,9 @@ class BluetoothGattCallbackImpl(manager: CentralManagerImpl, executor: Executor)
         gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray
     ) {
         super.onCharacteristicChanged(gatt, characteristic, value)
+        val safeValue = value.copyOf()
         mExecutor.execute {
-            mManager.onCharacteristicChanged(gatt, characteristic, value)
+            mManager.onCharacteristicChanged(gatt, characteristic, safeValue)
         }
     }
 
@@ -90,7 +92,7 @@ class BluetoothGattCallbackImpl(manager: CentralManagerImpl, executor: Executor)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             return
         }
-        val value = characteristic.value
+        val value = characteristic.value?.copyOf() ?: ByteArray(0)
         mExecutor.execute {
             mManager.onCharacteristicChanged(gatt, characteristic, value)
         }
@@ -100,8 +102,9 @@ class BluetoothGattCallbackImpl(manager: CentralManagerImpl, executor: Executor)
         gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int, value: ByteArray
     ) {
         super.onDescriptorRead(gatt, descriptor, status, value)
+        val safeValue = value.copyOf()
         mExecutor.execute {
-            mManager.onDescriptorRead(gatt, descriptor, status, value)
+            mManager.onDescriptorRead(gatt, descriptor, status, safeValue)
         }
     }
 
@@ -111,7 +114,7 @@ class BluetoothGattCallbackImpl(manager: CentralManagerImpl, executor: Executor)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             return
         }
-        val value = descriptor.value
+        val value = descriptor.value?.copyOf() ?: ByteArray(0)
         mExecutor.execute {
             mManager.onDescriptorRead(gatt, descriptor, status, value)
         }
